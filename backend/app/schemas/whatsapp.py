@@ -246,6 +246,7 @@ class WhatsAppMessageItem(BaseModel):
     quoted_message: Optional[Dict[str, Any]] = None
     is_forwarded: bool = False
     is_pinned: bool = False
+    is_view_once: bool = False
     pinned_at: Optional[str] = None
     pinned_until: Optional[str] = None
     sent_at: Optional[str] = None
@@ -368,6 +369,7 @@ class WhatsAppSendResult(BaseModel):
     media_url: Optional[str] = None
     is_forwarded: bool = False
     is_pinned: bool = False
+    is_view_once: bool = False
     pinned_at: Optional[str] = None
     pinned_until: Optional[str] = None
 

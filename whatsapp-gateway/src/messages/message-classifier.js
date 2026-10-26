@@ -48,6 +48,43 @@ export function unwrapMessageContent(content) {
   return extracted || current;
 }
 
+/**
+ * Detect whether a message is an ephemeral view-once message
+ * (photos, videos, audio notes designed for single viewing).
+ */
+export function isViewOnceMessage(content) {
+  if (!content || typeof content !== 'object') return false;
+  let current = content;
+  for (let i = 0; i < 6; i++) {
+    if (!current || typeof current !== 'object') break;
+    if (
+      current.viewOnceMessage ||
+      current.viewOnceMessageV2 ||
+      current.viewOnceMessageV2Extension
+    ) {
+      return true;
+    }
+    if (current.deviceSentMessage?.message) {
+      current = current.deviceSentMessage.message;
+    } else if (current.ephemeralMessage?.message) {
+      current = current.ephemeralMessage.message;
+    } else if (current.documentWithCaptionMessage?.message) {
+      current = current.documentWithCaptionMessage.message;
+    } else {
+      break;
+    }
+  }
+  const unwrapped = unwrapMessageContent(content) || {};
+  if (
+    unwrapped.imageMessage?.viewOnce ||
+    unwrapped.videoMessage?.viewOnce ||
+    unwrapped.audioMessage?.viewOnce
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function resolveDownloadableMedia(messageContent) {
   const content = unwrapMessageContent(messageContent);
   const contentType = content ? getContentType(content) : null;

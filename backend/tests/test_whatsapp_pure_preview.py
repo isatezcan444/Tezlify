@@ -43,6 +43,9 @@ def test_normalize_preview_text_legacy_bracket_values():
     assert normalize_preview_text("DOCUMENT", "[DOCUMENT]") == "📄 Dosya"
     assert normalize_preview_text("IMAGE", "[object Object]") == "📷 Fotoğraf"
     assert normalize_preview_text("TEXT", "[Medya]") == "Mesaj"
+    assert normalize_preview_text("IMAGE", "[VIEW_ONCE_PHOTO]") == "📷 Tek görüntülenmelik fotoğraf"
+    assert normalize_preview_text("VIDEO", "[VIEW_ONCE_VIDEO]") == "🎥 Tek görüntülenmelik video"
+    assert normalize_preview_text("AUDIO", "[VIEW_ONCE_AUDIO]") == "🎵 Tek görüntülenmelik sesli mesaj"
 
 
 def test_normalize_preview_text_caption_preserved():

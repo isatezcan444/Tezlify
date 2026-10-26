@@ -25,6 +25,9 @@ export const TYPE_PREVIEW_LABELS = {
   SYSTEM: 'Sistem mesajı',
   POLL: '📊 Anket',
   EVENT: '📅 Etkinlik',
+  VIEW_ONCE_PHOTO: '📷 Tek görüntülenmelik fotoğraf',
+  VIEW_ONCE_VIDEO: '🎥 Tek görüntülenmelik video',
+  VIEW_ONCE_AUDIO: '🎵 Tek görüntülenmelik sesli mesaj',
   UNKNOWN: 'Mesaj',
   OTHER: 'Mesaj',
 };

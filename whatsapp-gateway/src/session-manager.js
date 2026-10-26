@@ -70,6 +70,7 @@ import {
   extractContactPayload,
   extractLocationPayload,
   extractPollPayload,
+  isViewOnceMessage,
 } from './messages/message-classifier.js';
 
 import {
@@ -2247,8 +2248,12 @@ export function createSessionManager({
         unwrapped.imageMessage?.contextInfo ||
         unwrapped.videoMessage?.contextInfo ||
         unwrapped.documentMessage?.contextInfo;
-      const text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
+      let text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(unwrapped);
+      const isViewOnce = isViewOnceMessage(msg.message);
+      if (isViewOnce && (!text || text.trim() === '')) {
+        text = mediaType === 'VIDEO' ? '[VIEW_ONCE_VIDEO]' : (mediaType === 'AUDIO' ? '[VIEW_ONCE_AUDIO]' : '[VIEW_ONCE_PHOTO]');
+      }
       if (!hasRecognizedContent(unwrapped) && !text) return null;
 
       const existingRecord = msg.key?.id
@@ -2269,7 +2274,7 @@ export function createSessionManager({
         // Fall through: the incoming record replaces the placeholder below.
       }
       let mediaInfo = null;
-      if (mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
+      if (!isViewOnce && mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
         if (existingRecord?.media_id) {
           mediaInfo = {
             media_id: existingRecord.media_id,
@@ -2346,15 +2351,16 @@ export function createSessionManager({
           : resolveMessageStatus(msg, fromMe, msg.reactions),
         body: text || '',
         media_id: mediaInfo?.media_id || existingRecord?.media_id || null,
-        media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || null,
+        media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || (isViewOnce ? (mediaType === 'VIDEO' ? 'video/mp4' : (mediaType === 'AUDIO' ? 'audio/ogg' : 'image/jpeg')) : null),
         media_filename: mediaInfo?.filename || existingRecord?.media_filename || null,
-        media_caption: text || existingRecord?.media_caption || null,
+        media_caption: (text && !text.startsWith('[VIEW_ONCE_')) ? text : (existingRecord?.media_caption || null),
         native_link_preview: nativeLinkPreview,
         quoted_message: quotedMeta || null,
         is_forwarded: extractForwardedMetadata(msg.message),
         is_pinned: Boolean(existingRecord?.is_pinned),
         pinned_at: existingRecord?.pinned_at || null,
         pinned_until: existingRecord?.pinned_until || null,
+        is_view_once: Boolean(isViewOnce || existingRecord?.is_view_once),
         wa_message_id: msg.key?.id || null,
         client_message_id: existingRecord?.client_message_id || null,
         sender_phone: fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || (msg.key?.participant || key)),
@@ -3838,8 +3844,12 @@ export function createSessionManager({
         unwrapped.imageMessage?.contextInfo ||
         unwrapped.videoMessage?.contextInfo ||
         unwrapped.documentMessage?.contextInfo;
-      const text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(unwrapped);
+      const isViewOnce = isViewOnceMessage(msg.message);
+      let text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
+      if (isViewOnce && (!text || text.trim() === '')) {
+        text = mediaType === 'VIDEO' ? '[VIEW_ONCE_VIDEO]' : (mediaType === 'AUDIO' ? '[VIEW_ONCE_AUDIO]' : '[VIEW_ONCE_PHOTO]');
+      }
       if (!hasRecognizedContent(unwrapped) && !text) return null;
       const ts = messageTimestampMs(msg.messageTimestamp);
       const timestampSeconds = Number(msg.messageTimestamp);
@@ -3904,12 +3914,13 @@ export function createSessionManager({
         media_id: mediaId,
         media_mime_type: mediaMime,
         media_filename: mediaFilename,
-        media_caption: text || null,
+        media_caption: (text && !text.startsWith('[VIEW_ONCE_')) ? text : null,
         quoted_message: quotedMeta || null,
         is_forwarded: extractForwardedMetadata(msg.message),
         is_pinned: false,
         pinned_at: null,
         pinned_until: null,
+        is_view_once: isViewOnce,
         wa_message_id: waMsgId,
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',

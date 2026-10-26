@@ -47,6 +47,9 @@ const TYPE_LABEL_KEYS: Record<string, string> = {
   SYSTEM: 'whatsapp.previewSystem',
   POLL: 'whatsapp.previewPoll',
   EVENT: 'whatsapp.previewEvent',
+  VIEW_ONCE_PHOTO: 'whatsapp.previewViewOncePhoto',
+  VIEW_ONCE_VIDEO: 'whatsapp.previewViewOnceVideo',
+  VIEW_ONCE_AUDIO: 'whatsapp.previewViewOnceAudio',
   UNKNOWN: 'whatsapp.previewGeneric',
   OTHER: 'whatsapp.previewGeneric',
 };
@@ -66,6 +69,9 @@ const FALLBACK_LABELS: Record<string, string> = {
   'whatsapp.previewSystem': 'Sistem mesajı',
   'whatsapp.previewPoll': '📊 Anket',
   'whatsapp.previewEvent': '📅 Etkinlik',
+  'whatsapp.previewViewOncePhoto': '📷 Tek görüntülenmelik fotoğraf',
+  'whatsapp.previewViewOnceVideo': '🎥 Tek görüntülenmelik video',
+  'whatsapp.previewViewOnceAudio': '🎵 Tek görüntülenmelik sesli mesaj',
   'whatsapp.previewGeneric': 'Mesaj',
 };
 

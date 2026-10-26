@@ -928,6 +928,8 @@ class WhatsAppEventOrchestrator:
                     canonical.media_caption = msg.get("media_caption") or canonical.media_caption
                 if msg.get("quoted_message") and not getattr(canonical, "quoted_message", None):
                     canonical.quoted_message = msg.get("quoted_message")
+                if msg.get("is_view_once") and not getattr(canonical, "is_view_once", False):
+                    canonical.is_view_once = True
 
                 if body_incoming or msg.get("media_id"):
                     summary = build_last_message_summary(
@@ -954,6 +956,10 @@ class WhatsAppEventOrchestrator:
         direction = msg_direction
 
         body = msg.get("body") or ""
+        is_view_once = bool(
+            msg.get("is_view_once", False)
+            or (body in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+        )
         row = Message(
             user_id=owner,
             conversation_id=conv.id,
@@ -965,6 +971,7 @@ class WhatsAppEventOrchestrator:
             media_filename=msg.get("media_filename"),
             media_caption=msg.get("media_caption"),
             quoted_message=msg.get("quoted_message"),
+            is_view_once=is_view_once,
             wa_message_id=wa_id,
             client_message_id=msg.get("client_message_id"),
             # D3: no fake phone numbers (hard invariant). LID senders have no

@@ -65,6 +65,24 @@ class TestWhatsAppMessagingOrchestration:
         assert serialized["client_message_id"] == "client_uuid_456"
         assert serialized["created_at"] == "2026-09-17T12:00:00"
         assert serialized["is_forwarded"] is False
+        assert serialized["is_view_once"] is False
+
+    def test_serialize_message_view_once(self):
+        row = Message(
+            id=43,
+            conversation_id=10,
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.IMAGE,
+            status=ConversationMessageStatus.RECEIVED,
+            body="[VIEW_ONCE_PHOTO]",
+            is_view_once=True,
+            sender_phone="+905551234567",
+            recipient_phone="ME",
+        )
+        serialized = serialize_message(row)
+        assert serialized["is_view_once"] is True
+        assert serialized["body"] == "[VIEW_ONCE_PHOTO]"
+        assert serialized["message_type"] == "IMAGE"
 
     def test_client_message_id_uniqueness_is_conversation_scoped(self):
         column = Message.__table__.c.client_message_id

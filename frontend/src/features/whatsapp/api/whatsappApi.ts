@@ -407,6 +407,7 @@ interface BackendMessage {
   is_pinned?: boolean | null;
   pinned_at?: string | null;
   pinned_until?: string | null;
+  is_view_once?: boolean | null;
   created_at?: string | null;
 }
 
@@ -459,6 +460,12 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     is_pinned: Boolean(m.is_pinned),
     pinned_at: m.pinned_at || null,
     pinned_until: m.pinned_until || null,
+    is_view_once: Boolean(
+      m.is_view_once ||
+      m.body === '[VIEW_ONCE_PHOTO]' ||
+      m.body === '[VIEW_ONCE_VIDEO]' ||
+      m.body === '[VIEW_ONCE_AUDIO]'
+    ),
     external_timestamp: m.created_at ?? undefined,
     created_at: m.created_at || '',
   };

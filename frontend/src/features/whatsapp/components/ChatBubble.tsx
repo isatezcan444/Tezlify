@@ -651,6 +651,54 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   );
 
   const renderMediaContent = () => {
+    const isViewOnce = Boolean(
+      message.is_view_once ||
+      message.body === '[VIEW_ONCE_PHOTO]' ||
+      message.body === '[VIEW_ONCE_VIDEO]' ||
+      message.body === '[VIEW_ONCE_AUDIO]'
+    );
+
+    if (isViewOnce) {
+      const isVideo = message.message_type === 'VIDEO' || message.body === '[VIEW_ONCE_VIDEO]';
+      const isAudio = message.message_type === 'AUDIO' || message.body === '[VIEW_ONCE_AUDIO]';
+      const title = isVideo
+        ? t('whatsapp.viewOnceVideo')
+        : isAudio
+        ? t('whatsapp.viewOnceAudio')
+        : t('whatsapp.viewOncePhoto');
+      const notice = isInbound
+        ? (isVideo
+            ? t('whatsapp.viewOnceNoticeInboundVideo')
+            : isAudio
+            ? t('whatsapp.viewOnceNoticeInboundAudio')
+            : t('whatsapp.viewOnceNoticeInbound'))
+        : t('whatsapp.viewOnceNoticeOutbound');
+      const caption = message.media_caption || (message.body && !message.body.startsWith('[VIEW_ONCE_') ? message.body : null);
+
+      return (
+        <div className="space-y-2 max-w-[280px]">
+          <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-900/5 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 select-none">
+            <div className="w-9 h-9 rounded-full border-2 border-dashed border-[#00a884] dark:border-[#00a884] flex items-center justify-center shrink-0 bg-[#00a884]/10 text-[#00a884] dark:text-[#25D366] font-bold text-sm shadow-sm mt-0.5">
+              1
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                <span>{title}</span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 mt-1">
+                {notice}
+              </p>
+            </div>
+          </div>
+          {caption && (
+            <p className="whitespace-pre-wrap break-words font-medium text-xs px-0.5">
+              {highlightMatches(caption)}
+            </p>
+          )}
+        </div>
+      );
+    }
+
     switch (message.message_type) {
       case 'IMAGE':
         return (

@@ -179,6 +179,10 @@ def serialize_message(
         "is_pinned": bool(getattr(row, "is_pinned", False)),
         "pinned_at": row.pinned_at.isoformat() if getattr(row, "pinned_at", None) else None,
         "pinned_until": row.pinned_until.isoformat() if getattr(row, "pinned_until", None) else None,
+        "is_view_once": bool(
+            getattr(row, "is_view_once", False)
+            or (getattr(row, "body", None) in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+        ),
         "sent_at": row.sent_at.isoformat() if getattr(row, "sent_at", None) else None,
         "delivered_at": row.delivered_at.isoformat() if getattr(row, "delivered_at", None) else None,
         "read_at": row.read_at.isoformat() if getattr(row, "read_at", None) else None,
