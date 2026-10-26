@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from typing import Optional, Tuple
 
+from backend.app.core.auth import get_user_filter
 from backend.app.core.datetime_utils import utc_now_naive
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -31,18 +32,34 @@ class OutreachManager:
         return gaussian_jitter_seconds(min_delay, max_delay)
 
     @classmethod
-    async def is_blacklisted(cls, db: AsyncSession, phone_e164: str) -> bool:
-        """Checks if phone number is present in Blacklist."""
-        stmt = select(Blacklist.id).where(Blacklist.phone_e164 == phone_e164).limit(1)
+    async def is_blacklisted(cls, db: AsyncSession, phone_e164: str, *, user_id: str) -> bool:
+        """Checks the phone number against the OWNER's blacklist.
+
+        `user_id` is required on purpose. The blacklist is per-tenant — the
+        create endpoint has always written `user_id` and the list endpoint has
+        always filtered by it — but this read used to match on the phone alone,
+        so one tenant's opt-out silently suppressed another tenant's campaign
+        sends. Making the parameter mandatory means a new send path cannot
+        forget it and quietly fall back to that behaviour.
+        """
+        stmt = select(Blacklist.id).where(
+            Blacklist.phone_e164 == phone_e164,
+            get_user_filter(Blacklist.user_id, user_id),
+        ).limit(1)
         result = await db.execute(stmt)
         return result.scalar_one_or_none() is not None
 
     @classmethod
-    async def get_blacklisted_phones(cls, db: AsyncSession, phones: list[str]) -> set[str]:
-        """Batch checks phone numbers against Blacklist in a single query."""
+    async def get_blacklisted_phones(
+        cls, db: AsyncSession, phones: list[str], *, user_id: str
+    ) -> set[str]:
+        """Batch checks phone numbers against the OWNER's blacklist in one query."""
         if not phones:
             return set()
-        stmt = select(Blacklist.phone_e164).where(Blacklist.phone_e164.in_(phones))
+        stmt = select(Blacklist.phone_e164).where(
+            Blacklist.phone_e164.in_(phones),
+            get_user_filter(Blacklist.user_id, user_id),
+        )
         result = await db.execute(stmt)
         return set(result.scalars().all())
 
@@ -98,7 +115,7 @@ class OutreachManager:
         is_bl = (
             lead.phone_e164 in blacklisted_phones
             if blacklisted_phones is not None
-            else await cls.is_blacklisted(db, lead.phone_e164)
+            else await cls.is_blacklisted(db, lead.phone_e164, user_id=lead.user_id)
         )
         if is_bl:
             lead.status = LeadStatus.UNSUBSCRIBED

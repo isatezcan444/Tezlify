@@ -246,7 +246,7 @@ class CampaignRunner:
                     continue
 
                 # Check Blacklist
-                if await OutreachManager.is_blacklisted(db, lead.phone_e164):
+                if await OutreachManager.is_blacklisted(db, lead.phone_e164, user_id=lead.user_id):
                     seq_lead.status = SequenceLeadStatus.OPT_OUT
                     seq_lead.stopped_at = now
                     seq_lead.stop_reason = "BLACKLISTED"
@@ -607,7 +607,9 @@ class CampaignRunner:
 
                 # Campaign-scoped batch blacklist pre-resolution: 1 query instead of N per-lead queries
                 candidate_phones = [l.phone_e164 for l in leads if l.phone_e164]
-                blacklisted_phones = await OutreachManager.get_blacklisted_phones(db, candidate_phones)
+                blacklisted_phones = await OutreachManager.get_blacklisted_phones(
+                    db, candidate_phones, user_id=owner
+                )
                 round_robin_idx = 0
 
                 for idx, lead in enumerate(leads):

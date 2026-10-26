@@ -43,27 +43,32 @@ async def get_test_db():
 async def test_batch_blacklist_lookup_and_outreach():
     session_maker, engine = await get_test_db()
     async with session_maker() as db:
+        # The blacklist is per-tenant, so the fixture has to name one: a
+        # NULL-owner row would only match because `get_user_filter` is lenient
+        # under pytest, which is exactly the leniency that hid the bug.
+        owner = str(uuid.uuid4())
         # Seed blacklist
-        b1 = Blacklist(phone_e164="+905551112233", reason="opt_out")
-        b2 = Blacklist(phone_e164="+905552223344", reason="spam")
+        b1 = Blacklist(user_id=owner, phone_e164="+905551112233", reason="opt_out")
+        b2 = Blacklist(user_id=owner, phone_e164="+905552223344", reason="spam")
         db.add_all([b1, b2])
         await db.commit()
 
         # 1. Test get_blacklisted_phones batch resolution
         phones = ["+905551112233", "+905552223344", "+905553334455", "+905554445566"]
-        blacklisted = await OutreachManager.get_blacklisted_phones(db, phones)
+        blacklisted = await OutreachManager.get_blacklisted_phones(db, phones, user_id=owner)
         assert blacklisted == {"+905551112233", "+905552223344"}
 
         # Empty list check
-        empty = await OutreachManager.get_blacklisted_phones(db, [])
+        empty = await OutreachManager.get_blacklisted_phones(db, [], user_id=owner)
         assert empty == set()
 
         # 2. Test lightweight single check
-        assert await OutreachManager.is_blacklisted(db, "+905551112233") is True
-        assert await OutreachManager.is_blacklisted(db, "+905553334455") is False
+        assert await OutreachManager.is_blacklisted(db, "+905551112233", user_id=owner) is True
+        assert await OutreachManager.is_blacklisted(db, "+905553334455", user_id=owner) is False
 
         # 3. Test process_single_outreach with batch blacklist pre-check
         lead_bl = Lead(
+            user_id=owner,
             name="Blacklisted Shop",
             phone="05551112233",
             phone_e164="+905551112233",
@@ -71,6 +76,7 @@ async def test_batch_blacklist_lookup_and_outreach():
             status=LeadStatus.NEW,
         )
         lead_ok = Lead(
+            user_id=owner,
             name="Clean Shop",
             phone="05553334455",
             phone_e164="+905553334455",
@@ -78,6 +84,7 @@ async def test_batch_blacklist_lookup_and_outreach():
             status=LeadStatus.NEW,
         )
         camp = Campaign(
+            user_id=owner,
             name="Test Campaign",
             message_template="Merhaba {name}",
             working_hours_start="00:00",
