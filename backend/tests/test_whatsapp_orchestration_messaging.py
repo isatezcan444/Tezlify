@@ -620,9 +620,15 @@ class TestWhatsAppMessagingOrchestration:
             assert failed_msg.message_type == MessageType.TEXT
 
     @pytest.mark.asyncio
-    async def test_get_messages_auto_synthesizes_preview_when_empty(self, tmp_path):
-        """When DB has 0 messages, but conversation has last_message_preview,
-        get_messages auto-synthesizes the preview into a Message row rather than falsely claiming no messages."""
+    async def test_get_messages_never_synthesizes_a_message_from_preview(self, tmp_path):
+        """A preview string is a summary, not a message.
+
+        This used to INSERT a `Message` whose body was the preview text and whose
+        `wa_message_id` was `preview_<conv>_<epoch>`: fabricated content shown as
+        if the user had typed it, plus a pagination anchor WhatsApp can never
+        resolve. The honest answer is an empty page; the list endpoint reports
+        the chat as UNSYNCED and the thread renders "history unavailable".
+        """
         import uuid
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -678,21 +684,29 @@ class TestWhatsAppMessagingOrchestration:
 
             with patch("backend.app.services.whatsapp_service._conversation_session", return_value=None):
                 res = await whatsapp_service.get_messages(db, owner, 999)
-                assert len(res["messages"]) == 1
-                msg = res["messages"][0]
-                assert msg["body"] == "haftaya bu iş tamam abi :D"
-                assert msg["direction"] == "INBOUND"
-                assert msg["conversation_id"] == 999
+                assert res["messages"] == []
+                assert res["has_more"] is False
+
+            # Nothing was written, so the chat stays honestly empty and
+            # `list_conversations` is free to report it as UNSYNCED.
+            persisted = await db.execute(
+                text("SELECT count(*) FROM messages WHERE conversation_id = 999")
+            )
+            assert persisted.scalar_one() == 0
 
         await engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_ensure_conversation_preview_messages_migration(self):
-        """Test ensure_conversation_preview_messages on SQLite in-memory engine."""
+    async def test_purge_synthetic_preview_messages_removes_fabricated_rows(self):
+        """The migration now DELETES rows the old version invented from a preview.
+
+        Only the exact synthetic id shape is removed; a real WhatsApp key in the
+        same table is left alone.
+        """
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine
         from backend.app.core.database import Base
-        from backend.app.core.migrations import ensure_conversation_preview_messages
+        from backend.app.core.migrations import purge_synthetic_preview_messages
 
         test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
         async with test_engine.begin() as conn:
@@ -705,18 +719,25 @@ class TestWhatsAppMessagingOrchestration:
                 INSERT INTO conversations (id, user_id, contact_id, channel, status, unread_count, is_group, is_archived, last_message_preview, last_message_at, created_at, updated_at)
                 VALUES (778, '00000000-0000-0000-0000-000000000001', NULL, 'WHATSAPP', 'ACTIVE', 0, 0, 0, 'Teşekkürler iyiyim', datetime('now'), datetime('now'), datetime('now'))
             """))
+            # Two rows fabricated by the previous version (must be removed) and
+            # one genuine WhatsApp message (must survive).
+            await conn.execute(text("""
+                INSERT INTO messages (conversation_id, user_id, direction, message_type, status, body, sender_phone, recipient_phone, created_at, updated_at, wa_message_id)
+                VALUES
+                  (777, '00000000-0000-0000-0000-000000000001', 'OUTBOUND', 'TEXT', 'READ', 'Merhaba nasılsınız?', 'ME', 'CONTACT', datetime('now'), datetime('now'), 'preview_777_1788973240'),
+                  (778, '00000000-0000-0000-0000-000000000001', 'INBOUND', 'TEXT', 'READ', 'Teşekkürler iyiyim', NULL, 'ME', datetime('now'), datetime('now'), 'preview_778_1788973241'),
+                  (777, '00000000-0000-0000-0000-000000000001', 'INBOUND', 'TEXT', 'READ', 'gercek mesaj', NULL, 'ME', datetime('now'), datetime('now'), '3EB0REALMESSAGEKEY')
+            """))
 
-        await ensure_conversation_preview_messages(test_engine)
+        await purge_synthetic_preview_messages(test_engine)
 
         async with test_engine.connect() as conn:
-            rows = (await conn.execute(text("SELECT conversation_id, direction, body FROM messages ORDER BY conversation_id"))).fetchall()
-            assert len(rows) == 2
-            assert rows[0][0] == 777
-            assert rows[0][1] == "OUTBOUND"
-            assert rows[0][2] == "Merhaba nasılsınız?"
-            assert rows[1][0] == 778
-            assert rows[1][1] == "INBOUND"
-            assert rows[1][2] == "Teşekkürler iyiyim"
+            rows = (
+                await conn.execute(text("SELECT conversation_id, body, wa_message_id FROM messages"))
+            ).fetchall()
+            assert len(rows) == 1, rows
+            assert rows[0][1] == "gercek mesaj"
+            assert rows[0][2] == "3EB0REALMESSAGEKEY"
         await test_engine.dispose()
 
 

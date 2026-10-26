@@ -54,7 +54,7 @@ from backend.app.core.migrations import (
     ensure_system_settings_value_json,
     ensure_leads_enrichment_columns,
     ensure_verified_commercial_leads,
-    ensure_conversation_preview_messages,
+    purge_synthetic_preview_messages,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
@@ -237,7 +237,9 @@ async def lifespan(app: FastAPI):
     await ensure_system_settings_value_json(engine)
     await ensure_leads_enrichment_columns(engine)
     await ensure_verified_commercial_leads(engine)
-    await ensure_conversation_preview_messages(engine)
+    # A preview is a summary string, not a message: drop rows that an earlier
+    # version fabricated from one (see the docstring for the damage it caused).
+    await purge_synthetic_preview_messages(engine)
 
     # Boot tek başına yetmez: artan çiftler, canlı yolun ertelediği birleştirmeler
     # ve arşivlenen sohbette kalmış sahipsiz mesajlar ancak YENİDEN koşan bir
