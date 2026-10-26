@@ -364,17 +364,38 @@ async def upload_campaign_media(
 @router.get("/media/{file_id}")
 async def get_campaign_media(file_id: str):
     """
-    Serves uploaded campaign media file with inline disposition and proper MIME type.
+    Serves uploaded campaign media — as the BYTES say it is, never as the name
+    claims.
+
+    Hardening against stored XSS on the API origin. The previous version
+    re-guessed the type from the stored FILE NAME and served it `inline`, so a
+    file uploaded as `text/plain` named `evil.html` came back as `text/html`
+    and executed on this origin. Now:
+
+      * the MIME type is re-sniffed from the stored bytes (a lying extension
+        cannot come back as HTML — the sniff fails and this 404s);
+      * `X-Content-Type-Options: nosniff` stops the browser re-guessing;
+      * only image formats are `inline`; PDF/Office are forced to `attachment`
+        (a PDF can carry script for whatever viewer renders it);
+      * `Content-Security-Policy: default-src 'none'; sandbox` neutralises any
+        document that still manages to render;
+      * `private` cache — this is tenant data, not a public asset.
     """
-    from backend.app.services.campaign_media_service import CampaignMediaService
+    from backend.app.services.campaign_media_service import (
+        CampaignMediaService,
+        inline_safe,
+    )
     res = CampaignMediaService.get_media_file_info(file_id)
     if not res:
         raise HTTPException(status_code=404, detail="Medya dosyası bulunamadı.")
     content, mime, filename = res
+    disposition = "inline" if inline_safe(mime) else "attachment"
     headers = {
-        "Content-Disposition": f'inline; filename="{filename}"',
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
         "Content-Length": str(len(content)),
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": "private, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
     }
     return Response(content=content, media_type=mime, headers=headers)
 
