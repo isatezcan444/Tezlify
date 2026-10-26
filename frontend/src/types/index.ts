@@ -613,6 +613,13 @@ export interface Conversation {
   // "mesaj yok" demek yalandır; "geçmiş bu cihazda yok" denir.
   message_count?: number;
   last_message_state?: 'RESOLVED' | 'NO_MESSAGES' | 'UNSYNCED' | 'REPAIRING' | 'LOADING' | string;
+  /**
+   * KISMİ geçmiş boşluğu (saniye): mesaj satırları VAR ama en yeni satır,
+   * sohbetin `last_message_at` damgasından belirgin şekilde eski. Sunucu
+   * yalnızca eşiği aşınca doldurur; `undefined` "boşluk yok" demek değil,
+   * "bildirilmedi" demektir.
+   */
+  history_gap_seconds?: number;
   identity_state?: 'RESOLVED_PROFILE' | 'RESOLVED_PHONE' | 'RESOLVED_JID' | 'RESOLVING_TRANSIENT' | 'UNRESOLVED_PERMANENT' | string;
   is_window_open?: boolean;
   last_inbound_at?: string;

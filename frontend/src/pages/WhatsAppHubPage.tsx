@@ -4047,6 +4047,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onUnpinMessage={handleUnpinMessage}
                 />
 
+                {/* KISMI gecmis boslugu: satirlar var ama en yeni satir sohbetin
+                    damgasindan belirgin sekilde eski. Sohbet paneli aksi halde
+                    "bu kadar" der gibi gorunur; kullaniciya gercegi soyler. */}
+                {selectedConv.history_gap_seconds ? (
+                  <div
+                    role="status"
+                    className="mx-3 mt-2 flex items-start gap-2 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50/80 dark:bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                    <span className="min-w-0">{t('whatsapp.historyGapNotice')}</span>
+                  </div>
+                ) : null}
+
                 {/* Chat Thread with Pagination */}
                 <ChatThread
                   conversationKey={selectedConv.id}

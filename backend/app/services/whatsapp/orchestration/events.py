@@ -2173,7 +2173,13 @@ class WhatsAppEventOrchestrator:
                     in_memory_pairing=pairing,
                 )
                 if promoted is not None:
-                    remove_ephemeral_pairing_by_gateway_id(str(gw_session_id))
+                    # Basarili promosyon: token'in mezarini da yaz ki tarayicinin
+                    # devam eden poll'u 404 yerine CONNECTED alsin.
+                    remove_ephemeral_pairing_by_gateway_id(
+                        str(gw_session_id),
+                        session_id=getattr(promoted, "id", None),
+                        phone=getattr(promoted, "phone_number", None) or (phone_from_event or None),
+                    )
                     event["session_id"] = promoted.id
                     event["session_name"] = event.get("session_name") or promoted.session_name
                     event["user_id"] = str(promoted.user_id) if promoted.user_id else None
@@ -2224,7 +2230,11 @@ class WhatsAppEventOrchestrator:
                             phone=phone_from_event,
                             new_gateway_id=str(gw_session_id),
                         )
-                        remove_ephemeral_pairing_by_gateway_id(str(gw_session_id))
+                        remove_ephemeral_pairing_by_gateway_id(
+                            str(gw_session_id),
+                            session_id=getattr(relink_result, "session_id", None),
+                            phone=phone_from_event or None,
+                        )
                         logger.info(
                             "[Phase15.4] map_session_event relink OK: session=%s %s→%s (history=%d)",
                             relink_result.session_id,

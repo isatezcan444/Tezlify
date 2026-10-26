@@ -284,10 +284,19 @@ class TestP68PhonePairingCode:
                 assert body["status"] == "CONNECTED"
                 assert body["session_id"] is not None
 
-                # Polling again must not promote a second time: the pairing is
-                # already consumed, so the token no longer resolves.
+                # Polling again must not promote a second time. The pairing IS
+                # consumed (the token no longer resolves as an active pairing),
+                # but the poll must learn the OUTCOME instead of a 404:
+                # a 404 here is what made the browser's 2.5 s fallback poll
+                # count failures until the modal reported "bağlantı kurulamadı"
+                # for a line that had just connected (live 2026-10-27: 2×404 in
+                # 6 h). The tombstone answers idempotently — same session, no
+                # second promotion.
                 res2 = await client.get(f"/api/v1/whatsapp/pairing/{pair_token}/qr", headers=auth_headers)
-                assert res2.status_code == 404
+                assert res2.status_code == 200
+                body2 = res2.json()
+                assert body2["status"] == "CONNECTED"
+                assert body2["session_id"] == body["session_id"]
 
             async with AsyncSessionLocal() as db:
                 count = await db.scalar(

@@ -371,6 +371,75 @@ async def test_unsynced_state_when_activity_proof_but_zero_rows():
     assert preview_row["last_message_state"] == "UNSYNCED"
 
 
+@pytest.mark.asyncio
+async def test_history_gap_reported_when_newest_row_lags_the_stamp():
+    """Satır VAR ama en yeni satır damgadan çok eski → `history_gap_seconds`.
+
+    Canlı ölçüm (prod, 2026-10-27): conv 37863 damga 27.07 / en yeni kayıt 31.01
+    (+176 gün), conv 37791 (kendisi) +20 saat. Bu sohbetler `RESOLVED` kalır
+    (önizleme var) ve liste doğru yerde sıralar, ama thread sessizce erken
+    biter — kullanıcı "bu kadar" sanır. `UNSYNCED` yalnızca SIFIR satırı
+    kapsadığı için bu durumu görünür kılan tek şey bu alandır.
+    """
+    contact_id, lagging_id = await _seed_session_and_group(
+        preview="eski mesaj", last_message_at=_ts(12, 0)
+    )
+    async with AsyncSessionLocal() as db:
+        db.add(
+            Message(
+                user_id=TEST_USER,
+                conversation_id=lagging_id,
+                direction=MessageDirection.INBOUND,
+                message_type=MessageType.TEXT,
+                body="eski mesaj",
+                sender_phone="+905550001177",
+                recipient_phone="ME",
+                external_timestamp=_ts(10, 0),
+            )
+        )
+        # Kontrol: en yeni satır damgayla AYNI olan sohbet boşluk bildirmemeli.
+        c2 = Contact(user_id=TEST_USER, phone_e164="+905550001188", display_name="Guncel")
+        db.add(c2)
+        await db.flush()
+        in_sync_conv = Conversation(
+            user_id=TEST_USER,
+            contact_id=c2.id,
+            channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE,
+            last_message_preview="güncel",
+            last_message_at=_ts(11, 30),
+        )
+        db.add(in_sync_conv)
+        await db.flush()
+        db.add(
+            Message(
+                user_id=TEST_USER,
+                conversation_id=in_sync_conv.id,
+                direction=MessageDirection.INBOUND,
+                message_type=MessageType.TEXT,
+                body="güncel mesaj",
+                sender_phone="+905550001188",
+                recipient_phone="ME",
+                external_timestamp=_ts(11, 30),
+            )
+        )
+        await db.commit()
+        in_sync_id = in_sync_conv.id
+
+    async with AsyncSessionLocal() as db:
+        items, _ = await list_conversations(db, TEST_USER)
+    by_id = {i["id"]: i for i in items}
+
+    lagging = by_id[lagging_id]
+    assert lagging["message_count"] == 1
+    assert lagging["last_message_state"] == "RESOLVED"
+    # 12:00 damga - 10:00 en yeni satır = 7200 sn
+    assert lagging["history_gap_seconds"] == 7200
+
+    in_sync = by_id[in_sync_id]
+    assert in_sync["history_gap_seconds"] is None
+
+
 # ---------------------------------------------------------------------------
 # P2.9 — realtime ingest → ozet DB'de
 # ---------------------------------------------------------------------------

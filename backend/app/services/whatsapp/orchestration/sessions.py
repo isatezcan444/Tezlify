@@ -437,6 +437,53 @@ async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str,
 _ephemeral_pairings: Dict[str, Dict[str, Any]] = {}
 _logical_to_ephemeral: Dict[int, str] = {}
 
+# Tuketilmis token mezarlari (tombstone).
+#
+# `get_pairing_qr` token'i YALNIZCA terminal basaridan sonra siler (bkz.
+# `_consume_pairing`). Ama tarayici 2,5 sn'lik yedek poll'u ile ayni token'i
+# sormaya devam ediyor: promosyonu kazanan taraf token'i tukettigi anda bir
+# sonraki poll `LookupError` -> 404 aliyor ve modal, HAT GERCEKTEN BAGLANMISKEN
+# "baglanti kurulamadi" hatasina kadar sayiyor (canli: 6 saatte 2 kez 404,
+# kullanicinin konsolunda da goruldu).
+#
+# Mezar, "bu token basariyla tuketildi, sonucu su" bilgisini tasir; poll 404
+# yerine CONNECTED alir ve arayuz dogru sekilde gecer. Bellek-ici ve sinirli:
+# bir restart mezarlari kaybeder ve davranis bugunku 404'e duser — yani en kotu
+# durum statukodur, yeni bir ariza degil.
+_consumed_pairings: Dict[str, Dict[str, Any]] = {}
+_CONSUMED_PAIRINGS_MAX = 64
+
+
+def _remember_consumed_pairing(
+    pair_token: str,
+    *,
+    user_id: str,
+    session_id: Optional[int],
+    phone: Optional[str],
+) -> None:
+    """Basarili promosyonun sonucunu token'in mezari olarak saklar."""
+    if not pair_token:
+        return
+    if len(_consumed_pairings) >= _CONSUMED_PAIRINGS_MAX:
+        # En eski kaydi at (dict ekleme sirasi korunur).
+        for stale in list(_consumed_pairings.keys())[: _CONSUMED_PAIRINGS_MAX // 4]:
+            _consumed_pairings.pop(stale, None)
+    _consumed_pairings[pair_token] = {
+        "user_id": str(user_id),
+        "session_id": session_id,
+        "phone": phone,
+    }
+
+
+def _consumed_pairing_result(pair_token: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """Tuketilmis token icin terminal sonucu doner (baska kiracinin token'i icin None)."""
+    consumed = _consumed_pairings.get(pair_token)
+    if not consumed:
+        return None
+    if consumed.get("user_id") != str(user_id):
+        return None
+    return consumed
+
 
 def find_ephemeral_pairing_by_gateway_id(gateway_id: str) -> Optional[Dict[str, Any]]:
     """Lookup ephemeral pairing metadata by its gateway UUID."""
@@ -446,13 +493,32 @@ def find_ephemeral_pairing_by_gateway_id(gateway_id: str) -> Optional[Dict[str, 
     return None
 
 
-def remove_ephemeral_pairing_by_gateway_id(gateway_id: str) -> None:
-    """Clean up ephemeral pairing metadata by gateway UUID."""
+def remove_ephemeral_pairing_by_gateway_id(
+    gateway_id: str,
+    *,
+    session_id: Optional[int] = None,
+    phone: Optional[str] = None,
+) -> None:
+    """Clean up ephemeral pairing metadata by gateway UUID.
+
+    `session_id` verildiginde bu, BASARILI bir promosyonun sonucudur: token'in
+    mezari yazilir ki tarayicinin bir sonraki poll'u 404 yerine CONNECTED
+    gorsun. Olay yolu (`connection.open`) genellikle poll'den ONCE calistigi
+    icin mezar BURADA yazilmazsa `get_pairing_qr` icindeki kayit hic devreye
+    girmez ve 404 devam eder.
+    """
     for token, data in list(_ephemeral_pairings.items()):
         if data.get("gateway_id") == str(gateway_id):
             log_id = data.get("logical_session_id")
             if log_id and _logical_to_ephemeral.get(log_id) == token:
                 _logical_to_ephemeral.pop(log_id, None)
+            if session_id is not None:
+                _remember_consumed_pairing(
+                    token,
+                    user_id=str(data.get("user_id") or ""),
+                    session_id=session_id,
+                    phone=phone,
+                )
             _ephemeral_pairings.pop(token, None)
 
 
@@ -538,6 +604,19 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
     """
     pairing = _ephemeral_pairings.get(pair_token)
     if not pairing or pairing["user_id"] != str(user_id):
+        # Token bilinmiyor. Iki ayri durum var ve ikisi AYNI cevabi hak etmiyor:
+        #   * hic var olmamis / suresi dolmus / iptal edilmis token -> 404,
+        #   * BASARIYLA tuketilmis token -> sohbet gercekten baglandi; poll'e
+        #     terminal sonucu ver, 404 verme (bkz. `_consumed_pairings`).
+        consumed = _consumed_pairing_result(pair_token, str(user_id))
+        if consumed:
+            return {
+                "status": "CONNECTED",
+                "session_id": consumed.get("session_id"),
+                "phone": consumed.get("phone"),
+                "qr_code": None,
+                "error_message": None,
+            }
         raise LookupError("Eşleşme oturumu bulunamadı veya süresi doldu.")
 
     gateway_id = pairing["gateway_id"]
@@ -610,6 +689,14 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
             )
 
         _consume_pairing()
+        # Tuketimden SONRA mezar yazilir: ayni token'la gelen bir sonraki poll
+        # 404 yerine bu sonucu alir (bkz. `_consumed_pairings`).
+        _remember_consumed_pairing(
+            pair_token,
+            user_id=str(user_id),
+            session_id=getattr(row, "id", None),
+            phone=getattr(row, "phone_number", None) or (phone or None),
+        )
         return {
             "status": "CONNECTED",
             "session_id": row.id,

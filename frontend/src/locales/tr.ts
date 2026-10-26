@@ -737,6 +737,10 @@ export const tr = {
     historyUnavailableTitle: 'Geçmiş bu cihazda yok',
     historyUnavailableDesc:
       'Bu sohbette WhatsApp tarafında mesaj var, ancak telefon geçmişi Tezlify’a göndermedi. Hattı yeniden bağlamak genelde geçmişi getirir.',
+    // Kısmi boşluk: thread'de mesaj VAR ama en yenisi sohbetin damgasından
+    // belirgin şekilde eski — WhatsApp'ta bu cihaza hiç gelmemiş daha yenileri var.
+    historyGapNotice:
+      'WhatsApp’ta bu sohbette, bu cihazdaki kopyadan daha yeni mesajlar var. Hattı yeniden bağlamak genelde onları getirir.',
     emptyUnread: 'Okunmamış sohbet yok',
     emptyGroups: 'Henüz grup yok',
     emptyArchived: 'Arşivlenmiş sohbet yok',

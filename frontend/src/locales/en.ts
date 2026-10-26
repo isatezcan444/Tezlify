@@ -737,6 +737,10 @@ export const en = {
     historyUnavailableTitle: 'History not on this device',
     historyUnavailableDesc:
       'This chat has messages on WhatsApp, but the phone did not send its history to Tezlify. Re-linking the line usually brings them in.',
+    // Partial gap: the thread HAS messages, but the newest one is clearly older
+    // than the chat's own timestamp — WhatsApp has newer ones this device never got.
+    historyGapNotice:
+      'WhatsApp has newer messages in this chat than the copy on this device. Re-linking the line usually brings them in.',
     emptyUnread: 'No unread conversations',
     emptyGroups: 'No groups yet',
     emptyArchived: 'No archived conversations',

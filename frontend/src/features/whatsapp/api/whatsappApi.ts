@@ -310,6 +310,8 @@ export interface BackendConversation {
   updated_at?: string | null;
   message_count?: number;
   last_message_state?: string | null;
+  /** Kismi gecmis boslugu (saniye); yalnizca sunucu bildirdiyse dolu. */
+  history_gap_seconds?: number | null;
   unread_count?: number;
   status?: string;
   identity_state?: string | null;
@@ -370,6 +372,11 @@ function mapConversation(c: BackendConversation): Conversation {
   if (c.message_count !== undefined) conv.message_count = c.message_count ?? 0;
   if (c.last_message_state !== undefined) {
     conv.last_message_state = c.last_message_state || undefined;
+  }
+  // Kismi gecmis boslugu: yalnizca sunucu GERCEKTEN bildirdiyse tasinir.
+  // Alanin yoklugu "bosluk yok" DEGILDIR; `null` ise "bilinen bosluk yok".
+  if (c.history_gap_seconds !== undefined) {
+    conv.history_gap_seconds = c.history_gap_seconds ?? undefined;
   }
   // Never synthesize "now" for server data. A conversation without a message
   // must remain at the end of a chronological list. Missing timestamps are a

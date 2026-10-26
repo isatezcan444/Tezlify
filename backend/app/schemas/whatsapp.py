@@ -173,6 +173,10 @@ class WhatsAppConversationItem(BaseModel):
     # satiri yok — telefon gecmisi gondermedi. "Mesaj yok" DENMEZ.
     message_count: int = 0
     last_message_state: Optional[str] = None
+    # KISMI gecmis boslugu: satirlar var ama en yeni satir sohbetin damgasindan
+    # belirgin sekilde eski (bkz. `HISTORY_GAP_THRESHOLD_SECONDS`). `UNSYNCED`
+    # "hic satir yok" der; bu alan "satir var ama eksik" der. Ikisi ayri gercek.
+    history_gap_seconds: Optional[int] = None
     # WhatsApp Web paritesi: liste satirinda SON MESAJIN en yeni ifadesi.
     # Eski bir mesaja birakilan ifade listede gorunmez (sunucu hesaplar).
     last_reaction: Optional[WhatsAppReactionItem] = None

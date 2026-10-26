@@ -40,6 +40,13 @@ from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from backend.app.core.datetime_utils import utc_now_naive
 
+# Bir sohbetin `last_message_at` damgasi, elimizdeki EN YENI mesaj satirindan bu
+# kadar ilerideyse "kismi gecmis boslugu" bildirilir (bkz. list_conversations).
+# 10 dk secildi cunku mesaj satiri uretmeyen aktiviteler (reaksiyon, arama)
+# damgayi birkac saniye ileri tasiyabiliyor; olcumde 11 reaksiyon sohbetinin
+# 11'inde fark 0 sn idi.
+HISTORY_GAP_THRESHOLD_SECONDS = 600
+
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
@@ -703,13 +710,21 @@ async def list_conversations(
     # bittiginde gosterir (last_message_state).
     conv_ids = [r.id for r in rows]
     counts_map: Dict[int, int] = {}
+    newest_msg_map: Dict[int, Any] = {}
     if conv_ids:
         cnt_res = await db.execute(
-            select(Message.conversation_id, func.count())
+            select(
+                Message.conversation_id,
+                func.count(),
+                func.max(func.coalesce(Message.external_timestamp, Message.created_at)),
+            )
             .where(Message.conversation_id.in_(conv_ids))
             .group_by(Message.conversation_id)
         )
-        counts_map = {cid: int(n) for cid, n in cnt_res.fetchall()}
+        for cid, n, newest_ts in cnt_res.fetchall():
+            counts_map[cid] = int(n)
+            if newest_ts is not None:
+                newest_msg_map[cid] = newest_ts
 
     # Liste rozeti: her sohbetin EN SON mesajina birakilan EN YENI ifade.
     # Tek sorgu; eski bir mesaja birakilan ifadeyi liste gostermez (kural
@@ -856,6 +871,26 @@ async def list_conversations(
                 lang="tr",
             )
         msg_count = counts_map.get(r.id, 0)
+        # KISMI gecmis boslugu: satirlar VAR ama en yeni satir, sohbetin
+        # damgasindan belirgin sekilde ESKI. Bu, "0 satir" durumundan farkli ve
+        # daha sinsi: durum RESOLVED kalir (onizleme var), liste dogru yerde
+        # siralar, ama sohbeti acan kisi thread'in erken bittigini HIC anlamaz.
+        # Canli olcum (2026-10-27): conv 37863 damga 27.07 / en yeni kayit
+        # 31.01 (+176 gun), conv 37791 kendisi +20 saat.
+        #
+        # Esik 10 dk: reaksiyon/arama gibi mesaj-satiri uretmeyen aktiviteler
+        # damgayi birkac saniye ileri tasiyabilir (olcumde 11 reaksiyon
+        # sohbetinin 11'inde fark 0 sn); 10 dk bunlari disarida tutar, gercek
+        # bosluklari yakalar.
+        history_gap_seconds: Optional[int] = None
+        newest_at = newest_msg_map.get(r.id)
+        if msg_count and r.last_message_at is not None and newest_at is not None:
+            try:
+                gap = (r.last_message_at - newest_at).total_seconds()
+            except TypeError:
+                gap = None
+            if gap is not None and gap > HISTORY_GAP_THRESHOLD_SECONDS:
+                history_gap_seconds = int(gap)
         if msg_count == 0 and (r.last_message_at is not None or preview):
             # UNSYNCED: sohbetin AKTIVITE KANITI var (WhatsApp'in sohbet
             # listesinden gelen `last_message_at` ve/veya ozet) ama elimizde
@@ -907,6 +942,9 @@ async def list_conversations(
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 "message_count": msg_count,
                 "last_message_state": lm_state,
+                # Kismi gecmis boslugu (saniye) — yalnizca > HISTORY_GAP_THRESHOLD_SECONDS.
+                # `None` = bilinen bir bosluk yok (iddia degil, yokluk).
+                "history_gap_seconds": history_gap_seconds,
                 "last_reaction": reaction_map.get(r.id),
                 "unread_count": r.unread_count,
                 "status": r.status.value if hasattr(r.status, "value") else str(r.status),

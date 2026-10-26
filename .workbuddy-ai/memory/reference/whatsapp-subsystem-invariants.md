@@ -653,3 +653,32 @@ simulated. Practically: three decoy mappings plus two real pairs, `limit=1`, the
 **Related traps in the same shape.** `archive=true` and `archive=false` are two different
 questions on the same table (both must go through the same JOIN); and a `MIN(...)`/`GROUP BY`
 keeps the "one row per pair" contract when the join can multiply rows.
+
+## R. A missing MESSAGE ROW must not become a "no messages" claim (`UNSYNCED`)
+
+**Live tell (2026-10-27).** Production held **124** conversations: **33** with zero `messages` rows but a
+**valid** `last_message_at` (5 of them also carried a provider preview). `_list_conversations_impl`
+derived `last_message_state` from `message_count == 0` alone → `NO_MESSAGES` → the row rendered
+"Henüz WhatsApp Mesajı Yok" *while sitting at its true timestamp position, high in the list*. Every row
+was individually "correct"; the aggregate read as a chat list that lies about its own ordering. Same
+family as **A11**, inverted: an empty **preview** must not gate the timestamp, and a missing **row**
+must not become a "no messages" claim.
+
+**Rule.** `message_count == 0` is only evidence of an empty chat when *nothing else* attests activity.
+New state `UNSYNCED` = (timestamp OR preview) AND zero rows; `NO_MESSAGES` is reserved for no
+timestamp, no preview, no rows (a chat the user created but never used). The list keeps showing the
+preview (it is real information); the *thread* explains that history is not on this device. Rows from
+the session cache carry no state field at all, so the fallback must also key on `last_message_at`.
+
+**These chats are NOT recoverable on demand — do not "fix" it by inventing rows.**
+`fetchMessageHistory` pages **backwards from an anchor key**; a chat with zero local rows has no anchor,
+so the gateway returns `NO_ANCHOR` in ~3 ms. Verified live: the gateway's own chat list carried the
+timestamps (`905336891144@s.whatsapp.net`, 2026-10-26T00:22:03Z) while `messagesByChat` was empty, and
+`fetch_provider=true` still answered `provider_status=NOT_REQUESTED` because the fast path requires
+`isPagingOlder` (`before`/`oldestMsgId`) — the one request that needs the provider most is the one that
+never asks it. The whole dataset dated from a single re-pair (582 messages, all inserted in one hour),
+so this is "the phone never sent that history", not a persistence bug.
+
+**One-shot migrations are not a guard.** `ensure_conversation_preview_messages` synthesises a message
+row for preview-without-rows chats, but it runs at **boot**: conversations created afterwards (here, at
+21:24, after the last start) keep the false state until the next restart.
