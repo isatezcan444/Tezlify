@@ -679,6 +679,37 @@ timestamps (`905336891144@s.whatsapp.net`, 2026-10-26T00:22:03Z) while `messages
 never asks it. The whole dataset dated from a single re-pair (582 messages, all inserted in one hour),
 so this is "the phone never sent that history", not a persistence bug.
 
-**One-shot migrations are not a guard.** `ensure_conversation_preview_messages` synthesises a message
-row for preview-without-rows chats, but it runs at **boot**: conversations created afterwards (here, at
-21:24, after the last start) keep the false state until the next restart.
+**One-shot migrations are not a guard — and this one was the disease.** `ensure_conversation_preview_messages`
+synthesised a message row for preview-without-rows chats, but it ran at **boot**, so conversations created
+afterwards kept the false state until the next restart. Worse, the synthesis itself was wrong: see **S**.
+Both the boot migration and the live path were **removed** (`9e0e7c1`-era change); the function is now
+`purge_synthetic_preview_messages` and only deletes what the old version invented.
+
+## S. A PREVIEW is a summary string, not a message — never synthesise a row from it
+
+**Live tell (2026-10-27).** Production carried exactly one row with
+`wa_message_id = 'preview_37833_1788973240'`, `direction=OUTBOUND`, `message_type=TEXT`, `body='Şu mesaja
+❤️ ifadesini bıraktınız'`. The preview was a **reaction marker**, and the synthesis rendered it as a
+message the user had typed. Two writers did this:
+
+1. `whatsapp_service.get_messages` — when the DB held 0 rows for the chat and the conversation carried a
+   preview, it INSERTed a `Message` (body = preview, id = `preview_<conv>_<epoch>`) and committed.
+2. `migrations.ensure_conversation_preview_messages` — the same INSERT as SQL, at every boot.
+
+**Why it is worse than the symptom it "fixed".** The synthetic id is not a WhatsApp message key, but
+`get_messages` then computed `oldest_message_id` from it and `sync.py` used it as
+`oldest_msg_id=` — the **pagination anchor**. WhatsApp can never resolve `preview_…`, so the chat could
+never load history: the cure guaranteed the disease it was hiding. It also converted `UNSYNCED` into a
+fake `RESOLVED` (msg_count 1), so the truthful state never surfaced. Direct violation of AGENTS.md:
+never fabricate data.
+
+**Rule.** `last_message_preview` is a *display summary*. It may be shown in the list, and it may be one
+of the two inputs to `UNSYNCED` (**R**) — it must **never** become a row, a body, a sender, a direction,
+or an anchor. The honest answer for "we hold no rows" is an empty page + `UNSYNCED`.
+
+**Cleanup is narrow by construction.** `purge_synthetic_preview_messages` matches only
+`^preview_[0-9]+_[0-9]+$` (regex-validated in Python, `LIKE 'preview%'` as the prefilter) — real keys
+look like `3EB0…` / `false_…`, so nothing genuine can match. **Tell for a regression:** any row whose
+`wa_message_id` matches that shape, or a chat whose thread shows exactly one message that is really a
+preview marker.
+
