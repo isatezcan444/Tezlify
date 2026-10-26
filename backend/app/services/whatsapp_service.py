@@ -1023,10 +1023,14 @@ def resolve_has_more(
         return True
     ev = evidence or {}
     state = ev.get("state")
+    if state in ("FULLY_EXHAUSTED", "CURSOR_STALLED") or ev.get("provider_exhausted"):
+        return False
     if state in ("TIMEOUT", "PROVIDER_ERROR"):
         return True
-    # A partial page with no older rows locally and no active provider failure:
-    # genuinely the end of history.
+    if not ev.get("provider_checked") and rows_returned > 0:
+        # The provider has not been queried yet and this thread has messages:
+        # allow upward scroll to query older provider history.
+        return True
     return False
 
 

@@ -657,7 +657,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (nearBottom) setShowNewMessagePill(false);
     trackAnchor();
     if (programmaticRef.current) { programmaticRef.current = false; return; }   // our own pin's echo
-    if (scrollTop < 120 && hasMore && !loadingOlder && initialScrollDoneRef.current) { handleLoadOlder(); return; }
+    if (scrollTop < 250 && hasMore && !loadingOlder && initialScrollDoneRef.current) { handleLoadOlder(); return; }
     const topsArr = topsOf();
     const r = deriveRange(topsArr, scrollTop, clientHeight);
     if (r.start !== winRef.current.start || r.end !== winRef.current.end) {
@@ -687,7 +687,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     // (see `legacyProgrammaticUntilRef`). Position tracking above still runs —
     // only the pagination trigger is suppressed.
     if (Date.now() < legacyProgrammaticUntilRef.current) return;
-    if (scrollTop < 120 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
+    if (scrollTop < 250 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
       handleLoadOlder();
     }
   };
@@ -914,8 +914,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       cont.scrollTop = cont.scrollHeight;
     } else {
       cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-    bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
     setIsNearBottom(true);
     setShowNewMessagePill(false);
   }, [geomOp, markLegacyProgrammatic]);
@@ -940,8 +940,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (sortedMessages.length > 0) {
       if (!initialScrollDoneRef.current) {
         userScrolledUpRef.current = false;
-        cont.scrollTop = cont.scrollHeight;
-        bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
+        if (virtualizeRef.current) {
+          fsCtxRef.current = 'passive';
+          geomOp('initial', { pin: 'bottom', affected: [] });
+        } else {
+          cont.scrollTop = cont.scrollHeight;
+        }
         initialScrollDoneRef.current = true;
         prevMessagesCountRef.current = sortedMessages.length;
         prevNewestKeyRef.current = newestKey;
@@ -952,14 +956,16 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         // Double pin via requestAnimationFrame to guarantee bottom position after initial layout
         requestAnimationFrame(() => {
           if (containerRef.current && !userScrolledUpRef.current) {
-            containerRef.current.scrollTop = containerRef.current.scrollHeight;
+            if (!virtualizeRef.current) {
+              containerRef.current.scrollTop = containerRef.current.scrollHeight;
+            }
           }
         });
       }
     } else {
       setIsReady(true);
     }
-  }, [loading, conversationKey, sortedMessages.length, newestKey, effectiveMessages.length]);
+  }, [loading, conversationKey, sortedMessages.length, newestKey, effectiveMessages.length, geomOp]);
 
   // ResizeObserver: when media (videos, images, posters) load and expand the content wrapper,
   // or when composer / smart reply bar resizes the container viewport,
@@ -1147,7 +1153,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
               markUserInteracting();
             }
           }}
-          className={`flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden ${isReady ? 'opacity-100' : 'opacity-0'}`}
+          className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
           style={{ overflowAnchor: 'none', scrollBehavior: 'auto' }}
         >
           <div ref={contentWrapperRef} className="flex flex-col min-h-full space-y-1">
@@ -1191,7 +1197,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
           }
         }}
         style={{ overflowAnchor: 'none', scrollBehavior: 'auto' }}
-        className={`flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden ${isReady ? 'opacity-100' : 'opacity-0'}`}
+        className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
       >
         {win.start <= 0 && loadingOlderIndicator}
         <div aria-hidden style={{ height: `${topSpacer}px` }} />

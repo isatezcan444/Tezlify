@@ -637,12 +637,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       onMessages: (convId, messages, meta) => {
         setMessagePaging((prev) => {
           const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest;
-          const hasMore = Boolean(!alreadyExhausted && meta.has_more && messages.length >= 50);
+          const hasMore = Boolean(!alreadyExhausted && meta.has_more !== false);
           return {
             ...prev,
             [convId]: {
               hasMore,
-              oldest: meta.oldest ?? undefined,
+              oldest: meta.oldest ?? (messages[0] ? (messages[0].id as number) : undefined),
               loading: false,
               error: false,
             },
@@ -1005,8 +1005,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [activeMessages]);
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
   const activeHasMore = Boolean(
-    activePaging?.hasMore &&
-    (activePaging.oldest != null || activeMessages.length >= 50)
+    activePaging?.hasMore !== false &&
+    activeMessages.length > 0
   );
   const activeLoadingOlder = Boolean(activePaging?.loading);
   const activePagingError = Boolean(activePaging?.error);
@@ -1025,7 +1025,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeLoadOlder = useCallback(async () => {
     const oldestId = activePaging?.oldest ?? (activeMessages[0] ? (activeMessages[0].id as number) : undefined);
-    if (!selectedConv || !activePaging?.hasMore || !oldestId || activePaging.loading) return;
+    if (!selectedConv || activePaging?.hasMore === false || !oldestId || activePaging?.loading) return;
     const convId = selectedConv.id;
     // Claim the lock BEFORE reading any state. The `activePaging.loading` check
     // above cannot see a fetch that started in this same tick, because React has
@@ -1077,7 +1077,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } else {
         setMessagePaging((prev) => ({
           ...prev,
-          [convId]: { ...(prev[convId] || activePaging), loading: false, error: true },
+          [convId]: { ...(prev[convId] || activePaging), loading: false, error: false },
         }));
       }
       console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
@@ -1085,7 +1085,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.clearTimeout(timeout);
       releaseOlderPage(pagingLocksRef.current, convId, request);
     }
-  }, [selectedConv, activePaging]);
+  }, [selectedConv, activePaging, activeMessages]);
 
   // Faz 16 (Sorun 3/9): sohbet listesi sayfa boyutu / arka plan doldurma
   // sabitleri modul seviyesinde yasar (CONVERSATION_PAGE_SIZE, ...
