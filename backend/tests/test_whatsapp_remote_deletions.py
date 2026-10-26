@@ -26,12 +26,24 @@ import pytest
 from backend.app.services.whatsapp.orchestration.events import WhatsAppEventOrchestrator
 
 
+class _Scalars:
+    def __init__(self, values):
+        self._values = list(values or [])
+
+    def all(self):
+        return list(self._values)
+
+
 class _Rows:
-    def __init__(self, rowcount=0):
+    def __init__(self, rowcount=0, values=None):
         self.rowcount = rowcount
+        self._values = list(values or [])
 
     def scalar_one(self):
         return 0
+
+    def scalars(self):
+        return _Scalars(self._values)
 
 
 class _Db:
@@ -39,15 +51,25 @@ class _Db:
 
     bind = None
 
-    def __init__(self, rowcounts=None):
+    def __init__(self, rowcounts=None, results=None, get_conv=None):
         self.statements = []
         self.orm_deletes = []
         self.commits = 0
+        self.get_calls = []
         self._rowcounts = list(rowcounts or [])
+        # Optional per-call scalar payloads, consumed in order. The older tests
+        # pass `rowcounts` only, so this stays empty for them.
+        self._results = list(results or [])
+        self._get_conv = get_conv
 
     async def execute(self, stmt):
         self.statements.append(str(stmt))
-        return _Rows(self._rowcounts.pop(0) if self._rowcounts else 1)
+        values = self._results.pop(0) if self._results else []
+        return _Rows(self._rowcounts.pop(0) if self._rowcounts else 1, values)
+
+    async def get(self, model, pk):
+        self.get_calls.append((model, pk))
+        return self._get_conv
 
     async def delete(self, obj):
         self.orm_deletes.append(obj)
@@ -182,6 +204,53 @@ async def test_malformed_jids_never_reach_the_database():
         assert res is None, f"{bad} must be skipped"
 
     assert not db.statements, "an invalid jid must not issue a single query"
+
+
+@pytest.mark.asyncio
+async def test_messages_deleted_on_an_unmappable_lid_resolves_through_the_rows():
+    """A delete can arrive on a JID we cannot map to a chat.
+
+    Production logged `messages_deleted: sohbet yok (179654287745034@lid)`: the
+    LID had no phone mapping, while the rows themselves sit in the
+    phone-identity conversation (`remoteJidAlt` at ingest). Dropping the event
+    leaves a message the user deleted on their phone visible here forever, so the
+    rows — the authoritative `wa_message_id` owners — resolve the chat instead.
+    """
+    conv = MagicMock(id=77)
+    # 1) the id lookup, 2) the DELETE, 3) the remaining count.
+    db = _Db(rowcounts=[0, 1, 0], results=[[77]], get_conv=conv)
+    orch = _orchestrator(db, conv=None)  # the jid lookup finds nothing
+
+    res = await orch.ingest_gateway_event(
+        {
+            "event": "messages_deleted",
+            "conversation_id": "179654287745034@lid",
+            "wa_message_ids": ["A1"],
+        }
+    )
+
+    assert res is not None, "the delete must not be dropped just because the jid is unmapped"
+    assert res["conversation_id"] == 77, "the row's own conversation is the right target"
+    assert res["messages_deleted"] == 1
+    assert db.get_calls and db.get_calls[0][1] == 77
+
+
+@pytest.mark.asyncio
+async def test_messages_deleted_spanning_two_chats_is_skipped_not_guessed():
+    """Ids that point at two chats do not describe a per-chat delete."""
+    db = _Db(rowcounts=[0], results=[[77, 78]])
+    orch = _orchestrator(db, conv=None)
+
+    res = await orch.ingest_gateway_event(
+        {
+            "event": "messages_deleted",
+            "conversation_id": "179654287745034@lid",
+            "wa_message_ids": ["A1"],
+        }
+    )
+
+    assert res is None
+    assert not db.orm_deletes
 
 
 @pytest.mark.asyncio

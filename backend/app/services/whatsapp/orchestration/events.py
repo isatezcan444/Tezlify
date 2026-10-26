@@ -2495,6 +2495,39 @@ class WhatsAppEventOrchestrator:
         event["reactions_deleted"] = int(reactions_deleted or 0)
         return event
 
+    async def _conversation_for_message_ids(
+        self, db: AsyncSession, owner: str, wa_ids: List[str]
+    ) -> Optional[Conversation]:
+        """Conversation owning the given WhatsApp message ids, when unambiguous.
+
+        Identity fallback for delete events. A `messages_deleted` can arrive on a
+        JID we cannot resolve to a chat — an `@lid` whose phone we never learned,
+        while the rows themselves were filed under the phone identity (the
+        `remoteJidAlt` rule at ingest). `wa_message_id` is the authoritative
+        message key, so the rows are a better witness than the JID; resolving
+        through them is what stops a message deleted on the phone from staying
+        visible here forever.
+
+        Returns None when the ids span more than one conversation: a per-chat
+        delete that appears to touch two chats is not something to guess at.
+        """
+        if not wa_ids:
+            return None
+        conv_ids = (
+            await db.execute(
+                select(Message.conversation_id)
+                .where(
+                    get_user_filter(Message.user_id, owner),
+                    Message.wa_message_id.in_(wa_ids),
+                )
+                .distinct()
+            )
+        ).scalars().all()
+        unique = {int(c) for c in conv_ids if c is not None}
+        if len(unique) != 1:
+            return None
+        return await db.get(Conversation, unique.pop())
+
     async def _ingest_messages_deleted(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
         """Telefonda mesaj silindi ya da sohbet TEMIZLENDI.
 
@@ -2526,6 +2559,12 @@ class WhatsAppEventOrchestrator:
         event["user_id"] = owner
 
         conv = await find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
+        if conv is None:
+            # Do not drop the delete on an unmappable identity: resolve the chat
+            # through the message rows instead (see the helper's docstring).
+            conv = await self._conversation_for_message_ids(
+                db, owner, [str(x) for x in (event.get("wa_message_ids") or []) if x]
+            )
         if conv is None:
             return _skip_event(event, f"messages_deleted: sohbet yok ({clean_jid})")
         conv_id = int(conv.id)
