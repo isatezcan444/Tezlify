@@ -105,6 +105,54 @@ _SYNC_CHAT_PAGE_SIZE = 40     # conversation snapshot page size
 _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
 
 
+def _column_scalar_default(column) -> Any:
+    """The column's scalar Python-side default, or None when it has none.
+
+    `_insert_messages_resilient` builds raw VALUES dicts, which bypasses the
+    defaults SQLAlchemy would otherwise apply at flush time. Only *scalar*
+    defaults are usable here; callable ones (e.g. `datetime.utcnow`) are left
+    alone because the surrounding code already supplies those explicitly.
+    """
+    default = getattr(column, "default", None)
+    if default is None or getattr(default, "is_scalar", False) is not True:
+        return None
+    return default.arg
+
+
+def _normalize_message_insert_values(item: Any, now: Any) -> Dict[str, Any]:
+    """Build the VALUES dict for one message row.
+
+    Both bulk writers (`_insert_messages_resilient` and
+    `_persist_sync_batch_safely`) go through here so they cannot drift apart —
+    they previously carried two copies of the same hardcoded fallback list, and
+    the list went stale when `is_view_once` was added.
+
+    This is a raw VALUES insert, so the ORM's flush-time column defaults never
+    run. A NOT NULL column the caller left unset would therefore be sent as an
+    explicit NULL and the constraint would fire (on a fresh schema every synced
+    insert broke), while production silently stored NULLs because its column had
+    been added nullable. Derive the value from the column itself rather than
+    keeping a name list.
+    """
+    is_dict = isinstance(item, dict)
+    val_dict: Dict[str, Any] = {}
+    for column in Message.__table__.columns:
+        if column.name == "id":
+            continue
+        val = item.get(column.name) if is_dict else getattr(item, column.name, None)
+        if val is None:
+            if column.name in ("created_at", "updated_at"):
+                val = now
+            elif column.name == "status":
+                val = ConversationMessageStatus.RECEIVED
+            elif column.name == "message_type":
+                val = MessageType.TEXT
+            elif column.nullable is False and _column_scalar_default(column) is not None:
+                val = _column_scalar_default(column)
+        val_dict[column.name] = val
+    return val_dict
+
+
 async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> List[Message]:
     """Insert message rows, surviving `uq_msg_conv_wa_message_id` races."""
     if not rows:
@@ -116,24 +164,7 @@ async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> L
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
         now = utc_now_naive()
-        values = []
-        for row in rows:
-            val_dict = {}
-            for column in Message.__table__.columns:
-                if column.name == "id":
-                    continue
-                val = getattr(row, column.name, None)
-                if val is None:
-                    if column.name in ("created_at", "updated_at"):
-                        val = now
-                    elif column.name == "status":
-                        val = ConversationMessageStatus.RECEIVED
-                    elif column.name == "message_type":
-                        val = MessageType.TEXT
-                    elif column.name in ("is_forwarded", "is_pinned"):
-                        val = False
-                val_dict[column.name] = val
-            values.append(val_dict)
+        values = [_normalize_message_insert_values(row, now) for row in rows]
         stmt = (
             ins_cls(Message)
             .values(values)
@@ -195,24 +226,9 @@ async def _persist_sync_batch_safely(
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
         now = utc_now_naive()
-        normalized_values = []
-        for item in values:
-            val_dict = {}
-            for column in Message.__table__.columns:
-                if column.name == "id":
-                    continue
-                val = item.get(column.name) if isinstance(item, dict) else getattr(item, column.name, None)
-                if val is None:
-                    if column.name in ("created_at", "updated_at"):
-                        val = now
-                    elif column.name == "status":
-                        val = ConversationMessageStatus.RECEIVED
-                    elif column.name == "message_type":
-                        val = MessageType.TEXT
-                    elif column.name in ("is_forwarded", "is_pinned"):
-                        val = False
-                val_dict[column.name] = val
-            normalized_values.append(val_dict)
+        normalized_values = [
+            _normalize_message_insert_values(item, now) for item in values
+        ]
         stmt = (
             ins_cls(Message)
             .values(normalized_values)

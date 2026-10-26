@@ -1070,6 +1070,16 @@ async def test_insert_messages_resilient_heterogeneous_nulls():
         inserted = await sync_mod._insert_messages_resilient(db, [r1, r2, r3])
         assert len(inserted) == 3
 
+        # A NOT NULL boolean whose value the caller left unset must get its
+        # COLUMN default, not an explicit NULL: this raw VALUES insert bypasses
+        # the ORM's flush-time defaults. It used to be a hardcoded name list,
+        # so adding `is_view_once` broke every synced insert on a NOT NULL
+        # schema while production quietly stored NULLs.
+        for row in inserted:
+            assert row.is_view_once is False
+            assert row.is_forwarded is False
+            assert row.is_pinned is False
+
         # Test duplicate DO NOTHING
         inserted_dup = await sync_mod._insert_messages_resilient(db, [r1, r2, r3])
         assert len(inserted_dup) == 0
