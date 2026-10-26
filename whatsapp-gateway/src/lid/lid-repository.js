@@ -33,15 +33,30 @@ export function createLidRepository({ pool, sessionsDir, logger, onOrphaned = nu
     if (!pool) return [];
     try {
       const res = await pool.query(
-        `SELECT gateway_id, user_id FROM public.whatsapp_sessions WHERE gateway_id IS NOT NULL`
+        `SELECT gateway_id, user_id FROM public.whatsapp_sessions WHERE gateway_id IS NOT NULL
+         UNION
+         SELECT gs.session_id AS gateway_id, ws.user_id
+         FROM whatsapp_private.gateway_sessions gs
+         JOIN public.whatsapp_sessions ws
+           ON (ws.gateway_id::text = gs.session_id OR (ws.session_name = gs.session_name AND ws.session_name IS NOT NULL AND ws.session_name != ''))`
       );
       return res.rows.map((r) => ({
         sessionId: String(r.gateway_id),
         ownerId: r.user_id ? String(r.user_id) : null,
       }));
     } catch (err) {
-      logger.warn({ err: err?.message }, 'Failed to load session owners for LID scoping');
-      return [];
+      try {
+        const fallback = await pool.query(
+          `SELECT gateway_id, user_id FROM public.whatsapp_sessions WHERE gateway_id IS NOT NULL`
+        );
+        return fallback.rows.map((r) => ({
+          sessionId: String(r.gateway_id),
+          ownerId: r.user_id ? String(r.user_id) : null,
+        }));
+      } catch {
+        logger.warn({ err: err?.message }, 'Failed to load session owners for LID scoping');
+        return [];
+      }
     }
   }
 

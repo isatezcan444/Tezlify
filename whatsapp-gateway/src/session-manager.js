@@ -2657,7 +2657,7 @@ export function createSessionManager({
       return msg?.user_receipts ? Object.values(msg.user_receipts) : [];
     },
 
-    _applyLidMapping(session, lid, phoneJid) {
+    _applyLidMapping(session, lid, phoneJid, { isHistorySync = false } = {}) {
       session = this._sess(session);
       const store = this._storeOf(session);
       const { contacts, chats, messagesByChat } = store;
@@ -2688,7 +2688,11 @@ export function createSessionManager({
           updated_at: new Date().toISOString(),
         });
         delete contacts.get(phoneKey).lid_pending;
-        emitEvent({ event: 'contact_synced', contact: contacts.get(phoneKey) });
+        emitEvent({
+          event: 'contact_synced',
+          contact: contacts.get(phoneKey),
+          ...(isHistorySync ? { _internal_only: true } : {}),
+        });
       }
 
       const lidChat = chats.get(lidKey);
@@ -2711,7 +2715,11 @@ export function createSessionManager({
           updated_at: new Date().toISOString(),
         };
         chats.set(phoneKey, mergedChat);
-        emitEvent({ event: 'conversation_updated', conversation: { ...mergedChat } });
+        emitEvent({
+          event: 'conversation_updated',
+          conversation: { ...mergedChat },
+          ...(isHistorySync ? { _internal_only: true } : {}),
+        });
       } else if (pending) {
         const chat = chats.get(phoneKey);
         if (chat) {
@@ -2721,7 +2729,11 @@ export function createSessionManager({
             chat.name = picked.name;
             chat.name_source = picked.name_source || null;
             chat.updated_at = new Date().toISOString();
-            emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+            emitEvent({
+              event: 'conversation_updated',
+              conversation: { ...chat },
+              ...(isHistorySync ? { _internal_only: true } : {}),
+            });
           }
         }
       }
@@ -2743,7 +2755,9 @@ export function createSessionManager({
             m.sender_name_source = migratedContact?.name_source || m.sender_name_source || null;
           }
           phoneMsgs.push(m);
-          emitEvent({ event: 'message_new', conversation_id: phoneKey, message: m });
+          if (!isHistorySync) {
+            emitEvent({ event: 'message_new', conversation_id: phoneKey, message: m });
+          }
         }
         phoneMsgs.sort((a, b) => (a.id || 0) - (b.id || 0));
         if (phoneMsgs.length > 2000) phoneMsgs.splice(0, phoneMsgs.length - 2000);
@@ -2755,6 +2769,7 @@ export function createSessionManager({
         lid: lidKey,
         phone_jid: phoneKey,
         gateway_session_id: session.id,
+        ...(isHistorySync ? { _internal_only: true } : {}),
       });
     },
 

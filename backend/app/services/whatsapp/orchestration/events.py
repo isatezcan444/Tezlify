@@ -109,6 +109,28 @@ _PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({"history_sync_completed"})
 # Rate-limit suppression for orphan event logging to avoid log flood
 _orphan_suppressed: Dict[str, Dict[str, Any]] = {}
 
+# Bounded LRU cache for fast-path event deduplication without database query
+_RECENT_PROCESSED_EVENT_IDS: deque[str] = deque(maxlen=10000)
+_RECENT_PROCESSED_EVENT_SET: set[str] = set()
+
+
+def _is_recently_processed_event(event_id: str) -> bool:
+    return event_id in _RECENT_PROCESSED_EVENT_SET
+
+
+def _mark_recently_processed_event(event_id: str) -> None:
+    if event_id not in _RECENT_PROCESSED_EVENT_SET:
+        if len(_RECENT_PROCESSED_EVENT_IDS) >= 10000:
+            oldest = _RECENT_PROCESSED_EVENT_IDS.popleft()
+            _RECENT_PROCESSED_EVENT_SET.discard(oldest)
+        _RECENT_PROCESSED_EVENT_IDS.append(event_id)
+        _RECENT_PROCESSED_EVENT_SET.add(event_id)
+
+
+def _clear_recently_processed_events_cache() -> None:
+    _RECENT_PROCESSED_EVENT_IDS.clear()
+    _RECENT_PROCESSED_EVENT_SET.clear()
+
 
 # ---------------------------------------------------------------------------
 # Deferred provider ACKs
@@ -2567,18 +2589,21 @@ class WhatsAppEventOrchestrator:
             "_enqueue_orphan_event", _enqueue_orphan_event
         )
 
+        evt = event.get("event") or event.get("event_type") or ""
+        if not event.get("gateway_session_id") and event.get("session_id"):
+            event["gateway_session_id"] = event["session_id"]
+        event_id: Optional[str] = None
+        if event.get("event_id"):
+            try:
+                event_id = str(uuid.UUID(str(event["event_id"])))
+            except (TypeError, ValueError):
+                logger.warning("Gateway olayi gecersiz event_id ile reddedildi (event=%s)", evt)
+                return None
+            if _is_recently_processed_event(event_id):
+                return {"_duplicate": True, "event_id": event_id}
+
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         async with session_factory() as db:
-            evt = event.get("event") or event.get("event_type") or ""
-            if not event.get("gateway_session_id") and event.get("session_id"):
-                event["gateway_session_id"] = event["session_id"]
-            event_id: Optional[str] = None
-            if event.get("event_id"):
-                try:
-                    event_id = str(uuid.UUID(str(event["event_id"])))
-                except (TypeError, ValueError):
-                    logger.warning("Gateway olayi gecersiz event_id ile reddedildi (event=%s)", evt)
-                    return None
             try:
                 if event_id and db.bind is not None and db.bind.dialect.name == "postgresql":
                     duplicate = await db.execute(
@@ -2589,6 +2614,7 @@ class WhatsAppEventOrchestrator:
                         {"event_id": event_id},
                     )
                     if duplicate.first() is not None:
+                        _mark_recently_processed_event(event_id)
                         return {"_duplicate": True, "event_id": event_id}
                 if evt == "message_new":
                     result = await ingest_message(db, event)
@@ -2633,6 +2659,8 @@ class WhatsAppEventOrchestrator:
                             {"event_id": event_id},
                         )
                         await db.commit()
+                    if event_id:
+                        _mark_recently_processed_event(event_id)
                     return None
                 if not result.get("user_id"):
                     logger.warning(
@@ -2652,6 +2680,8 @@ class WhatsAppEventOrchestrator:
                         {"event_id": event_id},
                     )
                 await db.commit()
+                if event_id:
+                    _mark_recently_processed_event(event_id)
 
                 # Dış Webhook Abonelerine Inbound WhatsApp mesajını bildir
                 if evt == "message_new" and isinstance(result, dict) and result.get("message"):

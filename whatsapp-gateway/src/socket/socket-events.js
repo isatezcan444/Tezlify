@@ -842,6 +842,7 @@ export function bindSocketEvents({
   sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings, lidPnMappings }) => {
     if (ignoreStaleSocketEvent('messaging-history.set')) return;
     try {
+      const applyHistoryLidMapping = (lid, phoneJid) => manager._applyLidMapping(session, lid, phoneJid, { isHistorySync: true });
       const rawMappings = [
         ...(Array.isArray(lidPnMappings) ? lidPnMappings : []),
         ...(Array.isArray(phoneNumberToLidMappings) ? phoneNumberToLidMappings : []),
@@ -849,15 +850,15 @@ export function bindSocketEvents({
       for (const m of rawMappings) {
         const lid = m?.lid || m?.lidJid;
         const pn = m?.pn || m?.pnJid;
-        if (lid && pn) applyLidMapping(lid, pn);
+        if (lid && pn) applyHistoryLidMapping(lid, pn);
       }
       for (const c of historyContacts || []) {
         if (!c?.id) continue;
         if (isBroadcastOnlyJid(c.id)) continue;
         if (isDegenerateJid(c.id)) continue;
         const phoneJid = contactPhoneJid(c);
-        if (c.lid && !isLidJid(c.id)) applyLidMapping(c.lid, c.id);
-        if (phoneJid && isLidJid(c.id)) applyLidMapping(c.id, phoneJid);
+        if (c.lid && !isLidJid(c.id)) applyHistoryLidMapping(c.lid, c.id);
+        if (phoneJid && isLidJid(c.id)) applyHistoryLidMapping(c.id, phoneJid);
         if (isLidJid(c.id)) continue;
         let merged = contacts.get(c.id) || {};
         if (c.name) merged = mergeContactName(merged, c.name, 'history');
@@ -881,7 +882,7 @@ export function bindSocketEvents({
         const jid = msg.key?.remoteJid;
         if (!jid) continue;
         if (isBroadcastOnlyJid(jid)) continue;
-        if (msg.key?.senderLid && msg.key?.senderPn) applyLidMapping(msg.key.senderLid, msg.key.senderPn);
+        if (msg.key?.senderLid && msg.key?.senderPn) applyHistoryLidMapping(msg.key.senderLid, msg.key.senderPn);
         const key = normalizeJid(jid);
         if (isBroadcastOnlyJid(key)) continue;
         // Even a sentinel/protocol-only row proves which chat this provider
@@ -1012,8 +1013,8 @@ export function bindSocketEvents({
         if (!jid) continue;
         if (isBroadcastOnlyJid(jid)) continue;
         if (isDegenerateJid(jid)) continue;
-        if (chat.lidJid && !isLidJid(jid)) applyLidMapping(chat.lidJid, jid);
-        if (isLidJid(jid) && chat.pnJid) applyLidMapping(jid, chat.pnJid);
+        if (chat.lidJid && !isLidJid(jid)) applyHistoryLidMapping(chat.lidJid, jid);
+        if (isLidJid(jid) && chat.pnJid) applyHistoryLidMapping(jid, chat.pnJid);
         const key = normalizeJid(jid);
         if (isBroadcastOnlyJid(key)) continue;
         touchedHistoryKeys.add(key);
@@ -1065,7 +1066,7 @@ export function bindSocketEvents({
         };
         chats.set(key, merged);
         storedChats += 1;
-        emitEvent({ event: 'conversation_updated', conversation: merged });
+        emitEvent({ event: 'conversation_updated', conversation: merged, _internal_only: true });
       }
       // A history chunk belongs only to the chats it names.  Resolving every
       // waiter for the session let chat A's realtime chunk prematurely finish

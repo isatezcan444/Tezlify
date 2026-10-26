@@ -334,7 +334,11 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     }
 
     const eventType = String(event?.event || event?.event_type || '');
-    if (eventType === 'session_sync_progress') {
+    if (Boolean(event?._internal_only)) {
+      sendLocal(event);
+      return;
+    }
+    if (eventType === 'session_sync_progress' || Boolean(event?._ephemeral)) {
       // NOT: ilerleme olayı kasıtlı olarak KALICI DEĞİLDİR (her history chunk'ı
       // için üretilir; outbox'a yazmak kuyruğu sel basar). Ephemeral bir UI
       // sinyalidir; kaybı veri kaybı değildir. Durable olaylar outbox yolundan
