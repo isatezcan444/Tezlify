@@ -267,14 +267,20 @@ fi
 CUTOVER=1
 # `--force-recreate` SART: compose bir container'i "guncel" sayip recreate
 # etmediginde yeni imaj canliya hic oturmaz ve surum kaydi olmayan bir imaji
-# gosterir (olculdu: `up -d --dry-run backend` → "Container tezlify-backend
-# Running", oysa latest etiketi yeni imaja kaymisti). Yeniden yaratmayi
-# compose'un degisiklik sezgisine birakmak yerine acikca istiyoruz.
+# ---------------------------------------------------------------------------
+# 4. CUTOVER — eski container'lari durdur, yenileri ayaga kaldir
+# ---------------------------------------------------------------------------
+DEPLOY_FLAG="/opt/tezlify/runtime/deploy_in_progress"
+mkdir -p /opt/tezlify/runtime
+touch "$DEPLOY_FLAG"
+
 log "cutover: compose up -d --force-recreate backend gateway"
 docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$BACKEND_SERVICE" "$GATEWAY_SERVICE"
 if ! wait_healthy tezlify-backend 8000 180; then
+  rm -f "$DEPLOY_FLAG"
   die "yeni backend 180 sn icinde saglikli olmadi"
 fi
+rm -f "$DEPLOY_FLAG"
 log "yeni backend saglikli"
 
 # Cutover'in gercekten YENI imaji calistirdigini kanitla: imaj kimligi
@@ -302,6 +308,17 @@ if [ -n "$FRONTEND_TAR" ]; then
   log "frontend yazildi: $(find "$FRONTEND_DIR" -type f | wc -l | tr -d ' ') dosya"
   # Onceki frontend yedeklerini dondur (en son 3'u tutulur, eskiler temizlenir)
   ls -1dt "$FRONTEND_DIR.prev-"* 2>/dev/null | tail -n +4 | xargs -r rm -rf || true
+fi
+
+# Caddyfile ve observer guncellemesi
+if [ -f "$PROJECT_DIR/Caddyfile" ]; then
+  cp -a "$PROJECT_DIR/Caddyfile" /opt/tezlify/Caddyfile
+  docker exec tezlify-caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+fi
+if [ -f "$PROJECT_DIR/scripts/whatsapp_reliability_collector.py" ]; then
+  mkdir -p /opt/tezlify/scripts
+  cp -a "$PROJECT_DIR/scripts/whatsapp_reliability_collector.py" /opt/tezlify/scripts/whatsapp_reliability_collector.py
+  python3 /opt/tezlify/scripts/whatsapp_reliability_collector.py >/dev/null 2>&1 || true
 fi
 
 # ---------------------------------------------------------------------------

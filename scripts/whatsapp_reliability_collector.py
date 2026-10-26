@@ -255,7 +255,16 @@ def collect_observation() -> Dict[str, Any]:
     }
 
 
+DEPLOY_FLAG = "/opt/tezlify/runtime/deploy_in_progress"
+
+
 def record_observation() -> Dict[str, Any]:
+    if os.path.exists(DEPLOY_FLAG):
+        time.sleep(10)
+        if os.path.exists(DEPLOY_FLAG):
+            # Deployment cutover in progress; skip recording to avoid false transient invariant failure
+            sys.exit(0)
+
     os.makedirs(RUNTIME_DIR, exist_ok=True)
     obs = collect_observation()
 

@@ -826,8 +826,10 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // "adjust state when a prop changes" pattern): React re-renders before
   // committing, so no intermediate state ever paints.
   const prevConversationKeyRef = useRef(conversationKey);
+  const prevRealMessagesCountRef = useRef(messages.length);
   if (conversationKey !== prevConversationKeyRef.current) {
     prevConversationKeyRef.current = conversationKey;
+    prevRealMessagesCountRef.current = messages.length;
     userScrolledUpRef.current = false;
     // legacy scroll/prepend guards
     isPrependingRef.current = false;
@@ -856,7 +858,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     setWin({ start: 0, end: -1 });
   }
 
-  // Smart Auto-Scroll when new messages arrive at the end
+  // Smart Auto-Scroll when new messages arrive at the end (always instant, zero animation)
   useEffect(() => {
     // Only handle incoming messages if initial load has already completed
     if (!initialScrollDoneRef.current || isPrependingRef.current) return;
@@ -877,12 +879,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         } else {
           const cont = containerRef.current;
           if (cont) {
-            markLegacyProgrammatic(500);
-            if (typeof cont.scrollTo === 'function') {
-              cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
-            } else {
-              cont.scrollTop = cont.scrollHeight;
-            }
+            markLegacyProgrammatic(150);
+            cont.scrollTop = cont.scrollHeight;
           }
         }
         setShowNewMessagePill(false);
@@ -909,24 +907,19 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const cont = containerRef.current;
     if (!cont) return;
     userScrolledUpRef.current = false;
-    markLegacyProgrammatic(behavior === 'instant' ? 250 : 600);
-    if (behavior === 'instant' || typeof cont.scrollTo !== 'function') {
-      cont.scrollTop = cont.scrollHeight;
-    } else {
-      cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
+    markLegacyProgrammatic(150);
+    cont.scrollTop = cont.scrollHeight;
     setIsNearBottom(true);
     setShowNewMessagePill(false);
   }, [geomOp, markLegacyProgrammatic]);
 
   const scrollToBottom = () => {
-    scrollToBottomNow('smooth');
+    scrollToBottomNow('instant');
   };
 
   // Initial scroll to bottom on mount, on load finishing, on a conversation
   // switch, and on the chat first getting content. Pre-paint positioning ensures
-  // the thread is directly positioned at its newest message without visible jumping.
+  // the thread is directly positioned at its newest message without visible jumping or animation.
   useLayoutEffect(() => {
     if (loading && effectiveMessages.length === 0) {
       setIsReady(false);
@@ -937,8 +930,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const cont = containerRef.current;
     if (!cont) return;
 
+    const isInitial = !initialScrollDoneRef.current;
+    const isFirstRealArrival = prevRealMessagesCountRef.current === 0 && messages.length > 0;
+    prevRealMessagesCountRef.current = messages.length;
+
     if (sortedMessages.length > 0) {
-      if (!initialScrollDoneRef.current) {
+      if (isInitial || isFirstRealArrival) {
         userScrolledUpRef.current = false;
         if (virtualizeRef.current) {
           fsCtxRef.current = 'passive';
@@ -965,7 +962,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     } else {
       setIsReady(true);
     }
-  }, [loading, conversationKey, sortedMessages.length, newestKey, effectiveMessages.length, geomOp]);
+  }, [loading, conversationKey, sortedMessages.length, newestKey, effectiveMessages.length, messages.length, geomOp]);
 
   // ResizeObserver: when media (videos, images, posters) load and expand the content wrapper,
   // or when composer / smart reply bar resizes the container viewport,
