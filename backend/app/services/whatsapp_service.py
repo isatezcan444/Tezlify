@@ -932,6 +932,7 @@ async def _hydrate_or_tolerate_provider_timeout(
     oldest_msg_id: Optional[str] = None,
     oldest_msg_from_me: Optional[bool] = None,
     provider_timeout_ms: Optional[int] = None,
+    history_session_id: Optional[str] = None,
 ) -> List[Message]:
     """One on-demand provider round-trip, where a timeout must not destroy local data.
 
@@ -981,6 +982,25 @@ async def _hydrate_or_tolerate_provider_timeout(
             "Provider history timed out (conv=%s); serving local rows instead of failing: %s",
             conv.id, exc,
         )
+        if history_session_id and conv.contact_id:
+            try:
+                cres = await db.execute(select(Contact.phone_e164).where(Contact.id == conv.contact_id))
+                phone_val = cres.scalar_one_or_none()
+                if phone_val:
+                    jid_val = phone_val[4:] if phone_val.startswith("jid:") else _phone_to_jid(phone_val)
+                    if jid_val:
+                        from backend.app.services.whatsapp.orchestration.history_evidence import record_on_demand_provider_result
+                        await record_on_demand_provider_result(
+                            db,
+                            session_id=history_session_id,
+                            jid=jid_val,
+                            requested_count=limit,
+                            provider_status="TIMEOUT",
+                            error_msg=str(exc),
+                        )
+                        await db.commit()
+            except Exception as rec_exc:
+                logger.debug("Failed to record provider timeout evidence: %s", rec_exc)
         return []
 
 
@@ -1260,7 +1280,8 @@ async def get_messages(
                                     # actively asking for those messages, so the
                                     # gateway's own full budget applies.
                                     provider_timeout_ms=None,
-                                    )
+                                    history_session_id=history_session_id,
+                                )
                                 if older:
                                     res = await db.execute(base)
                                     rows = list(res.scalars().all())
@@ -2069,6 +2090,7 @@ async def _run_bulk_message_sync(
     *,
     recovery_pass: bool = False,
     only_conv_ids: Optional[Set[int]] = None,
+    is_initial: Optional[bool] = None,
 ) -> None:
     # DIKKAT — bu shim orkestratorun ayni adli metodunu GOLGELER
     # (`_get_helper` once servis niteligini tercih eder). Bu yuzden imza
@@ -2080,6 +2102,7 @@ async def _run_bulk_message_sync(
     return await _sync_orchestrator._run_bulk_message_sync(
         db, job, jid_by_conv, gateway_id, ws_session=ws_session,
         recovery_pass=recovery_pass, only_conv_ids=only_conv_ids,
+        is_initial=is_initial,
     )
 
 

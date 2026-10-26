@@ -657,7 +657,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (nearBottom) setShowNewMessagePill(false);
     trackAnchor();
     if (programmaticRef.current) { programmaticRef.current = false; return; }   // our own pin's echo
-    if (scrollTop < 250 && hasMore && !loadingOlder && initialScrollDoneRef.current) { handleLoadOlder(); return; }
+    if (scrollTop < 350 && hasMore && !loadingOlder && initialScrollDoneRef.current) { handleLoadOlder(); return; }
     const topsArr = topsOf();
     const r = deriveRange(topsArr, scrollTop, clientHeight);
     if (r.start !== winRef.current.start || r.end !== winRef.current.end) {
@@ -687,7 +687,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     // (see `legacyProgrammaticUntilRef`). Position tracking above still runs —
     // only the pagination trigger is suppressed.
     if (Date.now() < legacyProgrammaticUntilRef.current) return;
-    if (scrollTop < 250 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
+    if (scrollTop < 350 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
       handleLoadOlder();
     }
   };
@@ -1039,7 +1039,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       <div
         role="status"
         aria-label={t('whatsapp.loadingMessages')}
-        className="flex-1 min-w-0 p-4 space-y-4 overflow-y-auto overflow-x-hidden bg-slate-50/40 dark:bg-slate-950/20 animate-in fade-in duration-200 ease-out"
+        className="flex-1 min-w-0 p-4 space-y-4 overflow-y-auto overflow-x-hidden bg-slate-50/40 dark:bg-slate-950/20"
       >
         <div className="flex justify-start">
           <Skeleton className="w-48 h-12 rounded-2xl rounded-tl-sm" />
@@ -1095,21 +1095,6 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     );
   }
 
-  const pagingBanner = (pagingError && hasMore) ? (
-    <div className="shrink-0 flex items-center justify-center gap-2 px-4 py-2 bg-rose-500/10 border-b border-rose-500/20 text-rose-600 dark:text-rose-400 text-[11px] font-bold">
-      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-      <span>{t('whatsapp.messagesLoadFailed')}</span>
-      {onLoadOlder && (
-        <button
-          type="button"
-          onClick={handleLoadOlder}
-          className="underline underline-offset-2 hover:opacity-80 cursor-pointer"
-        >
-          {t('leads.loadOlderMessages')}
-        </button>
-      )}
-    </div>
-  ) : null;
 
   const loadingOlderIndicator = loadingOlder ? (
     <div className="flex justify-center py-2 shrink-0" data-testid="loading-older-indicator">
@@ -1138,7 +1123,6 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   if (!virtualize) {
     return (
       <div className={`relative flex-1 min-w-0 flex flex-col min-h-0 ${isDefaultTheme ? 'whatsapp-chat-bg' : ''}`} style={isDefaultTheme ? undefined : wallpaperStyle}>
-        {pagingBanner}
         <div
           ref={containerRef}
           onScroll={handleScroll}
@@ -1181,7 +1165,6 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   return (
     <div className={`relative flex-1 min-w-0 flex flex-col min-h-0 ${isDefaultTheme ? 'whatsapp-chat-bg' : ''}`} style={isDefaultTheme ? undefined : wallpaperStyle}>
-      {pagingBanner}
       <div
         ref={containerRef}
         onScroll={handleScroll}

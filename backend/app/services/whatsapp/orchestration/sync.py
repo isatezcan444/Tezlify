@@ -1479,6 +1479,7 @@ class WhatsAppSyncOrchestrator:
         *,
         recovery_pass: bool = False,
         only_conv_ids: Optional[Set[int]] = None,
+        is_initial: Optional[bool] = None,
     ) -> None:
         """Pulls messages from the gateway's bulk channel and persists them.
 
@@ -1533,10 +1534,11 @@ class WhatsAppSyncOrchestrator:
         # Initial sync check: if this session hasn't completed initial sync yet,
         # we must NOT filter history messages with a watermark (which could be poisoned
         # by previous sessions or old test messages).
-        is_initial = (
-            ws_session is None
-            or getattr(ws_session, "initial_sync_completed_at", None) is None
-        )
+        if is_initial is None:
+            is_initial = (
+                ws_session is None
+                or getattr(ws_session, "initial_sync_completed_at", None) is None
+            )
         if recovery_pass or is_initial:
             since_epoch = None
         else:
@@ -1917,8 +1919,9 @@ class WhatsAppSyncOrchestrator:
                     # still arriving; the loading gate then opens and the list keeps
                     # growing (production report, 2026-10-02). `job.stage` stays
                     # "starting" for the duration, which is what the UI shows.
+                    is_initial_run = ws_session.initial_sync_completed_at is None
                     gw_ready_phase = "ready"
-                    if ws_session.initial_sync_completed_at is None:
+                    if is_initial_run:
                         gw_ready_phase = await await_gateway_history_ready(gateway_id)
                     if job.cancel_requested:
                         raise asyncio.CancelledError()
@@ -2021,7 +2024,9 @@ class WhatsAppSyncOrchestrator:
                     # turunun onkosulu bu (bkz. `_backfill_empty_conversations`).
                     bulk_ok = await bulk_channel_available(gateway_id)
                     if bulk_ok:
-                        await run_bulk_message_sync(db, job, session_jids, gateway_id, ws_session=ws_session)
+                        await run_bulk_message_sync(
+                            db, job, session_jids, gateway_id, ws_session=ws_session, is_initial=is_initial_run
+                        )
                     else:
                         logger.warning("Gateway bulk kanali yok — legacy per-chat sync (owner=%s)", owner)
                         await sync_conversations_impl(db, owner, session=ws_session)

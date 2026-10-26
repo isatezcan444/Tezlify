@@ -240,7 +240,8 @@ export class WhatsAppRepository {
     conversationId: number,
     params?: { limit?: number; before?: number; signal?: AbortSignal },
   ): Promise<ConversationMessagesResponse> {
-    await requireLive(params?.signal);
+    // Note: getConversationMessages queries the backend DB directly (which handles
+    // any provider hydration internally). No gateway probe is needed here.
     return WhatsAppApi.getMessages(conversationId, params);
   }
 
