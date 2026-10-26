@@ -20,8 +20,10 @@ Curated index only. Detail lives elsewhere, deliberately:
   rows** — dump size proves nothing.
 - **Deploy only via `scripts/deploy/host-release.sh`; never hand-reset `/opt/tezlify`.** (The checkout is
   **clean**; `.deployed-commit` is the authority — the old "left dirty" note is stale.) **Push is not
-  deploy.** It **force-recreates backend+gateway even with `--skip-build`** — never deploy a docs-only
-  commit (costs gateway state, §A6). **Prod is deliberately at `e8a86ee`, not `main`** — don't sync it.
+  deploy.** It **force-recreates backend+gateway even with `--skip-build`** — so use **`--no-gateway`**
+  for any release that does not touch `whatsapp-gateway/` or a compose file (the flag REFUSES, exit 1, if
+  `.deployed-commit..target` changes either — never trust the claim, it is verified). A gateway recreate
+  costs its in-memory store, §A6. (`--rollback-to` still recreates both.)
 - **Never run pytest on the dev DB** (some tests assert global row counts) — use a schema-only copy.
 
 ## WhatsApp invariants — the one-line "tell" each (full detail in the reference)
@@ -89,6 +91,17 @@ Curated index only. Detail lives elsewhere, deliberately:
   cached rows holding the old value for their full TTL (two 7-day consent-interstitial rows kept wrong
   titles until `expires_at` was forced into the past). Always pair a compute-path fix with a cache
   invalidation.
+- **A served type must come from the BYTES, never from the name or the client's claim.** Campaign media
+  trusted `file.content_type` on upload and then re-guessed the type from the stored *filename* and served
+  it `inline` — so `text/plain` + `evil.html` came back as `text/html` and executed on the API origin.
+  Sniff magic bytes at upload AND again at serve (that is what makes the rule retroactive over files
+  already stored with a lying extension); `inline` only for jpeg/png/webp, everything else `attachment`,
+  plus `nosniff`. `text/plain` has no magic bytes — it cannot be validated, and it was the carrier.
+- **A GLOBAL `unique=True` on a nullable identity column is a tenant-isolation bug, not a data-quality
+  guard.** It makes the second tenant's row impossible *and* pushes the code into "merge into whatever row
+  matched" — a cross-tenant write. Use a PARTIAL composite index (`(user_id, col) WHERE col IS NOT NULL`)
+  and scope every dedup lookup by tenant. Migration order matters: create the new index first, drop the
+  old global one only if it succeeded, in ONE transaction.
 
 ## Operational quick hits — full detail in `reference/production-ops.md`
 
