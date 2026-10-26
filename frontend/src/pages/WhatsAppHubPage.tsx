@@ -637,7 +637,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       onMessages: (convId, messages, meta) => {
         setMessagePaging((prev) => {
           const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest;
-          const hasMore = Boolean(!alreadyExhausted && meta.has_more);
+          const hasMore = Boolean(!alreadyExhausted && meta.has_more && messages.length >= 50);
           return {
             ...prev,
             [convId]: {
@@ -1004,7 +1004,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return activeMessages.filter((m) => Boolean(m.is_pinned));
   }, [activeMessages]);
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
-  const activeHasMore = Boolean(activePaging?.hasMore && (activePaging.oldest != null || activeMessages.length > 0));
+  const activeHasMore = Boolean(
+    activePaging?.hasMore &&
+    (activePaging.oldest != null || activeMessages.length >= 50)
+  );
   const activeLoadingOlder = Boolean(activePaging?.loading);
   const activePagingError = Boolean(activePaging?.error);
   // Faz 16 (Sorun 2/10): ilk hidrasyon SURERKEN "mesaj yok" gosterilmez —
@@ -1063,15 +1066,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           res,
         ),
       }));
-    } catch (err) {
+    } catch (err: any) {
       if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;
-      // Sorun 2: history sayfasi basarisiz → mevcut mesajlar SILINMEZ,
-      // yalnizca retry edilebilir bir hata isareti konur. Global hata toast'i
-      // yok: tek sayfa hatasi tum sohbet ekranini hata gibi gostermez.
-      setMessagePaging((prev) => ({
-        ...prev,
-        [convId]: { ...(prev[convId] || activePaging), loading: false, error: true },
-      }));
+      const isNotFound = err?.status === 404 || err?.response?.status === 404;
+      if (isNotFound) {
+        setMessagePaging((prev) => ({
+          ...prev,
+          [convId]: { ...(prev[convId] || activePaging), hasMore: false, loading: false, error: false },
+        }));
+      } else {
+        setMessagePaging((prev) => ({
+          ...prev,
+          [convId]: { ...(prev[convId] || activePaging), loading: false, error: true },
+        }));
+      }
       console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
     } finally {
       window.clearTimeout(timeout);
