@@ -161,7 +161,7 @@ async def request_avatar_backfill(gateway_id: str, force: bool = False) -> Dict[
     ve UI'a canlı akar. Hata fail-closed: WhatsAppGatewayError yükselir.
     """
     payload = {"force": True} if force else None
-    return await _request("POST", f"{_s(gateway_id)}/avatars/backfill", json=payload)
+    return await _request("POST", f"{_s(gateway_id)}/avatars/backfill", json=payload, timeout=5.0)
 
 
 async def get_session_status(session_id: str) -> Dict[str, Any]:
@@ -225,7 +225,7 @@ async def list_contacts(gateway_id: str) -> List[Dict[str, Any]]:
 
 async def fetch_contact_status(gateway_id: str, jid: str) -> Dict[str, Any]:
     """Kişinin WhatsApp 'Hakkında' (About / Status) metnini gateway üzerinden çeker."""
-    data = await _request("GET", f"{_s(gateway_id)}/contacts/{jid}/status")
+    data = await _request("GET", f"{_s(gateway_id)}/contacts/{jid}/status", timeout=4.0)
     if not isinstance(data, dict):
         raise WhatsAppGatewayError("Gateway contact status response is invalid.")
     return data
@@ -244,7 +244,7 @@ async def list_conversations(
         params["limit"] = limit
     if offset is not None:
         params["offset"] = offset
-    return await _request("GET", f"{_s(gateway_id)}/conversations", params=params)
+    return await _request("GET", f"{_s(gateway_id)}/conversations", params=params, timeout=10.0)
 
 
 async def sync_group_subjects(
@@ -480,6 +480,7 @@ async def get_group_participants(
     return await _request(
         "GET",
         f"{_s(gateway_id)}/groups/{jid}/participants",
+        timeout=5.0,
     )
 
 
@@ -559,7 +560,7 @@ async def remove_group_avatar(
 
 
 async def mark_conversation_read(gateway_id: str, jid: str) -> Dict[str, Any]:
-    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/read")
+    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/read", timeout=3.5)
 
 
 async def delete_conversation_remote(
@@ -582,13 +583,13 @@ async def delete_conversation_remote(
 
 async def send_typing(gateway_id: str, jid: str, typing: bool = True, duration_ms: int = 4000) -> Dict[str, Any]:
     return await _request(
-        "POST", f"{_s(gateway_id)}/conversations/{jid}/typing", json={"typing": typing, "duration_ms": duration_ms}
+        "POST", f"{_s(gateway_id)}/conversations/{jid}/typing", json={"typing": typing, "duration_ms": duration_ms}, timeout=3.5
     )
 
 
 async def subscribe_presence(gateway_id: str, jid: str) -> Dict[str, Any]:
     return await _request(
-        "POST", f"{_s(gateway_id)}/conversations/{jid}/presence/subscribe"
+        "POST", f"{_s(gateway_id)}/conversations/{jid}/presence/subscribe", timeout=3.0
     )
 
 

@@ -342,25 +342,21 @@ export class WhatsAppRepository {
   }
 
   /**
-   * Quick Replies / Canned Responses CRUD
+   * Quick Replies / Canned Responses CRUD (persisted in PostgreSQL, accessible without gateway)
    */
   static async getQuickReplies(params?: { category?: string; search?: string }): Promise<QuickReply[]> {
-    await requireLive();
     return WhatsAppApi.getQuickReplies(params);
   }
 
   static async createQuickReply(data: QuickReplyCreateRequest): Promise<QuickReply> {
-    await requireLive();
     return WhatsAppApi.createQuickReply(data);
   }
 
   static async updateQuickReply(id: number, data: QuickReplyUpdateRequest): Promise<QuickReply> {
-    await requireLive();
     return WhatsAppApi.updateQuickReply(id, data);
   }
 
   static async deleteQuickReply(id: number): Promise<{ success: boolean; id: number }> {
-    await requireLive();
     return WhatsAppApi.deleteQuickReply(id);
   }
 

@@ -1555,13 +1555,20 @@ export function createSessionManager({
     },
 
     async subscribePresence(sessionId, jid) {
-      const session = this._requireConnectedSession(sessionId);
-      const key = resolveJidKey(this._storeOf(session), jid);
-      if (session.sock && typeof session.sock.presenceSubscribe === 'function') {
+      const session = this.getSession(sessionId);
+      if (!session || session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+        return { success: false, reason: 'SESSION_NOT_CONNECTED' };
+      }
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (typeof session.sock.presenceSubscribe === 'function') {
         try {
           if (!session._presenceSubs) session._presenceSubs = new Set();
           session._presenceSubs.add(key);
-          await session.sock.presenceSubscribe(key);
+          // Non-blocking trigger: never hang the HTTP response waiting for WhatsApp network ACK
+          session.sock.presenceSubscribe(key).catch((err) => {
+            logger.debug({ err: err?.message, jid: key }, 'presenceSubscribe error');
+          });
           return { success: true, jid: key };
         } catch (err) {
           logger.debug({ err: err?.message, jid: key }, 'presenceSubscribe error');
@@ -1572,29 +1579,50 @@ export function createSessionManager({
     },
 
     async sendTyping(sessionId, jid, typing = true, durationMs = 4000) {
-      const session = this._requireConnectedSession(sessionId);
+      const session = this.getSession(sessionId);
+      if (!session || session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+        return { success: false, reason: 'SESSION_NOT_CONNECTED' };
+      }
       const key = resolveJidKey(this._storeOf(session), jid);
       this._ensurePresenceSubscribed(session, key);
       try {
-        await session.sock.sendPresenceUpdate(typing ? 'composing' : 'paused', key);
+        await Promise.race([
+          session.sock.sendPresenceUpdate(typing ? 'composing' : 'paused', key),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
+        ]);
       } catch (err) {
-        logger.warn({ err }, 'Send typing presence error');
+        logger.debug({ err: err?.message }, 'Send typing presence error or timeout');
         return { success: false, error: err?.message || 'Presence update failed' };
       }
       return { success: true };
     },
 
     async markConversationRead(sessionId, jid) {
-      const session = this._requireConnectedSession(sessionId);
-      const { chats, messagesByChat } = this._storeOf(session);
-      const key = resolveJidKey(this._storeOf(session), jid);
+      const session = this.getSession(sessionId);
+      if (!session) throw new Error('Session not found');
+      const store = this._storeOf(session);
+      const { chats, messagesByChat } = store;
+      const key = resolveJidKey(store, jid);
+
+      // Local store unread count is always cleared on read action
+      const chat = chats.get(key);
+      if (chat) {
+        chat.unread_count = 0;
+        chat._unreadUpdatedForId = null;
+      }
+      this._emit({
+        event: 'conversation_read',
+        conversation_id: key,
+        unread_count: 0,
+        gateway_session_id: session.id,
+      });
+
+      if (session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+        return { success: true, receipt_sent: false, reason: 'SESSION_NOT_CONNECTED' };
+      }
+
       this._ensurePresenceSubscribed(session, key);
       const isGroup = key.includes('@g.us');
-      let gatewayOk = true;
-      let gatewayError = null;
-      // Whether a read receipt actually reached WhatsApp, as opposed to there
-      // being nothing cached to send one for. Kept explicit so the caller can
-      // distinguish the two instead of reading a bare `success: true`.
       let receiptSent = false;
       try {
         const list = messagesByChat.get(key) || [];
@@ -1607,41 +1635,24 @@ export function createSessionManager({
             participant: m.participant_jid || undefined,
           }));
           if (keys.length) {
-            await session.sock.readMessages(keys);
+            await Promise.race([
+              session.sock.readMessages(keys),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
+            ]);
             receiptSent = true;
-          } else {
-            // Okunacak bilinen gelen mesaj yok: gecersiz `{id: undefined}`
-            // anahtari Baileys'i patlatir. Gonderilecek kanaat YOKTUR —
-            // yerel sifirlama asagida yapilir, saglayiciya bayrak gitmez.
           }
         } else if (inbound.length) {
           const newest = inbound[inbound.length - 1];
-          await session.sock.readMessages([{ remoteJid: key, id: newest.wa_message_id, fromMe: false }]);
+          await Promise.race([
+            session.sock.readMessages([{ remoteJid: key, id: newest.wa_message_id, fromMe: false }]),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
+          ]);
           receiptSent = true;
         }
-        // 1:1 sohbette bilinen gelen mesaj yoksa da saglayiciya gecersiz
-        // anahtar gonderilmez (yukaridaki grup dalindaki ayni kural).
       } catch (err) {
-        gatewayOk = false;
-        gatewayError = err?.message || String(err);
-        logger.warn({ err }, 'Mark read error');
+        logger.debug({ err: err?.message, jid: key }, 'Mark read network error or timeout');
       }
-      if (gatewayOk) {
-        const chat = chats.get(key);
-        if (chat) {
-          chat.unread_count = 0;
-          chat._unreadUpdatedForId = null;
-        }
-        this._emit({
-          event: 'conversation_read',
-          conversation_id: key,
-          unread_count: 0,
-          gateway_session_id: session.id,
-        });
-      }
-      return gatewayOk
-        ? { success: true, receipt_sent: receiptSent }
-        : { success: false, error: gatewayError };
+      return { success: true, receipt_sent: receiptSent };
     },
 
     /**
@@ -3178,9 +3189,24 @@ export function createSessionManager({
         const sessionDir = getSessionDir(sessionsDir, session.id);
         const regLowFile = path.join(sessionDir, 'app-state-sync-version-regular_low.json');
         if (!fs.existsSync(regLowFile)) return new Set();
+
+        const stat = fs.statSync(regLowFile);
+        const mtimeMs = stat.mtimeMs;
+        const store = this._storeOf(session);
+        const candidatesSize = (store.chats?.size || 0) + (store.contacts?.size || 0);
+
+        if (session._archivedJidsCache &&
+            session._archivedJidsCache.mtimeMs === mtimeMs &&
+            session._archivedJidsCache.candidatesSize === candidatesSize) {
+          return session._archivedJidsCache.archivedSet;
+        }
+
         const regLow = JSON.parse(fs.readFileSync(regLowFile, 'utf8'));
         const indexMacs = new Set(Object.keys(regLow?.indexValueMap || {}));
-        if (!indexMacs.size) return new Set();
+        if (!indexMacs.size) {
+          session._archivedJidsCache = { mtimeMs, candidatesSize, archivedSet: new Set() };
+          return session._archivedJidsCache.archivedSet;
+        }
 
         const keyFiles = fs.readdirSync(sessionDir).filter((f) => f.startsWith('app-state-sync-key-'));
         const syncKeys = [];
@@ -3195,9 +3221,19 @@ export function createSessionManager({
             }
           } catch { /* ignore */ }
         }
-        if (!syncKeys.length) return new Set();
+        if (!syncKeys.length) {
+          session._archivedJidsCache = { mtimeMs, candidatesSize, archivedSet: new Set() };
+          return session._archivedJidsCache.archivedSet;
+        }
 
-        const store = this._storeOf(session);
+        // Hoist key derivation ONCE outside candidate loop to prevent event loop freeze
+        const expandedKeys = [];
+        for (const keyData of syncKeys) {
+          try {
+            expandedKeys.push(expandAppStateKeys(keyData));
+          } catch { /* ignore */ }
+        }
+
         const candidates = new Set([
           ...store.chats.keys(),
           ...store.contacts.keys(),
@@ -3210,9 +3246,8 @@ export function createSessionManager({
         const archivedSet = new Set();
         for (const jid of candidates) {
           const indexBuffer = Buffer.from(JSON.stringify(['archive', jid]));
-          for (const keyData of syncKeys) {
+          for (const keys of expandedKeys) {
             try {
-              const keys = expandAppStateKeys(keyData);
               const indexMac = hmacSign(indexBuffer, keys.indexKey).toString('base64');
               if (indexMacs.has(indexMac)) {
                 archivedSet.add(jid);
@@ -3221,6 +3256,7 @@ export function createSessionManager({
             } catch { /* ignore */ }
           }
         }
+        session._archivedJidsCache = { mtimeMs, candidatesSize, archivedSet };
         return archivedSet;
       } catch (err) {
         logger.warn({ err: err?.message, sessionId: session.id }, 'Failed to resolve archived JIDs from local app state');
@@ -3234,6 +3270,13 @@ export function createSessionManager({
       const store = this._storeOf(session);
       const archivedSet = this._resolveArchivedJids(session);
       if (!archivedSet.size) return;
+
+      // Skip scanning if the exact same archivedSet was already applied and no new chats arrived
+      if (session._lastArchivedAppliedSet === archivedSet && session._lastArchivedAppliedChatCount === store.chats.size) {
+        return;
+      }
+      session._lastArchivedAppliedSet = archivedSet;
+      session._lastArchivedAppliedChatCount = store.chats.size;
 
       const emitEvent = (event) => this._emit({ gateway_session_id: session.id, ...event });
 
@@ -3563,13 +3606,36 @@ export function createSessionManager({
     },
 
     async getGroupMetadata(sessionId, jid) {
-      const session = this._requireConnectedSession(sessionId);
+      const session = this.getSession(sessionId);
+      if (!session) throw new Error('Session not found');
       const store = this._storeOf(session);
       const key = resolveJidKey(store, jid);
       if (!key.endsWith('@g.us')) {
         throw new Error('Not a group JID');
       }
-      const meta = await session.sock.groupMetadata(key);
+      if (session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+        return {
+          id: key,
+          subject: store.chats.get(key)?.name || '',
+          participants: [],
+          connected: false,
+        };
+      }
+      let meta = null;
+      try {
+        meta = await Promise.race([
+          session.sock.groupMetadata(key),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('groupMetadata_timeout')), 4000)),
+        ]);
+      } catch (err) {
+        logger.debug({ err: err?.message, key }, 'Failed to fetch groupMetadata from socket');
+        return {
+          id: key,
+          subject: store.chats.get(key)?.name || '',
+          participants: [],
+          error: err?.message,
+        };
+      }
       const mePhoneUser = (session.sock.user?.id || session.state?.creds?.me?.id || session.phone_number || '').split(':')[0].split('@')[0].replace(/\D/g, '');
       const meLidUser = (session.sock.user?.lid || session.state?.creds?.me?.lid || session.self_lid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
       const participants = (meta?.participants || []).map((p) => {

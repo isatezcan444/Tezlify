@@ -1219,10 +1219,11 @@ async def get_messages(
 
                     if len(rows) < page_size and not should_skip_provider:
                         if not rows and before is None:
-                            # Nothing local to show: waiting is the only honest
-                            # answer (an empty pane would claim "no messages").
+                            # If we have a verified last message preview, tolerate provider timeout
+                            # so the thread renders honestly rather than throwing an operational 502 outage.
+                            can_fallback_to_preview = bool(conv.last_message_preview and conv.last_message_preview.strip())
                             older = await _hydrate_or_tolerate_provider_timeout(
-                                db, user_id, conv, page_size, have_rows=False
+                                db, user_id, conv, page_size, have_rows=can_fallback_to_preview
                             )
                             if older:
                                 res = await db.execute(base)

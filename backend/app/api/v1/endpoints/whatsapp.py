@@ -557,7 +557,8 @@ async def refresh_all_avatars(
     except WhatsAppRelinkRequired as exc:
         raise _relink_required(exc) from exc
     except Exception as exc:
-        raise _bad_gateway(exc) from exc
+        logger.warning("[WhatsApp] Avatar backfill trigger failed: %s", exc)
+        return WhatsAppAvatarBackfillResponse(success=False, missing=0)
     return WhatsAppAvatarBackfillResponse(**data)
 
 
@@ -915,6 +916,9 @@ async def mark_conversation_read(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except Exception as exc:
+        logger.debug("[WhatsApp] Mark read failed soft: %s", exc)
+        return WhatsAppReadResult(success=False, error=str(exc))
     return WhatsAppReadResult(
         success=bool(result.get("success", True)),
         error=result.get("error"),
@@ -937,7 +941,8 @@ async def send_typing(
     except LookupError as exc:
         raise _not_found(exc) from exc
     except Exception as exc:
-        raise _bad_gateway(exc) from exc
+        logger.debug("[WhatsApp] Typing presence failed soft: %s", exc)
+        return WhatsAppReadResult(success=False, error=str(exc))
     return WhatsAppReadResult(
         success=bool(result.get("success", True)),
         error=result.get("error"),
@@ -959,7 +964,8 @@ async def subscribe_conversation_presence(
     except LookupError as exc:
         raise _not_found(exc) from exc
     except Exception as exc:
-        raise _bad_gateway(exc) from exc
+        logger.debug("[WhatsApp] Presence subscription failed soft: %s", exc)
+        return WhatsAppReadResult(success=False, error=str(exc))
     return WhatsAppReadResult(
         success=bool(result.get("success", True)),
         error=result.get("error"),
