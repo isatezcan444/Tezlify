@@ -297,14 +297,19 @@ async def get_messages(
         params["oldest_msg_from_me"] = "true" if oldest_msg_from_me else "false"
     if oldest_msg_ts_ms is not None:
         params["oldest_msg_timestamp_ms"] = int(oldest_msg_ts_ms)
-    # Budget the gateway may spend waiting for the phone to answer the history
-    # PDO. Omitted -> the gateway's own default (~12 s) applies.
     if timeout_ms is not None:
         params["timeout_ms"] = int(timeout_ms)
+        http_timeout = max(4.0, (timeout_ms / 1000.0) + 2.0)
+    elif fetch_provider:
+        # Bounded budget for on-demand provider history: never block FastAPI worker for 30s!
+        params["timeout_ms"] = 4000
+        http_timeout = 6.0
+    else:
+        http_timeout = 5.0
     try:
-        return await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages", params=params)
+        return await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages", timeout=http_timeout, params=params)
     except WhatsAppGatewayError as exc:
-        if fetch_provider and "ReadTimeout" in str(exc):
+        if fetch_provider and ("ReadTimeout" in str(exc) or "timeout" in str(exc).lower()):
             from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
             raise WhatsAppHistoryTimeout(f"Gateway read timeout while fetching provider history for {jid}: {exc}") from exc
         raise

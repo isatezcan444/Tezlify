@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { importTsModule } from './lib/import-ts.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(here, '..');
@@ -29,7 +30,7 @@ assert.ok(
 console.log('  ok - 1. Static contract check passed: wa_message_id fallback guarded by mediaRetryTs');
 
 // 2. Behavioral Verification: Test the media URL resolution logic
-const { resolveMediaUrl } = await import('../src/lib/mediaUrl.ts');
+const { resolveMediaUrl } = await importTsModule('../src/lib/mediaUrl', import.meta.url);
 
 function resolveBubbleMediaUrl(message, mediaRetryTs = null) {
   const raw =

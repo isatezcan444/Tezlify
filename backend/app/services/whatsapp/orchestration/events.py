@@ -2570,6 +2570,8 @@ class WhatsAppEventOrchestrator:
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         async with session_factory() as db:
             evt = event.get("event") or event.get("event_type") or ""
+            if not event.get("gateway_session_id") and event.get("session_id"):
+                event["gateway_session_id"] = event["session_id"]
             event_id: Optional[str] = None
             if event.get("event_id"):
                 try:

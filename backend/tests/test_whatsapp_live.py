@@ -1020,6 +1020,7 @@ async def test_message_new_dedup_upgrades_media_id_on_canonical():
     # Event 1: message arrives without media_id (e.g. premature / placeholder)
     evt1 = {
         "event": "message_new",
+        "gateway_session_id": "gw-seed-test",
         "conversation_id": MOCK_JID,
         "message": {
             "wa_message_id": wa_msg_id,
@@ -1039,6 +1040,7 @@ async def test_message_new_dedup_upgrades_media_id_on_canonical():
     # Event 2: real media download completes and fires with media_id
     evt2 = {
         "event": "message_new",
+        "gateway_session_id": "gw-seed-test",
         "conversation_id": MOCK_JID,
         "message": {
             "wa_message_id": wa_msg_id,

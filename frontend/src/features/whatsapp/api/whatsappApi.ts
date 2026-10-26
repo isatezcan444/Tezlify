@@ -412,10 +412,14 @@ interface BackendMessage {
 
 function mapMessage(m: BackendMessage, convId: number): Message {
   // Medya proxy'si auth korumalıdır: <img>/<audio> etiketleri Authorization
+  // Medya proxy'si auth korumalıdır: <img>/<audio> etiketleri Authorization
   // başlığı taşıyamaz, bu yüzden backend'in kabul ettiği ?token= sorgu
   // parametresi eklenir. WhatsApp Web paritesi: medya her zaman kimlikli
   // URL'den gelir; tokensiz URL 401'e düşer ve balon boş kalır.
-  const targetMediaId = m.media_id || (m.message_type && String(m.message_type).toUpperCase() !== 'TEXT' ? m.wa_message_id : undefined);
+  // wa_message_id burada UNCONDITIONALLY mediaUrl'e dönüştürülmez! Eğer media_id
+  // yoksa (yani gateway henüz indirmediyse), mediaUrl boş bırakılır ve ChatBubble
+  // kullanıcının isteğiyle (retry/indir) kontrollü şekilde wa_message_id üzerinden çeker.
+  const targetMediaId = m.media_id;
 
   const mediaUrl = m.media_url || (targetMediaId
     ? (() => {

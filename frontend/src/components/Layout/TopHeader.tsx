@@ -3,6 +3,7 @@ import { Sun, Moon, Bell, Menu, Settings, LogOut, Globe } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext';
 import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
+import { resolveMediaUrl } from '../../lib/mediaUrl';
 
 interface TopHeaderProps {
   title: string;
@@ -24,10 +25,12 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const { theme, toggleTheme } = useTheme();
   const { t } = useI18n();
   const { user, profile, signOut } = useAuth();
+  const [avatarError, setAvatarError] = React.useState(false);
 
   const userDisplayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || t('header.adminUser');
   const userEmail = profile?.email || user?.email || '';
-  const avatarUrl = profile?.avatar_url || user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+  const rawAvatar = profile?.avatar_url || user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+  const avatarUrl = resolveMediaUrl(rawAvatar);
   const initials = (userDisplayName.slice(0, 2) || 'TZ').toUpperCase();
 
   return (
@@ -115,10 +118,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           {/* User Profile Avatar & Sign Out */}
           <div className="flex items-center space-x-2 pl-0.5">
             <div className="relative">
-              {avatarUrl ? (
+              {avatarUrl && !avatarError ? (
                 <img
                   src={avatarUrl}
                   alt={userDisplayName}
+                  onError={() => setAvatarError(true)}
                   className="w-8 h-8 sm:w-9 sm:h-9 rounded-full object-cover border border-primary-500/30 shadow-sm"
                 />
               ) : (

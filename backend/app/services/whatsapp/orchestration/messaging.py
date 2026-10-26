@@ -151,7 +151,8 @@ def serialize_message(
     dir_val = getattr(getattr(row, "direction", None), "value", getattr(row, "direction", None))
     st_val = getattr(getattr(row, "status", None), "value", getattr(row, "status", None))
     is_failed_outbound = (str(dir_val).upper() == "OUTBOUND" and str(st_val).upper() == "FAILED" and not row.media_id)
-    media_key = None if is_failed_outbound else (row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None))
+    is_media_expired = (getattr(row, "error_message", None) == "MEDIA_EXPIRED")
+    media_key = None if (is_failed_outbound or is_media_expired) else (row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None))
     media_url = f"/api/v1/whatsapp/media/{media_key}" if media_key else None
     return {
         "id": row.id,

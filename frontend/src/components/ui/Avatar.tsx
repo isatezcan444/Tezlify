@@ -184,7 +184,7 @@ export const Avatar: React.FC<AvatarProps> = ({
       failedAvatarUrls.add(c);
       return undefined;
     }
-    return c;
+    return resolveMediaUrl(c);
   }, [phone]);
 
   const initialEffective = resolved || cached;
@@ -223,13 +223,14 @@ export const Avatar: React.FC<AvatarProps> = ({
       // Phase 22 (Rule 1 & 2): Incoming prop is empty/undefined, but we already have
       // a verified avatar URL in the client cache — preserve it!
       const cachedUrl = resolvedAvatarCache.get(phone);
-      if (cachedUrl && !isWhatsAppUrlExpired(cachedUrl)) {
+      const resolvedCached = resolveMediaUrl(cachedUrl);
+      if (resolvedCached && !isWhatsAppUrlExpired(resolvedCached)) {
         avatarMetrics.avatar_url_preserved_after_empty_update++;
         setCurrentImage((prev) => {
-          if (prev !== cachedUrl) {
-            setIsImageLoaded(Boolean(cachedUrl));
-            setImageError(cachedUrl ? failedAvatarUrls.has(cachedUrl) : false);
-            return cachedUrl;
+          if (prev !== resolvedCached) {
+            setIsImageLoaded(Boolean(resolvedCached));
+            setImageError(resolvedCached ? failedAvatarUrls.has(resolvedCached) : false);
+            return resolvedCached;
           }
           return prev;
         });
@@ -265,17 +266,22 @@ export const Avatar: React.FC<AvatarProps> = ({
         const res = await WhatsAppRepository.refreshAvatar(phone, priority);
         if (res.success && res.avatar_url) {
           avatarMetrics.avatar_request_succeeded++;
-          const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
-          if (phone) {
-            resolvedAvatarCache.set(phone, nextResolved);
-            saveAvatarToSessionCache(phone, nextResolved);
+          const nextResolved = resolveMediaUrl(res.avatar_url);
+          if (nextResolved) {
+            if (phone) {
+              resolvedAvatarCache.set(phone, nextResolved);
+              saveAvatarToSessionCache(phone, nextResolved);
+            }
+            failedAvatarUrls.delete(nextResolved);
+            negativeAvatarPhones.delete(phone);
+            setCurrentImage(nextResolved);
+            setIsImageLoaded(true);
+            setImageError(false);
+            onRefresh?.(nextResolved);
+          } else {
+            avatarMetrics.avatar_request_failed++;
+            negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
           }
-          failedAvatarUrls.delete(nextResolved);
-          negativeAvatarPhones.delete(phone);
-          setCurrentImage(nextResolved);
-          setIsImageLoaded(true);
-          setImageError(false);
-          onRefresh?.(res.avatar_url);
         } else {
           avatarMetrics.avatar_request_failed++;
           negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);

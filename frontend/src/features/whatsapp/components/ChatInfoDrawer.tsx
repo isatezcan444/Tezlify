@@ -1529,13 +1529,14 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               ) : (
                 <div className="grid grid-cols-3 gap-1.5" data-testid="drawer-media-grid">
                   {mediaItems.map((m) => {
-                    const targetId = m.media_id || m.wa_message_id;
-                    const isExpired = m.error_message === 'MEDIA_EXPIRED' || isMediaExpired(targetId);
+                    const targetMediaId = m.media_id;
+                    const mediaWaId = m.wa_message_id || m.media_id;
+                    const isExpired = m.error_message === 'MEDIA_EXPIRED' || (mediaWaId ? isMediaExpired(mediaWaId) : false);
                     const rawSrc = isExpired
                       ? undefined
                       : resolveMediaUrl(
                           m.media_url ||
-                          (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
+                          (targetMediaId ? `/api/v1/whatsapp/media/${targetMediaId}` : undefined)
                         );
                     const isVideo = (m.message_type || '').toUpperCase() === 'VIDEO' || (m.media_mime_type || '').includes('video');
                     return (
@@ -1544,7 +1545,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                         data-testid={`drawer-media-item-${m.id}`}
                         onClick={() => {
                           if (isExpired) return;
-                          const effectiveSrc = rawSrc || (targetId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetId}`) || `/api/v1/whatsapp/media/${targetId}` : null);
+                          const effectiveSrc = rawSrc || (targetMediaId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetMediaId}`) : null);
+                          if (!effectiveSrc) return;
                           setLightboxSrc(effectiveSrc);
                           setLightboxType(isVideo ? 'VIDEO' : 'IMAGE');
                           setLightboxCaption(m.media_caption || undefined);
@@ -1552,7 +1554,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                           setIsLightboxOpen(true);
                         }}
                         className={`relative aspect-square rounded-lg overflow-hidden bg-slate-100 dark:bg-black/30 border border-slate-200/60 dark:border-white/10 group ${
-                          isExpired ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                          isExpired || (!rawSrc && !isVideo) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
                         }`}
                         title={isExpired ? t('whatsapp.mediaExpiredOrUnavailable') : (m.media_filename || undefined)}
                       >
@@ -1565,19 +1567,24 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                           <div className="w-full h-full flex items-center justify-center bg-slate-900 text-white">
                             <Play className="w-5 h-5 fill-white" />
                           </div>
-                        ) : (
+                        ) : rawSrc ? (
                           <img
                             src={rawSrc}
                             alt={m.media_filename || 'media'}
                             loading="lazy"
                             onError={(e) => {
                               e.currentTarget.style.display = 'none';
-                              if (targetId) markMediaExpired(targetId);
+                              if (mediaWaId) markMediaExpired(mediaWaId);
                             }}
                             className="w-full h-full object-cover transition-transform group-hover:scale-105"
                           />
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center p-2 text-center text-slate-400 bg-slate-100 dark:bg-slate-800/40">
+                            <ImageIcon className="w-5 h-5 opacity-40 mb-1" />
+                            <span className="text-[9px] opacity-60 leading-tight">{t('whatsapp.mediaExpiredOrUnavailable')}</span>
+                          </div>
                         )}
-                        {!isExpired && (
+                        {!isExpired && (rawSrc || isVideo) && (
                           <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
                             <Search className="w-4 h-4" />
                           </div>
@@ -1599,13 +1606,14 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                 <div className="space-y-1.5" data-testid="drawer-docs-list">
                   {documentItems.map((m) => {
                     const { Icon, tone } = resolveDocVisual(m.media_filename, m.media_mime_type);
-                    const targetId = m.media_id || m.wa_message_id;
-                    const isExpired = m.error_message === 'MEDIA_EXPIRED' || isMediaExpired(targetId);
+                    const targetMediaId = m.media_id;
+                    const mediaWaId = m.wa_message_id || m.media_id;
+                    const isExpired = m.error_message === 'MEDIA_EXPIRED' || (mediaWaId ? isMediaExpired(mediaWaId) : false);
                     const rawSrc = isExpired
                       ? undefined
                       : resolveMediaUrl(
                           m.media_url ||
-                          (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
+                          (targetMediaId ? `/api/v1/whatsapp/media/${targetMediaId}` : undefined)
                         );
                     return (
                       <div
@@ -1613,18 +1621,19 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                         data-testid={`drawer-doc-item-${m.id}`}
                         onClick={() => {
                           if (isExpired) return;
-                          const effectiveSrc = rawSrc || (targetId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetId}`) || `/api/v1/whatsapp/media/${targetId}` : null);
+                          const effectiveSrc = rawSrc || (targetMediaId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetMediaId}`) : null);
+                          if (!effectiveSrc) return;
                           setDocViewerSrc(effectiveSrc);
                           setDocViewerFilename(m.media_filename || t('leads.documentFallbackName'));
                           setDocViewerMime(m.media_mime_type || 'application/octet-stream');
                           setIsDocViewerOpen(true);
                         }}
                         className={`flex items-center space-x-2.5 p-2 rounded-xl transition-colors border border-transparent ${
-                          isExpired
+                          isExpired || !rawSrc
                             ? 'opacity-50 cursor-not-allowed'
                             : 'hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer hover:border-slate-200 dark:hover:border-white/10'
                         }`}
-                        title={isExpired ? t('whatsapp.mediaExpiredOrUnavailable') : undefined}
+                        title={isExpired || !rawSrc ? t('whatsapp.mediaExpiredOrUnavailable') : undefined}
                       >
                         <div className={`p-2 rounded-lg border ${tone} shrink-0`}>
                           <Icon className="w-4 h-4" />

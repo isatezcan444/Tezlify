@@ -997,7 +997,7 @@ export function createSessionManager({
       }
 
       const sock = session.sock;
-      if (!sock || typeof sock.fetchMessageHistory !== 'function') {
+      if (!sock || typeof sock.fetchMessageHistory !== 'function' || (sock.ws && sock.ws.readyState !== 1)) {
         return { messages: [], count: 0, status: 'SOCKET_UNAVAILABLE' };
       }
 

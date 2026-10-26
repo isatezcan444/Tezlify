@@ -1122,14 +1122,23 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               ? `${lat.toFixed(4)}, ${lng.toFixed(4)}`
               : '';
 
+        const locationThumbnail = locData?.jpegThumbnail
+          ? (locData.jpegThumbnail.startsWith('data:')
+            ? locData.jpegThumbnail
+            : resolveMediaUrl(locData.jpegThumbnail))
+          : undefined;
+
         return (
           <div className="space-y-1.5 w-64 max-w-full">
             <div className="rounded-xl overflow-hidden bg-slate-100 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 shadow-sm">
-              {locData?.jpegThumbnail && (
+              {locationThumbnail && (
                 <div className="relative h-28 w-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
                   <img
-                    src={locData.jpegThumbnail}
+                    src={locationThumbnail}
                     alt={title}
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
                     className="w-full h-full object-cover"
                   />
                   <div className="absolute inset-0 bg-black/20 flex items-center justify-center">

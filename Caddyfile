@@ -18,11 +18,11 @@
         header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-Proto https
-        lb_try_duration 10s
-        lb_try_interval 500ms
-        fail_duration 10s
+        lb_try_duration 15s
+        lb_try_interval 250ms
+        fail_duration 3s
         health_uri /health
-        health_interval 10s
+        health_interval 5s
         health_timeout 3s
         health_status 200
     }
@@ -33,11 +33,11 @@
         header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-Proto http
-        lb_try_duration 10s
-        lb_try_interval 500ms
-        fail_duration 10s
+        lb_try_duration 15s
+        lb_try_interval 250ms
+        fail_duration 3s
         health_uri /health
-        health_interval 10s
+        health_interval 5s
         health_timeout 3s
         health_status 200
     }
