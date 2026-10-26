@@ -77,11 +77,13 @@ fi
 SHA=""
 SKIP_BUILD=""
 NO_FRONTEND=""
+NO_GATEWAY=""
 DRY_RUN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-build) SKIP_BUILD="--skip-build"; shift ;;
     --no-frontend) NO_FRONTEND="1"; shift ;;
+    --no-gateway) NO_GATEWAY="--no-gateway"; shift ;;
     --dry-run|--plan) DRY_RUN="1"; shift ;;
     -*) echo "bilinmeyen secenek: $1" >&2; exit 2 ;;
     *) SHA="$1"; shift ;;
@@ -138,7 +140,7 @@ fi
 
 if [ "$DRY_RUN" = "1" ]; then
   log "dry-run: sunucu tarafina DOKUNULMADI"
-  log "sunucuda calistirilacak: bash scripts/deploy/host-release.sh $SHA ${SKIP_BUILD} ${FRONTEND_TAR:+--frontend-tar $FRONTEND_TAR} --force-reset"
+  log "sunucuda calistirilacak: bash scripts/deploy/host-release.sh $SHA ${SKIP_BUILD} ${NO_GATEWAY} ${FRONTEND_TAR:+--frontend-tar $FRONTEND_TAR} --force-reset"
   exit 0
 fi
 
@@ -156,7 +158,7 @@ log "sunucu akisi basliyor (once imaj build + ADACIK saglik, sonra cutover)"
 # Reset'in kendisi hala host script'inin icinde ve `--force-reset` ister.
 # shellcheck disable=SC2029
 ssh -i "$SSH_KEY" -o ConnectTimeout=20 "$HOST" \
-  "cd /opt/tezlify && git fetch origin --prune && git checkout $(printf '%s' "$SHA") -- scripts/deploy/host-release.sh && bash scripts/deploy/host-release.sh $SHA $SKIP_BUILD ${FRONTEND_TAR:+--frontend-tar /tmp/$(basename "$FRONTEND_TAR")} --force-reset"
+  "cd /opt/tezlify && git fetch origin --prune && git checkout $(printf '%s' "$SHA") -- scripts/deploy/host-release.sh && bash scripts/deploy/host-release.sh $SHA $SKIP_BUILD $NO_GATEWAY ${FRONTEND_TAR:+--frontend-tar /tmp/$(basename "$FRONTEND_TAR")} --force-reset"
 
 # --- 4. Yayin dogrulamasi (yerelden, public uclar) -------------------------
 log "public /health"

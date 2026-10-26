@@ -29,6 +29,14 @@
 #   --frontend-tar PATH   frontend/dist tarball'i (icerigi frontend_candidate'e
 #                         yazilir; onceki dizin kopyasi saklanir)
 #   --skip-build          imajlari yeniden build etme (yalniz frontend/verify)
+#   --no-gateway          gateway'i YENIDEN OLUSTURMA (yalnizca backend build +
+#                         cutover). Gateway'in bellek ici deposu her restart'ta
+#                         kayboldugu ve WhatsApp mevcut oturum icin gecmis
+#                         gondermedigi icin (A6) her recreate bir gecmis kaybi
+#                         olayidir. Muhafiz: yayindaki commit ile hedef arasinda
+#                         `whatsapp-gateway/` veya compose dosyasi degistiyse
+#                         komut REDDEDILIR — sessiz "yayina gitmemis gateway
+#                         degisikligi" bu bayragin tek gercek riskidir.
 #   --force-reset         kirli calisma agacini SIFIRLA (diff once yedeklenir)
 #   --health-timeout N    adacik/gercek container saglik bekleme suresi (sn)
 #   --dry-run             hicbir seyi degistirme; planı yaz ve cik
@@ -67,7 +75,7 @@ fi
 
 SHA="${1:-}"
 if [ -z "$SHA" ]; then
-  echo "kullanim: bash scripts/deploy/host-release.sh <sha> [--frontend-tar PATH] [--skip-build] [--force-reset] [--health-timeout N] [--dry-run]" >&2
+  echo "kullanim: bash scripts/deploy/host-release.sh <sha> [--frontend-tar PATH] [--skip-build] [--no-gateway] [--force-reset] [--health-timeout N] [--dry-run]" >&2
   exit 2
 fi
 shift || true
@@ -76,17 +84,34 @@ FRONTEND_TAR=""
 SKIP_BUILD=0
 FORCE_RESET=0
 DRY_RUN=0
+NO_GATEWAY=0
 HEALTH_TIMEOUT=180
 while [ $# -gt 0 ]; do
   case "$1" in
     --frontend-tar) FRONTEND_TAR="${2:-}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --no-gateway) NO_GATEWAY=1; shift ;;
     --force-reset) FORCE_RESET=1; shift ;;
     --health-timeout) HEALTH_TIMEOUT="${2:-180}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) echo "bilinmeyen secenek: $1" >&2; exit 2 ;;
   esac
 done
+
+# Cutover'da yeniden ayaga kaldirilacak servisler.
+#
+# `--no-gateway` NEDEN VAR: gateway'in bellek ici deposu (chats/messagesByChat/
+# store.contacts) her restart'ta kaybolur ve WhatsApp mevcut bir oturum icin
+# gecmis senkronu gondermez (invariant A6). Yani her deploy, gateway'i yeniden
+# olusturdugu surece bir "gecmis kaybi" olayidir — backend-only bir degisiklik
+# icin bile. Bu mod, gateway agacina DOKUNULMADIGI kanitlanmis deploy'larda onu
+# ayakta birakir. Yanlis kullanimi engellemek icin asagida bir muhafiz var:
+# gateway ile ilgili dosyalar degismisse komut REDDEDILIR.
+if [ "$NO_GATEWAY" = "1" ]; then
+  CUTOVER_SERVICES=("$BACKEND_SERVICE")
+else
+  CUTOVER_SERVICES=("$BACKEND_SERVICE" "$GATEWAY_SERVICE")
+fi
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RELEASE_DIR="$PROJECT_DIR/backups/releases/$TS"
@@ -114,7 +139,7 @@ rollback() {
     find "$FRONTEND_DIR" -mindepth 1 -delete || true
     cp -a "$FRONTEND_BACKUP/." "$FRONTEND_DIR/" || true
   fi
-  docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$BACKEND_SERVICE" "$GATEWAY_SERVICE" || true
+  docker compose -f "$COMPOSE_FILE" up -d --force-recreate "${CUTOVER_SERVICES[@]}" || true
   if [ -f "$RELEASE_DIR/deployed-commit.before" ]; then
     cp -a "$RELEASE_DIR/deployed-commit.before" "$PROJECT_DIR/.deployed-commit" || true
     log ".deployed-commit onceki degere dondu: $(cut -c1-12 "$PROJECT_DIR/.deployed-commit" 2>/dev/null || echo '?')"
@@ -173,9 +198,32 @@ run git fetch origin --prune
 git cat-file -e "$SHA^{commit}" 2>/dev/null || die "hedef SHA bu checkout'ta yok: $SHA (push edildi mi?)"
 TARGET_FULL="$(git rev-parse "$SHA^{commit}")"
 
+# --no-gateway MUHAFIZI
+#
+# "Gateway'e dokunmadim" iddiasini insan hafizasina birakmak, bir gun gateway
+# degisikliginin sessizce yayina hic gitmemesi demek olurdu (yanlis yonde
+# basarisizlik: deploy "basarili" gorunur, kod eski kalir). Bu yuzden iddia
+# DOGRULANIR: yayindaki commit ile hedef arasinda gateway'i etkileyen bir dosya
+# degistiyse komut reddedilir.
+if [ "$NO_GATEWAY" = "1" ]; then
+  PREV_DEPLOYED="$(cat "$PROJECT_DIR/.deployed-commit" 2>/dev/null | tr -d '[:space:]' || true)"
+  [ -n "$PREV_DEPLOYED" ] || die "--no-gateway icin .deployed-commit gerekli (karsilastirma tabani yok)"
+  git cat-file -e "$PREV_DEPLOYED^{commit}" 2>/dev/null \
+    || die "--no-gateway: .deployed-commit ($PREV_DEPLOYED) bu checkout'ta yok"
+  if ! git diff --quiet "$PREV_DEPLOYED" "$TARGET_FULL" -- \
+      whatsapp-gateway/ "$COMPOSE_FILE" docker-compose.yml; then
+    log "gateway'i etkileyen degisiklikler:"
+    git diff --stat "$PREV_DEPLOYED" "$TARGET_FULL" -- \
+      whatsapp-gateway/ "$COMPOSE_FILE" docker-compose.yml | sed 's/^/    /'
+    die "--no-gateway kullanilamaz: gateway/compose degismis (bayragi kaldirin)"
+  fi
+  log "gateway muhafizi GECTI: $PREV_DEPLOYED..$TARGET_FULL arasinda gateway agaci degismedi"
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
   log "PLAN: normalize -> build -> adacik saglik -> cutover -> dogrula (degisiklik yapilmadi)"
   log "hedef: $TARGET_FULL"
+  log "cutover servisleri: ${CUTOVER_SERVICES[*]}"
   exit 0
 fi
 
@@ -217,6 +265,9 @@ log "geri donus etiketleri hazir: tezlify-backend:pre-$TS / tezlify-gateway:pre-
 
 if [ "$SKIP_BUILD" = "1" ]; then
   log "build atlandi (--skip-build)"
+elif [ "$NO_GATEWAY" = "1" ]; then
+  log "imaj build ediliyor (yalnizca backend; --no-gateway, canli sistem calisiyor)"
+  docker compose -f "$COMPOSE_FILE" build "$BACKEND_SERVICE"
 else
   log "imajlar build ediliyor (canli sistem bu sirada calisiyor)"
   docker compose -f "$COMPOSE_FILE" build "$BACKEND_SERVICE" "$GATEWAY_SERVICE"
@@ -224,7 +275,11 @@ fi
 NEW_BACKEND_DIGEST="$(docker image inspect tezlify-backend:latest --format '{{.Id}}')"
 NEW_GATEWAY_DIGEST="$(docker image inspect tezlify-gateway:latest --format '{{.Id}}')"
 log "yeni backend imaj: $NEW_BACKEND_DIGEST"
-log "yeni gateway imaj: $NEW_GATEWAY_DIGEST"
+if [ "$NO_GATEWAY" = "1" ]; then
+  log "gateway imaj: DOKUNULMADI (yayindaki: $NEW_GATEWAY_DIGEST)"
+else
+  log "yeni gateway imaj: $NEW_GATEWAY_DIGEST"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. ADACIK SAGLIK KONTROLU — eski container hala ayakta
@@ -274,8 +329,8 @@ DEPLOY_FLAG="/opt/tezlify/runtime/deploy_in_progress"
 mkdir -p /opt/tezlify/runtime
 touch "$DEPLOY_FLAG"
 
-log "cutover: compose up -d --force-recreate backend gateway"
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$BACKEND_SERVICE" "$GATEWAY_SERVICE"
+log "cutover: compose up -d --force-recreate ${CUTOVER_SERVICES[*]}"
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate "${CUTOVER_SERVICES[@]}"
 if ! wait_healthy tezlify-backend 8000 180; then
   rm -f "$DEPLOY_FLAG"
   die "yeni backend 180 sn icinde saglikli olmadi"
@@ -290,10 +345,19 @@ LIVE_GATEWAY_IMAGE="$(docker inspect "tezlify-$GATEWAY_SERVICE" --format '{{.Ima
 if [ "$LIVE_BACKEND_IMAGE" != "$NEW_BACKEND_DIGEST" ]; then
   die "cutover sonrasi backend yeni imajda degil (canli=${LIVE_BACKEND_IMAGE:0:12} beklenen=${NEW_BACKEND_DIGEST:0:12})"
 fi
-if [ "$LIVE_GATEWAY_IMAGE" != "$NEW_GATEWAY_DIGEST" ]; then
-  die "cutover sonrasi gateway yeni imajda degil (canli=${LIVE_GATEWAY_IMAGE:0:12} beklenen=${NEW_GATEWAY_DIGEST:0:12})"
+if [ "$NO_GATEWAY" = "1" ]; then
+  # Gateway'e dokunulmadi: imajin AYNI kaldigini dogrulamak, "yenilendi" demekten
+  # daha anlamli — degismisse bu mod yanlis kullanilmis demektir.
+  if [ "$LIVE_GATEWAY_IMAGE" != "$PREV_GATEWAY_IMAGE" ]; then
+    die "--no-gateway verildi ama gateway imaji degisti (canli=${LIVE_GATEWAY_IMAGE:0:12} onceki=${PREV_GATEWAY_IMAGE:0:12})"
+  fi
+  log "cutover dogrulandi: backend=${LIVE_BACKEND_IMAGE:0:12} gateway=DEGISMEDI (${LIVE_GATEWAY_IMAGE:0:12})"
+else
+  if [ "$LIVE_GATEWAY_IMAGE" != "$NEW_GATEWAY_DIGEST" ]; then
+    die "cutover sonrasi gateway yeni imajda degil (canli=${LIVE_GATEWAY_IMAGE:0:12} beklenen=${NEW_GATEWAY_DIGEST:0:12})"
+  fi
+  log "cutover dogrulandi: backend=${LIVE_BACKEND_IMAGE:0:12} gateway=${LIVE_GATEWAY_IMAGE:0:12}"
 fi
-log "cutover dogrulandi: backend=${LIVE_BACKEND_IMAGE:0:12} gateway=${LIVE_GATEWAY_IMAGE:0:12}"
 
 # Frontend: backend ayaga kalktiktan SONRA yazilir (yeni bundle yeni uclari
 # kullanabilir; tersi yonde eski bundle yeni uclara 404 alirdi).
@@ -334,7 +398,11 @@ verify_blob() {
 
 verify_blob tezlify-backend "/app/backend/app/services/whatsapp/orchestration/events.py" "backend/app/services/whatsapp/orchestration/events.py"
 verify_blob tezlify-backend "/app/backend/app/services/whatsapp/repositories/reactions.py" "backend/app/services/whatsapp/repositories/reactions.py"
-verify_blob tezlify-gateway "/app/src/session-manager.js" "whatsapp-gateway/src/session-manager.js"
+if [ "$NO_GATEWAY" = "1" ]; then
+  log "gateway blob dogrulamasi atlandi (--no-gateway: gateway yeniden olusturulmadi)"
+else
+  verify_blob tezlify-gateway "/app/src/session-manager.js" "whatsapp-gateway/src/session-manager.js"
+fi
 
 PUBLIC_OK=0
 for attempt in 1 2 3 4 5 6; do
@@ -366,6 +434,7 @@ FRONTEND_JSON="null"
 if [ -n "$FRONTEND_TAR" ]; then
   FRONTEND_JSON="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$(basename "$FRONTEND_TAR")")"
 fi
+if [ "$NO_GATEWAY" = "1" ]; then GATEWAY_TOUCHED_JSON="false"; else GATEWAY_TOUCHED_JSON="true"; fi
 cat > "$RELEASE_DIR/release.json" <<JSON
 {
   "sha": "$TARGET_FULL",
@@ -377,6 +446,7 @@ cat > "$RELEASE_DIR/release.json" <<JSON
   "live_backend_image": "$LIVE_BACKEND_IMAGE",
   "live_gateway_image": "$LIVE_GATEWAY_IMAGE",
   "previous_backend_image": "$PREV_BACKEND_IMAGE",
+  "gateway_touched": $GATEWAY_TOUCHED_JSON,
   "rollback_tags": {"backend": "tezlify-backend:pre-$TS", "gateway": "tezlify-gateway:pre-$TS"},
   "frontend": $FRONTEND_JSON
 }
