@@ -731,6 +731,12 @@ export const tr = {
     rotate90: 'Döndür (90°)',
     addLeadError: 'CRM adayı eklenemedi',
     lastMessageSyncing: 'Son mesaj yükleniyor…',
+    // Sohbetin aktivite kanıtı var (damga) ama WhatsApp geçmişi bu cihaza
+    // göndermedi. Burada "mesaj yok" demek yalan olur.
+    lastMessageUnsynced: 'Mesaj geçmişi bu cihazda yok',
+    historyUnavailableTitle: 'Geçmiş bu cihazda yok',
+    historyUnavailableDesc:
+      'Bu sohbette WhatsApp tarafında mesaj var, ancak telefon geçmişi Tezlify’a göndermedi. Hattı yeniden bağlamak genelde geçmişi getirir.',
     emptyUnread: 'Okunmamış sohbet yok',
     emptyGroups: 'Henüz grup yok',
     emptyArchived: 'Arşivlenmiş sohbet yok',
@@ -1663,6 +1669,7 @@ export const tr = {
     smtpSenderNameLabel: 'Gönderici Başlığı / Şirket Adı',
     smtpUsernameLabel: 'Kullanıcı Adı (Opsiyonel / Genellikle e-posta)',
     smtpPasswordLabel: 'Parola / Uygulama Şifresi',
+    smtpPasswordStoredPlaceholder: 'Kayıtlı — değiştirmeyecekseniz boş bırakın',
     smtpTlsDesc: 'Modern e-posta sunucuları için önerilen şifreli bağlantı modu.',
     smtpSslDesc: 'Eski SSL standardı (465 portu kullanan özel sunucular için).',
     smtpTestHeading: 'Canlı Bağlantı & Gönderim Testi',

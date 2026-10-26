@@ -41,6 +41,7 @@ class EmailService:
                 "port": 587,
                 "username": "",
                 "password": "",
+                "has_password": False,
                 "sender_email": "",
                 "sender_name": "Tezlify",
                 "use_tls": True,
@@ -51,6 +52,10 @@ class EmailService:
         try:
             data = json.loads(setting.value_json)
             data["is_configured"] = bool(data.get("host") and data.get("sender_email"))
+            # `password` bu sozlukte KALIR: `test_smtp_connection` ve gonderim
+            # yolu ona ihtiyac duyar. Disariya (HTTP) sizmasini engelleyen sey
+            # `SmtpConfigResponse` modelidir — parola alanini DECLARE ETMEZ.
+            data["has_password"] = bool(data.get("password"))
             return data
         except Exception as exc:
             logger.warning("[EmailService] Failed to parse SMTP config JSON: %s", exc)
@@ -59,6 +64,7 @@ class EmailService:
                 "port": 587,
                 "username": "",
                 "password": "",
+                "has_password": False,
                 "sender_email": "",
                 "sender_name": "Tezlify",
                 "use_tls": True,
@@ -98,6 +104,7 @@ class EmailService:
         # Return sanitized copy with masked password
         sanitized = dict(config_data)
         sanitized["is_configured"] = bool(sanitized.get("host") and sanitized.get("sender_email"))
+        sanitized["has_password"] = bool(sanitized.get("password"))
         if sanitized.get("password"):
             sanitized["password"] = "********"
         return sanitized

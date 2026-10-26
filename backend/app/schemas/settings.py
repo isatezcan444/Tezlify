@@ -32,10 +32,19 @@ class SmtpConfigSchema(BaseModel):
 
 
 class SmtpConfigResponse(BaseModel):
+    """Okuma modeli — PAROLA ASLA DONDURULMEZ.
+
+    Parola yalnizca yazma yonunde (`SmtpConfigSchema`) tasinir ve DB'de kalir.
+    Onceki halinde `password` alanı duz metin olarak donuyordu; uç nokta
+    kimlik dogrulamasi olmadigi icin `GET /settings/smtp` internete acik bir
+    parola sizintisiydi. `has_password` UI'nin "kayitli parola var" ipucunu
+    verebilmesi icin vardir.
+    """
+
     host: str = ""
     port: int = 587
     username: str = ""
-    password: str = ""
+    has_password: bool = False
     sender_email: str = ""
     sender_name: str = "Tezlify"
     use_tls: bool = True

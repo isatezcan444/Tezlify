@@ -4053,6 +4053,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   messages={activeMessages}
                   lastMessagePreview={selectedConv.last_message_preview}
                   lastMessageAt={selectedConv.last_message_at}
+                  // Sohbetin aktivite kaniti var ama yerel mesaj satiri yok
+                  // => gecmis bu cihazda degil (bkz. backend `UNSYNCED`).
+                  historyUnavailable={selectedConv.last_message_state === 'UNSYNCED'}
                   loading={activeChatLoading}
                   error={activeMessagesError}
                   onRetryLoad={retrySelectedConversationMessages}

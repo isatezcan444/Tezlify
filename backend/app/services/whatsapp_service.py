@@ -856,9 +856,27 @@ async def list_conversations(
                 lang="tr",
             )
         msg_count = counts_map.get(r.id, 0)
-        if preview:
+        if msg_count == 0 and (r.last_message_at is not None or preview):
+            # UNSYNCED: sohbetin AKTIVITE KANITI var (WhatsApp'in sohbet
+            # listesinden gelen `last_message_at` ve/veya ozet) ama elimizde
+            # TEK BIR mesaj satiri yok — telefon bu sohbetin gecmisini bu
+            # cihaza hic gondermedi.
+            #
+            # Neden ayri bir durum? `NO_MESSAGES` "bu sohbet gercekten bos"
+            # iddiasidir ve burada YALANDIR: sohbet bir zaman damgasi tasiyor,
+            # yani mesaj var. Canli olcum (2026-10-26, prod): 124 sohbetin
+            # 33'u sifir satir + gecerli damga; liste bunlari "Henuz WhatsApp
+            # Mesaji Yok" diye gosterip damgasina gore listenin ORTASINA
+            # koyuyordu — kullaniciya hem yanlis bilgi hem "siralama bozuk"
+            # izlenimi. Ayni hata sinifi A11'in tersi: bos ONIZLEME damgayi
+            # kapilamamali; eksik MESAJ SATIRI da "mesaj yok" iddiasina
+            # donusmemeli.
+            lm_state = "UNSYNCED"
+        elif preview:
             lm_state = "RESOLVED"
         elif msg_count == 0:
+            # Gercekten bos: damga yok, ozet yok, satir yok (or. "Yeni sohbet"
+            # ile olusturulmus, hic mesajlasilmamis kisi).
             lm_state = "NO_MESSAGES"
         else:
             # Mesaj var ama ozet henuz hesaplanmadi (senkron/hydrate sürüyor).

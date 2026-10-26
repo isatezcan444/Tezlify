@@ -124,8 +124,15 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
   if (typing) lastMsg = '__typing__';
   else if (lastMessagePreview) lastMsg = lastMessagePreview;
   else if (isSyncing) lastMsg = t('whatsapp.lastMessageSyncing');
-  else if (lastMessageState === 'NO_MESSAGES' || (messageCount === 0 && lastMessageState !== 'REPAIRING' && lastMessageState !== 'LOADING')) lastMsg = t('leads.noMessagesTitle');
-  else if (lastMessageState === 'REPAIRING' || lastMessageState === 'LOADING' || (typeof messageCount === 'number' && messageCount > 0)) lastMsg = t('whatsapp.lastMessageSyncing');
+  // UNSYNCED: damga/ozet var, yerel mesaj satiri yok. "Mesaj yok" DEMEK
+  // YALAN olur — gecmis bu cihazda degil.
+  else if (lastMessageState === 'UNSYNCED') lastMsg = t('whatsapp.lastMessageUnsynced');
+  else if (lastMessageState === 'NO_MESSAGES') lastMsg = t('leads.noMessagesTitle');
+  else if (lastMessageState === 'REPAIRING' || lastMessageState === 'LOADING') lastMsg = t('whatsapp.lastMessageSyncing');
+  else if (typeof messageCount === 'number' && messageCount > 0) lastMsg = t('whatsapp.lastMessageSyncing');
+  // Durum alani olmayan eski (oturum cache'inden gelen) satirlar: damga varsa
+  // sohbetin aktivite kaniti vardir, "mesaj yok" denmez.
+  else if (lastMessageAt) lastMsg = t('whatsapp.lastMessageUnsynced');
   else lastMsg = t('leads.noMessagesTitle');
 
   // Menu ogeleri sohbetin MEVCUT durumundan turetilir: arsivlenmis bir sohbete
@@ -458,13 +465,16 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
     const count = conv.message_count;
     // Senkron suruyorsa hicbir sohbet icin "mesaj yok" iddiasinda bulunulmaz.
     if (isSyncing) return t('whatsapp.lastMessageSyncing');
-    if (state === 'NO_MESSAGES' || (count === 0 && state !== 'REPAIRING' && state !== 'LOADING')) {
-      return t('leads.noMessagesTitle');
-    }
+    // UNSYNCED: sohbetin aktivite kaniti var (damga), yerel mesaj satiri yok.
+    // Bu, "mesaj yok" DEGILDIR; gecmis bu cihaza hic gelmedi.
+    if (state === 'UNSYNCED') return t('whatsapp.lastMessageUnsynced');
+    if (state === 'NO_MESSAGES') return t('leads.noMessagesTitle');
     if (state === 'REPAIRING' || state === 'LOADING' || (typeof count === 'number' && count > 0)) {
       return t('whatsapp.lastMessageSyncing');
     }
-    // Eski/mock veri: state bilgisi yoksa onceki davranis (bos => mesaj yok).
+    // Eski/mock veri: durum bilgisi yok. Damga varsa aktivite kaniti vardir;
+    // yalnizca hicbir kanit yoksa "mesaj yok" denir.
+    if (conv.last_message_at) return t('whatsapp.lastMessageUnsynced');
     return t('leads.noMessagesTitle');
   };
 

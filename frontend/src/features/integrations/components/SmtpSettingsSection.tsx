@@ -33,6 +33,7 @@ export const SmtpSettingsSection: React.FC = () => {
   const [port, setPort] = useState<number>(587);
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [hasStoredPassword, setHasStoredPassword] = useState<boolean>(false);
   const [senderEmail, setSenderEmail] = useState<string>('');
   const [senderName, setSenderName] = useState<string>('');
   const [useTls, setUseTls] = useState<boolean>(true);
@@ -53,7 +54,11 @@ export const SmtpSettingsSection: React.FC = () => {
         setHost(data.host || '');
         setPort(data.port || 587);
         setUsername(data.username || '');
-        setPassword(data.password || '');
+        // Parola artik SUNUCUDAN DONMEZ (duz metin sizintisi kapatildi).
+        // Yalnizca "kayitli parola var" bilgisi gelir; bos gonderilen parola
+        // sunucuda mevcut olani KORUR.
+        setPassword('');
+        setHasStoredPassword(Boolean(data.has_password));
         setSenderEmail(data.sender_email || '');
         setSenderName(data.sender_name || '');
         setUseTls(data.use_tls ?? true);
@@ -246,7 +251,11 @@ export const SmtpSettingsSection: React.FC = () => {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••••••"
+                placeholder={
+                  hasStoredPassword && !password
+                    ? t('settings.smtpPasswordStoredPlaceholder')
+                    : '••••••••••••'
+                }
                 leftIcon={Key}
               />
             </FormField>

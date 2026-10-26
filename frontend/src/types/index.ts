@@ -608,8 +608,11 @@ export interface Conversation {
   // Faz 10 (P2): "Henüz WhatsApp Mesajı Yok" yalnızca message_count===0 &&
   // last_message_state==='NO_MESSAGES' iken gösterilir; LOADING/REPAIRING
   // durumlarında senkron sürüyor mesajı gösterilir.
+  // 'UNSYNCED': sohbetin aktivite kanıtı var (last_message_at ve/veya özet)
+  // ama yerel mesaj satırı yok — telefon geçmişi göndermedi. Bu durumda
+  // "mesaj yok" demek yalandır; "geçmiş bu cihazda yok" denir.
   message_count?: number;
-  last_message_state?: 'RESOLVED' | 'NO_MESSAGES' | 'REPAIRING' | 'LOADING' | string;
+  last_message_state?: 'RESOLVED' | 'NO_MESSAGES' | 'UNSYNCED' | 'REPAIRING' | 'LOADING' | string;
   identity_state?: 'RESOLVED_PROFILE' | 'RESOLVED_PHONE' | 'RESOLVED_JID' | 'RESOLVING_TRANSIENT' | 'UNRESOLVED_PERMANENT' | string;
   is_window_open?: boolean;
   last_inbound_at?: string;
@@ -893,7 +896,10 @@ export interface SmtpConfig {
   host: string;
   port: number;
   username?: string;
+  /** Yalnizca YAZMA yonunde gonderilir; okuma cevabinda ASLA donmez. */
   password?: string;
+  /** Sunucuda kayitli bir parola var mi (okuma cevabi). */
+  has_password?: boolean;
   sender_email: string;
   sender_name?: string;
   use_tls?: boolean;

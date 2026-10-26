@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.app.core.database import get_db
+from backend.app.core.auth import get_current_user
 from backend.app.core.config import settings as app_settings
 from backend.app.models.system_settings import SystemSetting
 from backend.app.schemas.settings import (
@@ -26,7 +27,14 @@ from backend.app.services.proxy_manager import ProxyManager
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# Kimlik dogrulama ROUTER duzeyinde zorunludur. Bu dosyadaki her uc nokta
+# GLOBAL (tum kiracilar icin ortak) yapilandirmayi okur/yazar: SMTP kimlik
+# bilgileri, scraper proxy havuzu ve anti-ban tavani. Tek bir unutulan
+# `Depends(get_current_user)` tum bu yuzeyi internete acik birakiyordu
+# (canli dogrulama 2026-10-27: `GET /api/v1/settings/smtp` oturumsuz 200
+# donuyordu). Uc nokta bazinda tekrarlamak yerine router'a baglamak, yeni
+# eklenen bir route'un varsayilan olarak KAPALI olmasini saglar.
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 ANTIBAN_CONFIG_KEY = "antiban_config"
 

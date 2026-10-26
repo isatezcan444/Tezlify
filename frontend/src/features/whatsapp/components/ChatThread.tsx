@@ -119,12 +119,20 @@ export interface ChatThreadProps {
   lastMessagePreview?: string | null;
   /** Timestamp of the last message preview. */
   lastMessageAt?: string | null;
+  /**
+   * The conversation demonstrably HAS activity (a timestamp and/or a provider
+   * summary) but holds zero local message rows: WhatsApp never delivered this
+   * chat's history to this device. The pane must NOT claim "no messages" —
+   * that is a false statement about the user's chat.
+   */
+  historyUnavailable?: boolean;
 }
 
 export const ChatThread: React.FC<ChatThreadProps> = ({
   messages,
   lastMessagePreview,
   lastMessageAt,
+  historyUnavailable = false,
   loading = false,
   hasMore = false,
   loadingOlder = false,
@@ -1081,11 +1089,26 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     }
     return (
       <div className="relative flex-1 min-w-0 flex flex-col items-center justify-center p-6 min-h-0">
-        <EmptyState
-          icon={WhatsAppIcon}
-          title={t('leads.noMessagesTitle')}
-          description={t('leads.noMessagesDesc')}
-        />
+        {/* UNSYNCED: sohbet bos DEGIL — gecmisi bu cihaza hic gelmedi.
+            "Henüz WhatsApp Mesajı Yok" demek yanlis bilgi olurdu. */}
+        {historyUnavailable ? (
+          <EmptyState
+            icon={AlertTriangle}
+            title={t('whatsapp.historyUnavailableTitle')}
+            description={t('whatsapp.historyUnavailableDesc')}
+            action={
+              onRetryLoad
+                ? { label: t('whatsapp.retryBtn'), onClick: onRetryLoad, icon: RotateCcw }
+                : undefined
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={WhatsAppIcon}
+            title={t('leads.noMessagesTitle')}
+            description={t('leads.noMessagesDesc')}
+          />
+        )}
         {peerTyping && (
           <div className="absolute bottom-3 left-4">
             <TypingBubble label={t('whatsapp.peerTyping')} />

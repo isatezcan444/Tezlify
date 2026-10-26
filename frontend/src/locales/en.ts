@@ -731,6 +731,12 @@ export const en = {
     rotate90: 'Rotate (90°)',
     addLeadError: 'Could not add CRM lead',
     lastMessageSyncing: 'Loading last message…',
+    // The chat HAS activity (a timestamp) but WhatsApp never delivered its
+    // history to this device. Saying "no messages" here would be a lie.
+    lastMessageUnsynced: 'Message history not on this device',
+    historyUnavailableTitle: 'History not on this device',
+    historyUnavailableDesc:
+      'This chat has messages on WhatsApp, but the phone did not send its history to Tezlify. Re-linking the line usually brings them in.',
     emptyUnread: 'No unread conversations',
     emptyGroups: 'No groups yet',
     emptyArchived: 'No archived conversations',
@@ -1663,6 +1669,7 @@ export const en = {
     smtpSenderNameLabel: 'Sender Name / Company Name',
     smtpUsernameLabel: 'Username (Optional / Typically your email)',
     smtpPasswordLabel: 'Password / App Password',
+    smtpPasswordStoredPlaceholder: 'Saved — leave empty to keep it',
     smtpTlsDesc: 'STARTTLS encrypted connection recommended for modern email servers.',
     smtpSslDesc: 'Legacy SSL/TLS direct encryption (for servers utilizing port 465).',
     smtpTestHeading: 'Live Connection & Delivery Test',

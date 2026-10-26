@@ -168,7 +168,9 @@ class WhatsAppConversationItem(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     # Faz 10 (P2): UI "mesaj yok" bilgisini yalnizca message_count==0 ve
-    # last_message_state=="NO_MESSAGES" iken gosterir.
+    # last_message_state=="NO_MESSAGES" iken gosterir. "UNSYNCED" ise AYRI bir
+    # gercektir: sohbetin aktivite kaniti var (damga/ozet) ama yerel mesaj
+    # satiri yok — telefon gecmisi gondermedi. "Mesaj yok" DENMEZ.
     message_count: int = 0
     last_message_state: Optional[str] = None
     # WhatsApp Web paritesi: liste satirinda SON MESAJIN en yeni ifadesi.

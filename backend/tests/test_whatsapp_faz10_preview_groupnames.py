@@ -326,6 +326,51 @@ async def test_no_messages_vs_repairing_state():
     assert by_id[filled_id]["message_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_unsynced_state_when_activity_proof_but_zero_rows():
+    """Aktivite kaniti var, yerel mesaj satiri yok → UNSYNCED (NO_MESSAGES DEGIL).
+
+    Canli olcum (prod, 2026-10-26): 124 sohbetin 33'u tam olarak bu durumdaydi —
+    WhatsApp sohbet listesinden gelen GECERLI bir `last_message_at` var ama
+    telefon gecmisi gondermedigi icin tek bir mesaj satiri yok. Liste bunlari
+    "Henuz WhatsApp Mesaji Yok" (NO_MESSAGES) diye gosteriyordu; bu YANLIS bir
+    iddiadir: sohbet bos degil, yalnizca gecmisi bu cihazda degil. Ayni sekilde
+    bir ozet (`last_message_preview`) tasiyip sifir satiri olan sohbet de
+    "mesaj yok" sayilamaz.
+    """
+    _, ts_only_id = await _seed_session_and_group(last_message_at=_ts(10, 15))
+    async with AsyncSessionLocal() as db:
+        # Ayni kisiye iki sohbet tohumlamak benzersiz telefon kisitina carpar;
+        # ozet tasiyan ikinci sohbet ayri bir numara ile kurulur.
+        c2 = Contact(user_id=TEST_USER, phone_e164="+905550009911", display_name="Özetli")
+        db.add(c2)
+        await db.flush()
+        conv2 = Conversation(
+            user_id=TEST_USER,
+            contact_id=c2.id,
+            channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE,
+            last_message_preview="Görüşürüz",
+            last_message_at=_ts(9, 5),
+        )
+        db.add(conv2)
+        await db.commit()
+        preview_only_id = conv2.id
+    async with AsyncSessionLocal() as db:
+        items, _ = await list_conversations(db, TEST_USER)
+    by_id = {i["id"]: i for i in items}
+
+    ts_row = by_id[ts_only_id]
+    assert ts_row["message_count"] == 0
+    assert ts_row["last_message_at"] is not None
+    assert ts_row["last_message_state"] == "UNSYNCED"
+
+    preview_row = by_id[preview_only_id]
+    assert preview_row["message_count"] == 0
+    assert preview_row["last_message_preview"] == "Görüşürüz"
+    assert preview_row["last_message_state"] == "UNSYNCED"
+
+
 # ---------------------------------------------------------------------------
 # P2.9 — realtime ingest → ozet DB'de
 # ---------------------------------------------------------------------------
@@ -474,7 +519,13 @@ async def test_sync_conversations_forces_group_subjects_and_repairs():
     row = next(i for i in items if i["is_group"])
     assert row["name"] == "Aile"
     assert row["last_message_preview"] == "Görüşürüz"
-    assert row["last_message_state"] == "RESOLVED"
+    # Durum artik UNSYNCED: onizleme YAZILDI (yukaridaki iki assert) ama bu
+    # sohbetin tek bir mesaj satiri yok (`gm` bos donuyor). Eskiden burada
+    # RESOLVED bekleniyordu; o beklenti "onizleme var ⇒ sohbet cozuldu"
+    # varsayimini sabitliyordu ve tam olarak kullanicinin gordugu yalani
+    # uretiyordu: liste onizlemeyi gosterirken sohbet panelinde "Henuz
+    # WhatsApp Mesaji Yok" yaziyordu. Onizleme korunur, durum DURUST olur.
+    assert row["last_message_state"] == "UNSYNCED"
     async with AsyncSessionLocal() as db:
         conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id))).scalar_one()
         assert conv.last_message_preview == "Görüşürüz"
