@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, insert
 
+from backend.app.core.auth import get_user_filter
 from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationStatus, ConfidenceLevel
 from backend.app.models.blacklist import Blacklist
 from backend.app.services.phone_service import PhoneService
@@ -83,13 +84,31 @@ class LeadIngestService:
             if e164:
                 wanted_e164s.add(e164)
 
+        # Dedup KİRACI KAPSAMLIDIR. Bu prefetch'ler kiracı filtresi olmadan
+        # arıyordu: ikinci kiracı, birinci kiracıya ait bir telefon/place_id'yi
+        # içe aktardığında o kiracının satırını bulup verisini ONUN üzerine
+        # birleştiriyordu — yani başarısız bir import değil, kiracılar arası bir
+        # yazma. Aynı hata `Blacklist` prefetch'inde de vardı.
+        tenant_scoped = user_id is not None
+        if not tenant_scoped:
+            # Prod'daki üç çağrı yeri de user_id veriyor; bu yol yalnızca eski
+            # test fixture'ları içindir. Sessiz kalmak, düzeltilen hatayı gizler.
+            logger.warning(
+                "ingest_leads user_id olmadan cagrildi: dedup kiracı kapsamlı DEGIL "
+                "(yalnizca test/legacy yolu olmali)"
+            )
+
+        def scoped(stmt, column):
+            """Apply the tenant filter when we know the tenant."""
+            return stmt.where(get_user_filter(column, user_id)) if tenant_scoped else stmt
+
         blacklisted: Set[str] = set()
         if wanted_e164s:
-            bl_rows = (
-                await db.execute(
-                    select(Blacklist.phone_e164).where(Blacklist.phone_e164.in_(wanted_e164s))
-                )
-            ).scalars().all()
+            bl_stmt = scoped(
+                select(Blacklist.phone_e164).where(Blacklist.phone_e164.in_(wanted_e164s)),
+                Blacklist.user_id,
+            )
+            bl_rows = (await db.execute(bl_stmt)).scalars().all()
             blacklisted = set(bl_rows)
 
         # Pre-pass 2: batched identity prefetch — 3 round-trips total instead of
@@ -98,20 +117,14 @@ class LeadIngestService:
         wanted_pids = {r.get("place_id") for r, _, _ in prepared if r.get("place_id")}
         place_map: Dict[str, Lead] = {}
         if wanted_pids:
-            for row in (
-                await db.execute(
-                    select(Lead).where(Lead.place_id.in_(wanted_pids)).order_by(Lead.id)
-                )
-            ).scalars().all():
+            stmt = scoped(select(Lead).where(Lead.place_id.in_(wanted_pids)), Lead.user_id)
+            for row in (await db.execute(stmt.order_by(Lead.id))).scalars().all():
                 place_map.setdefault(row.place_id, row)
 
         phone_map: Dict[str, Lead] = {}
         if wanted_e164s:
-            for row in (
-                await db.execute(
-                    select(Lead).where(Lead.phone_e164.in_(wanted_e164s)).order_by(Lead.id)
-                )
-            ).scalars().all():
+            stmt = scoped(select(Lead).where(Lead.phone_e164.in_(wanted_e164s)), Lead.user_id)
+            for row in (await db.execute(stmt.order_by(Lead.id))).scalars().all():
                 phone_map.setdefault(row.phone_e164, row)
 
         # (name, city, district) triples, deduped. `== None` renders IS NULL —
@@ -126,9 +139,8 @@ class LeadIngestService:
                 and_(Lead.name == n, Lead.city == c, Lead.district == d)
                 for n, c, d in wanted_triples
             ]
-            for row in (
-                await db.execute(select(Lead).where(or_(*conds)).order_by(Lead.id))
-            ).scalars().all():
+            stmt = scoped(select(Lead).where(or_(*conds)), Lead.user_id)
+            for row in (await db.execute(stmt.order_by(Lead.id))).scalars().all():
                 nameloc_map.setdefault((row.name, row.city, row.district), row)
 
         # In-batch created rows: read-your-writes for same-batch duplicates
@@ -195,10 +207,12 @@ class LeadIngestService:
                 raw = {**raw, "phone_e164": None}
                 shared_line_saved += 1
 
-            # Strict phone unique index guard (cache-backed):
-            # If e164 is already allocated to another lead in this batch, or already exists on a
-            # DIFFERENT row in the database, withhold phone_e164 (None) to satisfy the ix_leads_phone_e164
-            # unique constraint while preserving the display phone and creating/updating the lead row.
+            # Strict phone unique guard (cache-backed): `uq_lead_user_phone`
+            # is UNIQUE on (user_id, phone_e164) WHERE phone_e164 IS NOT NULL —
+            # per tenant, not global. If this e164 is already allocated to
+            # another lead in this batch, or already exists on a DIFFERENT row
+            # of the SAME tenant, withhold phone_e164 (None) so the constraint
+            # holds while the display phone and the row itself are preserved.
             if e164:
                 target_lead_id = verdict.existing.id if verdict.existing else None
                 conflict = False
@@ -275,6 +289,7 @@ class LeadIngestService:
                     lead, merged_flag = await cls._persist_new_lead(
                         db, fraw, fname, fe164, fpdata, fwa, fver, fbl,
                         source, search_keyword, search_location, values=fvals,
+                        user_id=user_id,
                     )
                     trans_to_real_fb.setdefault(id(transient), lead)
                     new_count -= 1
@@ -380,6 +395,7 @@ class LeadIngestService:
         search_keyword: Optional[str],
         search_location: Optional[str],
         values: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
     ) -> Tuple[Lead, bool]:
         """
         Inserts a new lead inside a SAVEPOINT so a concurrent-job IntegrityError
@@ -387,12 +403,17 @@ class LeadIngestService:
         Returns (lead, merged_into_existing). Row-mode path: used as the
         fallback when the bulk statement hits a concurrent race (pass the
         transient's current values so same-batch folds are preserved).
+
+        ``user_id`` must be forwarded here: without it the fallback row was
+        written owner-less (invisible to every tenant) AND the race-merge
+        lookup below matched across tenants.
         """
         if values is None:
             values = cls._build_lead_values(
                 raw, name, e164, phone_data, is_wa_eligible,
                 is_verified, is_blacklisted, source,
                 search_keyword, search_location,
+                user_id=user_id,
             )
         lead = Lead(**values)
 
@@ -405,7 +426,9 @@ class LeadIngestService:
                 f"[LeadIngestService] Concurrent insert race detected for '{name}' "
                 f"(place_id={raw.get('place_id')}, e164={e164}). Merging into winner."
             )
-            verdict = await cls.match_policy.resolve(db, raw, name, e164)
+            verdict = await cls.match_policy.resolve(
+                db, raw, name, e164, user_id=user_id
+            )
             winner = verdict.existing
             if winner:
                 cls._merge_into_existing(winner, raw, e164, is_wa_eligible, is_blacklisted)

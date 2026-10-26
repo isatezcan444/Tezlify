@@ -8,7 +8,7 @@ from sqlalchemy import select, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth.api.dependencies import require_api_key
-from backend.app.core.auth import AuthUser
+from backend.app.core.auth import AuthUser, get_user_filter
 from backend.app.core.database import get_db
 from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.models.api_key import ApiKey
@@ -169,7 +169,13 @@ async def _process_lead_ingest(
 
     existing_lead = None
     if phone_e164:
-        stmt = select(Lead).where(Lead.phone_e164 == phone_e164)
+        # KİRACI KAPSAMLI arama. Filtresiz hâli, başka bir kiracının aynı
+        # numaralı lead'ini bulup aşağıdaki alan atamalarıyla ONUN verisini
+        # eziyordu: bir API anahtarıyla yapılabilen kiracılar arası yazma.
+        stmt = select(Lead).where(
+            Lead.phone_e164 == phone_e164,
+            get_user_filter(Lead.user_id, user_id),
+        )
         res = await db.execute(stmt)
         existing_lead = res.scalars().first()
 

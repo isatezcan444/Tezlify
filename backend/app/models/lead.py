@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, Enum, JSON, Index, Uuid
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, Enum, JSON, Index, Uuid, text
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 from backend.app.core.datetime_utils import utc_now_naive
@@ -68,7 +68,13 @@ class Lead(Base):
     phone = Column(String(50), nullable=False)  # raw input
     # Standardized e.g. +905321234567. Telefonsuz kayıtlar (kartta telefon
     # bulunamayan işletmeler) NULL bırakılır — asla uydurma numara üretilmez.
-    phone_e164 = Column(String(30), nullable=True, unique=True, index=True)
+    #
+    # Benzersizlik KİRACI BAŞINADIR, global değil: `__table_args__` içindeki
+    # `uq_lead_user_phone` / `uq_lead_user_place` kısmi indekslerine bakın.
+    # Global `unique=True` ikinci kiracının aynı numarayı içe aktarmasını
+    # imkânsız kılıyordu (ve ingest dedup'ı kiracı filtresi olmadan arayınca
+    # birinci kiracının satırına yazıyordu).
+    phone_e164 = Column(String(30), nullable=True, index=True)
     is_mobile = Column(Boolean, default=False)
     is_whatsapp_eligible = Column(Boolean, default=False)
 
@@ -90,7 +96,7 @@ class Lead(Base):
     enriched_at = Column(DateTime, nullable=True)
     rating = Column(Float, nullable=True)
     reviews_count = Column(Integer, nullable=True, default=0)
-    place_id = Column(String(255), nullable=True, unique=True, index=True)
+    place_id = Column(String(255), nullable=True, index=True)
 
     # Search Tracking
     search_keyword = Column(String(200), nullable=True, index=True)
@@ -114,4 +120,23 @@ class Lead(Base):
         Index("idx_lead_city_category", "city", "category"),
         Index("idx_lead_status_created", "status", "created_at"),
         Index("idx_lead_verified_entity", "is_verified", "entity_type"),
+        # Lead kimliği KİRACI BAŞINA benzersizdir. Kısmi (WHERE ... IS NOT NULL)
+        # çünkü iki kolon da nullable ve NULL'lar çakışmamalı: telefonsuz ya da
+        # place_id'siz kayıtlar birbirini engellememeli.
+        Index(
+            "uq_lead_user_phone",
+            "user_id",
+            "phone_e164",
+            unique=True,
+            postgresql_where=text("phone_e164 IS NOT NULL"),
+            sqlite_where=text("phone_e164 IS NOT NULL"),
+        ),
+        Index(
+            "uq_lead_user_place",
+            "user_id",
+            "place_id",
+            unique=True,
+            postgresql_where=text("place_id IS NOT NULL"),
+            sqlite_where=text("place_id IS NOT NULL"),
+        ),
     )

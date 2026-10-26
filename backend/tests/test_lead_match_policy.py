@@ -35,6 +35,12 @@ async def get_in_memory_db():
     return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False), engine
 
 
+# Identity matching is tenant-scoped: every fixture belongs to OWNER unless a
+# test is deliberately proving isolation against ANOTHER_TENANT.
+OWNER = "11111111-1111-4111-8111-111111111111"
+ANOTHER_TENANT = "22222222-2222-4222-8222-222222222222"
+
+
 # ============================================================
 # LeadMatchPolicy: the identity decision matrix
 # ============================================================
@@ -49,6 +55,7 @@ class TestLeadMatchPolicy:
             phone=overrides.get("phone", "+902162223344"),
             phone_e164=overrides.get("phone_e164", "+902162223344"),
             place_id=overrides.get("place_id", "gmaps_megadent_ata"),
+            user_id=overrides.get("user_id", OWNER),
         )
         db.add(lead)
         await db.commit()
@@ -62,7 +69,8 @@ class TestLeadMatchPolicy:
             await self._seed(db)
 
             verdict = await LeadMatchPolicy().resolve(
-                db, {"place_id": "gmaps_megadent_ata"}, "Mega Dent Ataşehir", None
+                db, {"place_id": "gmaps_megadent_ata"}, "Mega Dent Ataşehir", None,
+                user_id=OWNER,
             )
             assert verdict.existing is not None
             assert verdict.basis == MatchBasis.PLACE_ID
@@ -76,7 +84,8 @@ class TestLeadMatchPolicy:
             await self._seed(db, place_id=None)
 
             verdict = await LeadMatchPolicy().resolve(
-                db, {"place_id": "gmaps_new_id"}, "Mega Dent Ataşehir", "+902162223344"
+                db, {"place_id": "gmaps_new_id"}, "Mega Dent Ataşehir", "+902162223344",
+                user_id=OWNER,
             )
             assert verdict.basis == MatchBasis.PHONE
         await engine.dispose()
@@ -96,6 +105,7 @@ class TestLeadMatchPolicy:
                 {"place_id": "gmaps_other_branch", "city": "İstanbul", "district": "Kadıköy"},
                 "Farklı İşletme Kadıköy",
                 "+9008501234567",
+                user_id=OWNER,
             )
             assert verdict.existing is None
             assert verdict.shares_phone_line is True
@@ -112,6 +122,7 @@ class TestLeadMatchPolicy:
                 {"place_id": "gmaps_fresh", "city": "İstanbul", "district": "Ataşehir"},
                 "Mega Dent Ataşehir",
                 None,
+                user_id=OWNER,
             )
             assert verdict.basis == MatchBasis.NAME_LOCATION
         await engine.dispose()
@@ -127,10 +138,62 @@ class TestLeadMatchPolicy:
                 {"place_id": "gmaps_brand_new", "city": "İstanbul", "district": "Ümraniye"},
                 "Marka Bağımsız Klinik",
                 "+905329998877",
+                user_id=OWNER,
             )
             assert verdict.existing is None
             assert verdict.basis is None
             assert verdict.shares_phone_line is False
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_another_tenants_phone_and_place_never_match(self):
+        """THE cross-tenant write: tenant B must not find tenant A's row.
+
+        Before scoping, B's import matched A's lead by phone_e164 (and by
+        place_id) and merged B's scraped fields ON TOP of A's row.
+        """
+        maker, engine = await get_in_memory_db()
+        async with maker() as db:
+            await self._seed(db, user_id=ANOTHER_TENANT)
+
+            by_place = await LeadMatchPolicy().resolve(
+                db, {"place_id": "gmaps_megadent_ata"}, "Mega Dent Ataşehir", None,
+                user_id=OWNER,
+            )
+            assert by_place.existing is None
+            assert by_place.basis is None
+
+            by_phone = await LeadMatchPolicy().resolve(
+                db, {"place_id": "gmaps_own_listing"}, "Başka Klinik",
+                "+902162223344", user_id=OWNER,
+            )
+            assert by_phone.existing is None
+            assert by_phone.shares_phone_line is False
+
+            by_nameloc = await LeadMatchPolicy().resolve(
+                db, {"city": "İstanbul", "district": "Ataşehir"},
+                "Mega Dent Ataşehir", None, user_id=OWNER,
+            )
+            assert by_nameloc.existing is None
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_own_row_still_matches_when_a_foreign_row_has_the_same_phone(self):
+        """Scoping must not degrade to 'match nothing' — same tenant still merges."""
+        maker, engine = await get_in_memory_db()
+        async with maker() as db:
+            await self._seed(db, user_id=ANOTHER_TENANT, name="Yabancı Klinik")
+            own = await self._seed(
+                db, user_id=OWNER, name="Kendi Kliniğim", place_id="gmaps_own_place",
+                phone_e164="+902162223344",
+            )
+
+            verdict = await LeadMatchPolicy().resolve(
+                db, {"place_id": "gmaps_own_place"}, "Kendi Kliniğim",
+                "+902162223344", user_id=OWNER,
+            )
+            assert verdict.existing is not None
+            assert verdict.existing.id == own.id
         await engine.dispose()
 
 
@@ -159,8 +222,12 @@ class TestIngestKeepsSharedLineBusinesses:
                 "place_id": "gmaps_branch_b",
             }
 
-            leads_1, new_1, upd_1 = await LeadIngestService.ingest_leads(db, [raw_first])
-            leads_2, new_2, upd_2 = await LeadIngestService.ingest_leads(db, [raw_second])
+            leads_1, new_1, upd_1 = await LeadIngestService.ingest_leads(
+                db, [raw_first], user_id=OWNER
+            )
+            leads_2, new_2, upd_2 = await LeadIngestService.ingest_leads(
+                db, [raw_second], user_id=OWNER
+            )
 
             assert (new_1, upd_1) == (1, 0)
             assert (new_2, upd_2) == (1, 0)  # previously collapsed into leads_1!
@@ -187,8 +254,8 @@ class TestIngestKeepsSharedLineBusinesses:
                 "district": "Ataşehir",
                 "place_id": "gmaps_ata_01",
             }]
-            await LeadIngestService.ingest_leads(db, raw)
-            _, new_c, upd_c = await LeadIngestService.ingest_leads(db, raw)
+            await LeadIngestService.ingest_leads(db, raw, user_id=OWNER)
+            _, new_c, upd_c = await LeadIngestService.ingest_leads(db, raw, user_id=OWNER)
 
             assert new_c == 0
             assert upd_c == 1
@@ -202,9 +269,78 @@ class TestIngestKeepsSharedLineBusinesses:
                 {"name": "", "phone": "05321112233", "city": "İstanbul", "district": "Ataşehir"},
                 {"name": "Geçerli Klinik", "phone": None, "city": "İstanbul", "district": "Ataşehir"},
             ]
-            leads, new_c, _ = await LeadIngestService.ingest_leads(db, raw)
+            leads, new_c, _ = await LeadIngestService.ingest_leads(
+                db, raw, user_id=OWNER
+            )
             assert new_c == 1
             assert leads[0].name == "Geçerli Klinik"
+        await engine.dispose()
+
+
+# ============================================================
+# Tenant isolation: the same business imported by two tenants
+# ============================================================
+
+class TestIngestTenantIsolation:
+    """Dedup and uniqueness are per tenant.
+
+    Production symptom this prevents: tenant B importing a phone number tenant
+    A already owns matched A's row (unscoped prefetch) and merged B's freshly
+    scraped fields ON TOP of it — and the old global UNIQUE(phone_e164) made a
+    clean second row impossible, so the merge was the only outcome.
+    """
+
+    @pytest.mark.asyncio
+    async def test_same_phone_two_tenants_two_rows_neither_overwritten(self):
+        maker, engine = await get_in_memory_db()
+        async with maker() as db:
+            raw_a = {
+                "name": "Ortak Klinik", "phone": "05321112233",
+                "city": "İstanbul", "district": "Ataşehir",
+                "place_id": "gmaps_shared_listing",
+            }
+            raw_b = {**raw_a, "name": "Kiracı B Kliniği"}
+
+            a_leads, a_new, a_upd = await LeadIngestService.ingest_leads(
+                db, [raw_a], user_id=OWNER
+            )
+            b_leads, b_new, b_upd = await LeadIngestService.ingest_leads(
+                db, [raw_b], user_id=ANOTHER_TENANT
+            )
+
+            assert (a_new, a_upd) == (1, 0)
+            assert (b_new, b_upd) == (1, 0), "ikinci kiracı birincinin satırına birleşti"
+            assert a_leads[0].id != b_leads[0].id
+
+            # Per-tenant uniqueness: BOTH keep their targeting number.
+            assert a_leads[0].phone_e164 == "+905321112233"
+            assert b_leads[0].phone_e164 == "+905321112233"
+            assert {a_leads[0].user_id, b_leads[0].user_id} == {OWNER, ANOTHER_TENANT}
+
+            # Tenant A's row is untouched by B's import.
+            await db.refresh(a_leads[0])
+            assert a_leads[0].name == "Ortak Klinik"
+            assert a_leads[0].phone_e164 == "+905321112233"
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_same_tenant_rescan_still_merges(self):
+        maker, engine = await get_in_memory_db()
+        async with maker() as db:
+            raw = {
+                "name": "Kendi Kliniğim", "phone": "05321112233",
+                "city": "İstanbul", "district": "Ataşehir",
+                "place_id": "gmaps_own_only",
+            }
+            first, _, _ = await LeadIngestService.ingest_leads(
+                db, [raw], user_id=OWNER
+            )
+            second, new_c, upd_c = await LeadIngestService.ingest_leads(
+                db, [raw], user_id=OWNER
+            )
+
+            assert (new_c, upd_c) == (0, 1)
+            assert second[0].id == first[0].id
         await engine.dispose()
 
 
@@ -338,10 +474,12 @@ class TestLegacyDuplicateFailSafe:
         first = Lead(
             name="Legacy Klinik", city="İstanbul", district="Ataşehir",
             phone="Belirtilmemiş", phone_e164=None, place_id=None,
+            user_id=OWNER,
         )
         second = Lead(
             name="Legacy Klinik", city="İstanbul", district="Ataşehir",
             phone="Belirtilmemiş", phone_e164=None, place_id=None,
+            user_id=OWNER,
         )
         db.add_all([first, second])
         await db.commit()
@@ -361,6 +499,7 @@ class TestLegacyDuplicateFailSafe:
                      "district": "Ataşehir", "place_id": None},
                     "Legacy Klinik",
                     None,
+                    user_id=OWNER,
                 )
                 assert verdict.existing is not None
                 assert verdict.existing.id == first.id
@@ -384,6 +523,7 @@ class TestLegacyDuplicateFailSafe:
                     db=db, raw_leads=raw, source="GOOGLE_MAPS",
                     search_keyword="Diş Kliniği",
                     search_location="İstanbul Ataşehir",
+                    user_id=OWNER,
                 )
                 assert len(leads) == 1
                 assert new_count == 0
@@ -404,12 +544,13 @@ class TestResolveCachesEquivalence:
         rows = [
             Lead(name="Klinik P", city="İstanbul", district="Ataşehir",
                  phone="+902161111111", phone_e164="+902161111111",
-                 place_id="gmaps_eq_place"),
+                 place_id="gmaps_eq_place", user_id=OWNER),
             Lead(name="Santral", city="İstanbul", district="Kadıköy",
                  phone="08500000000", phone_e164="+908500000000",
-                 place_id="gmaps_eq_other_place"),
+                 place_id="gmaps_eq_other_place", user_id=OWNER),
             Lead(name="Klinik N", city="İstanbul", district="Ataşehir",
-                 phone="Belirtilmemiş", phone_e164=None, place_id=None),
+                 phone="Belirtilmemiş", phone_e164=None, place_id=None,
+                 user_id=OWNER),
         ]
         db.add_all(rows)
         await db.commit()
@@ -446,7 +587,9 @@ class TestResolveCachesEquivalence:
                     ({"city": "İstanbul", "district": "Yok"}, "Kimse", None),
                 ]
                 for raw, name, e164 in cases:
-                    db_verdict = await policy.resolve(db, raw, name, e164)
+                    db_verdict = await policy.resolve(
+                        db, raw, name, e164, user_id=OWNER
+                    )
                     cache_verdict = policy.resolve_from_caches(raw, name, e164, find)
                     assert self._sig(cache_verdict) == self._sig(db_verdict), (raw, name, e164)
         finally:

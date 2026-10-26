@@ -27,6 +27,13 @@ def unique_phone():
     return f"+9053{uuid.uuid4().int % 100000000:08d}"
 
 
+# Lead benzersizliği KİRACI BAŞINA (`uq_lead_user_phone`/`uq_lead_user_place`,
+# `WHERE ... IS NOT NULL`). user_id verilmezse NULL'lar SQL'de birbirinden
+# farklı sayılır ve hiçbir çakışma oluşmaz — yani test, üretimde var olmayan
+# "sahipsiz lead" durumunu ölçerdi. Üretimdeki üç çağrı yeri de user_id veriyor.
+CONCURRENCY_OWNER = "11111111-1111-4111-8111-111111111111"
+
+
 @pytest.mark.asyncio
 async def test_concurrency_10x_same_lead_group_membership():
     """
@@ -99,7 +106,8 @@ async def test_concurrency_simultaneous_lead_ingestion_same_phone():
             leads, new_cnt, upd_cnt = await LeadIngestService.ingest_leads(
                 db=session,
                 raw_leads=[raw_candidate],
-                search_keyword="Parallel Test"
+                search_keyword="Parallel Test",
+                user_id=CONCURRENCY_OWNER,
             )
             await session.commit()
             return new_cnt, upd_cnt

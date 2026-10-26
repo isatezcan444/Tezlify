@@ -16,6 +16,7 @@ from typing import Callable, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.auth import get_user_filter
 from backend.app.models.lead import Lead
 
 
@@ -48,6 +49,14 @@ class LeadMatchPolicy:
     Rationale: merging on a bare phone number silently absorbed distinct
     businesses into an earlier row, which surfaced to users as "found N
     businesses but saved fewer than N" data loss across repeated scans.
+
+    TENANT SCOPE: every lookup is filtered to the caller's ``user_id``. Before
+    this, matching was global — tenant B importing a phone number already owned
+    by tenant A matched A's row and merged B's freshly scraped data ON TOP of
+    it (a cross-tenant write, not a failed import). ``user_id`` is a REQUIRED
+    keyword argument so a new call site cannot silently reintroduce the global
+    lookup; ``None`` is accepted only for legacy fixtures that seed owner-less
+    rows, and is logged as such by the caller.
     """
 
     async def resolve(
@@ -56,19 +65,23 @@ class LeadMatchPolicy:
         raw: dict,
         name: str,
         e164: Optional[str],
+        *,
+        user_id: Optional[str],
     ) -> MatchVerdict:
         place_id = raw.get("place_id")
 
         if place_id:
             existing = await self._first(
-                db, select(Lead).where(Lead.place_id == place_id)
+                db,
+                self._scoped(select(Lead).where(Lead.place_id == place_id), user_id),
             )
             if existing:
                 return MatchVerdict(existing=existing, basis=MatchBasis.PLACE_ID)
 
         if e164:
             existing = await self._first(
-                db, select(Lead).where(Lead.phone_e164 == e164)
+                db,
+                self._scoped(select(Lead).where(Lead.phone_e164 == e164), user_id),
             )
             if existing:
                 identities_agree = (
@@ -83,10 +96,13 @@ class LeadMatchPolicy:
 
         existing = await self._first(
             db,
-            select(Lead).where(
-                Lead.name == name,
-                Lead.city == raw.get("city"),
-                Lead.district == raw.get("district"),
+            self._scoped(
+                select(Lead).where(
+                    Lead.name == name,
+                    Lead.city == raw.get("city"),
+                    Lead.district == raw.get("district"),
+                ),
+                user_id,
             ),
         )
         if existing:
@@ -109,6 +125,10 @@ class LeadMatchPolicy:
         prefetches with batched IN queries and overlays rows it created
         earlier in the same batch (read-your-writes). Single home for the
         matching rules — resolve() stays the DB-backed path for races/tests.
+
+        The tenant filter is the CALLER's responsibility here (it owns the
+        prefetch queries); see LeadIngestService.ingest_leads, where all four
+        prefetches go through a ``scoped()`` helper.
         """
         place_id = raw.get("place_id")
 
@@ -135,6 +155,20 @@ class LeadMatchPolicy:
             return MatchVerdict(existing=existing, basis=MatchBasis.NAME_LOCATION)
 
         return MatchVerdict()
+
+    @staticmethod
+    def _scoped(stmt, user_id: Optional[str]):
+        """Restrict a lookup to one tenant.
+
+        ``user_id`` is falsy only for legacy fixtures. In that case the filter
+        is skipped on purpose: ``get_user_filter(col, None)`` stringifies None
+        and would match NOTHING in production while matching owner-less rows
+        under pytest — i.e. it would turn a lenient legacy path into a matcher
+        that silently finds nothing.
+        """
+        if not user_id:
+            return stmt
+        return stmt.where(get_user_filter(Lead.user_id, user_id))
 
     @staticmethod
     async def _first(db: AsyncSession, stmt) -> Optional[Lead]:

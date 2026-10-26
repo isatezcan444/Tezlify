@@ -55,6 +55,7 @@ from backend.app.core.migrations import (
     ensure_leads_enrichment_columns,
     ensure_verified_commercial_leads,
     purge_synthetic_preview_messages,
+    ensure_tenant_scoped_lead_uniqueness,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
@@ -240,6 +241,10 @@ async def lifespan(app: FastAPI):
     # A preview is a summary string, not a message: drop rows that an earlier
     # version fabricated from one (see the docstring for the damage it caused).
     await purge_synthetic_preview_messages(engine)
+    # Lead benzersizliği kiracı başına olmalı: global UNIQUE indeksler ikinci
+    # kiracının aynı telefonu içe aktarmasını engelliyordu (ve dedup kiracı
+    # filtresi olmadan aradığı için birinci kiracının satırına yazıyordu).
+    await ensure_tenant_scoped_lead_uniqueness(engine)
 
     # Boot tek başına yetmez: artan çiftler, canlı yolun ertelediği birleştirmeler
     # ve arşivlenen sohbette kalmış sahipsiz mesajlar ancak YENİDEN koşan bir

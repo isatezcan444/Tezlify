@@ -294,7 +294,14 @@ async def _make_db():
 
 @pytest.mark.asyncio
 async def test_persist_new_lead_recovers_from_unique_conflict():
-    """Direct unique-conflict on place_id merges into the winner instead of raising."""
+    """Direct unique-conflict on (user_id, place_id) merges into the winner.
+
+    The constraint is PER TENANT (`uq_lead_user_place`): a global unique index
+    made a second tenant's import of the same listing impossible. Both rows
+    therefore carry the same user_id — otherwise NULL user_ids never collide
+    and the IntegrityError this test relies on would not fire.
+    """
+    owner = "11111111-1111-4111-8111-111111111111"
     session_maker, engine = await _make_db()
 
     async with session_maker() as db:
@@ -305,6 +312,7 @@ async def test_persist_new_lead_recovers_from_unique_conflict():
             city="İstanbul",
             district="Ataşehir",
             place_id="gmaps_conflict",
+            user_id=owner,
         )
         db.add(winner)
         await db.commit()
@@ -321,11 +329,47 @@ async def test_persist_new_lead_recovers_from_unique_conflict():
             db=db, raw=raw, name=raw["name"], e164=None, phone_data=None,
             is_wa_eligible=False, is_verified=False, is_blacklisted=False,
             source="GOOGLE_MAPS", search_keyword="diş", search_location="İstanbul",
+            user_id=owner,
         )
 
         assert merged is True
         assert lead.name == "Önceki Kayıt"
         assert lead.website == "https://ornekklinik.com.tr"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_persist_new_lead_does_not_collide_across_tenants():
+    """A different tenant importing the same listing gets its own row."""
+    owner = "11111111-1111-4111-8111-111111111111"
+    other = "22222222-2222-4222-8222-222222222222"
+    session_maker, engine = await _make_db()
+
+    async with session_maker() as db:
+        db.add(Lead(
+            name="Birinci Kiracı", phone="Belirtilmemiş", phone_e164=None,
+            city="İstanbul", district="Ataşehir",
+            place_id="gmaps_shared", user_id=owner,
+        ))
+        await db.commit()
+
+        raw = {
+            "name": "İkinci Kiracı",
+            "city": "İstanbul",
+            "district": "Ataşehir",
+            "place_id": "gmaps_shared",
+        }
+        lead, merged = await LeadIngestService._persist_new_lead(
+            db=db, raw=raw, name=raw["name"], e164=None, phone_data=None,
+            is_wa_eligible=False, is_verified=False, is_blacklisted=False,
+            source="GOOGLE_MAPS", search_keyword="diş", search_location="İstanbul",
+            user_id=other,
+        )
+
+        assert merged is False, "ikinci kiracı birincinin satırına birleşti"
+        assert lead.name == "İkinci Kiracı"
+        assert lead.user_id == other
 
     await engine.dispose()
 

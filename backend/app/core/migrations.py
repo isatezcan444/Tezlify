@@ -2477,3 +2477,62 @@ async def purge_synthetic_preview_messages(engine: AsyncEngine) -> None:
             logger.info("[MIGRATION] purge_synthetic_preview_messages verified")
     except Exception as exc:  # noqa: BLE001 - startup'ı düşürmez, loglanır
         logger.warning("[MIGRATION] purge_synthetic_preview_messages atlandı: %s", exc)
+
+
+async def ensure_tenant_scoped_lead_uniqueness(engine: AsyncEngine) -> None:
+    """Lead kimliği KİRACI BAŞINA benzersizdir — `phone_e164`/`place_id` global değil.
+
+    İki kolon da `unique=True` idi ve bu GLOBAL benzersiz indeksler üretti
+    (`ix_leads_phone_e164`, `ix_leads_place_id`). Sonuçları:
+
+      * başka bir kiracıda zaten var olan bir telefon/place için ikinci kiracı
+        kendi lead'ini oluşturamıyordu, ve
+      * `lead_ingest_service`'in dedup prefetch'i de kiracı filtresi olmadan
+        aradığı için BİRİNCİ kiracının satırını bulup yeni kiracının verisini
+        onun üzerine birleştiriyordu — yani başarısız bir import değil,
+        kiracılar arası bir yazma.
+
+    Yerine `(user_id, phone_e164)` ve `(user_id, place_id)` üzerinde KISMİ
+    benzersiz indeksler gelir. Kısmi, çünkü iki kolon da nullable: NULL ile NULL
+    çakışmamalı (telefonsuz/place_id'siz kayıtlar birbirini engellememeli).
+
+    SIRALAMA ÖNEMLİ — önce YENİ kısmi indeksler kurulur, ancak ikisi de
+    başarılıysa eski global UNIQUE indeksler düşürülür ve tek-kolon indeksleri
+    (benzersiz olmayan) yeniden oluşturulur. Böylece kiracı başına beklenmedik
+    bir çakışma yüzünden bu adım patlarsa eski benzersizlik yerinde kalır ve
+    sistem yarı-korumasız yakalanmaz.
+
+    Not: `CREATE INDEX` (CONCURRENTLY olmadan) kısa süreliğine yazmaları
+    engeller; bu tablo küçük (üretimde 5 satır). Büyürse CONCURRENTLY gerekir,
+    ancak o bir transaction içinde çalıştırılamaz.
+    """
+    composite = (
+        ("uq_lead_user_phone", "phone_e164"),
+        ("uq_lead_user_place", "place_id"),
+    )
+    single = (
+        ("ix_leads_phone_e164", "phone_e164"),
+        ("ix_leads_place_id", "place_id"),
+    )
+    try:
+        async with engine.begin() as conn:
+            for name, column in composite:
+                await conn.execute(
+                    text(
+                        f"CREATE UNIQUE INDEX IF NOT EXISTS {name} "
+                        f"ON leads (user_id, {column}) WHERE {column} IS NOT NULL"
+                    )
+                )
+            for name, column in single:
+                await conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
+            for name, column in single:
+                await conn.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS {name} ON leads ({column})")
+                )
+        logger.info("[MIGRATION] ensure_tenant_scoped_lead_uniqueness verified")
+    except Exception as exc:  # noqa: BLE001 - startup'ı düşürmez, loglanır
+        logger.warning(
+            "[MIGRATION] ensure_tenant_scoped_lead_uniqueness atlandı "
+            "(global UNIQUE indeksler YERİNDE kaldı): %s",
+            exc,
+        )
