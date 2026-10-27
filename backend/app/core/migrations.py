@@ -2010,13 +2010,17 @@ async def ensure_repair_raw_lid_mentions(engine: AsyncEngine) -> None:
         logger.warning("[MIGRATION] ensure_repair_raw_lid_mentions: %s", exc)
 
 
-async def purge_empty_ghost_conversations(engine: AsyncEngine) -> None:
+async def purge_empty_ghost_conversations(engine: AsyncEngine) -> int:
     """Mesaji, zaman damgasi ve onizlemesi olmayan hayalet WhatsApp sohbetlerini temizler.
 
     WhatsApp Web paritesi: yalnizca rehberde kayitli oldugu icin veya gecmisi
     olmayan gruplar icin yaratilmis, hicbir mesaj veya aktivite icermeyen
     bos Conversation satirlari temizlenir. Contact kayitlari (rehber) KORUNUR.
+
+    Returns:
+        Silinen conversation satiri sayisi (0 da olabilir).
     """
+    deleted = 0
     try:
         async with engine.begin() as conn:
             res = await conn.execute(
@@ -2036,6 +2040,7 @@ async def purge_empty_ghost_conversations(engine: AsyncEngine) -> None:
                 )
     except Exception as exc:  # noqa: BLE001 - startup'i dusurmez
         logger.warning("[MIGRATION] purge_empty_ghost_conversations atlandi: %s", exc)
+    return deleted
 
 
 async def ensure_campaigns_columns(engine: AsyncEngine) -> None:

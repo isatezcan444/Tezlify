@@ -1172,6 +1172,8 @@ async def purge_whatsapp_data(
     db: AsyncSession, user_id: str, session_id: Optional[int] = None
 ) -> Dict[str, int]:
     """Purges WhatsApp messages, conversations, and orphaned contacts for session."""
+    from backend.app.services import whatsapp_data_audit as _data_audit
+
     purged = {"messages": 0, "conversations": 0, "contacts": 0}
 
     other_sessions = await db.execute(
@@ -1206,6 +1208,10 @@ async def purge_whatsapp_data(
     if not conv_ids:
         return purged
 
+    # --- Denetim: silme ÖNCESI ---
+    _audit_before = await _data_audit.snapshot_counts(db, user_id)
+    _audit_correlation = _data_audit.new_correlation_id()
+
     msg_res = await db.execute(delete(Message).where(Message.conversation_id.in_(conv_ids)))
     purged["messages"] = msg_res.rowcount or 0
 
@@ -1226,6 +1232,32 @@ async def purge_whatsapp_data(
             )
         )
         purged["contacts"] = ct_res.rowcount or 0
+
+    # --- Denetim: ayni transaction'da ---
+    await db.flush()
+    await _data_audit.stage_data_event(
+        db,
+        event=_data_audit.EVENT_SESSION_PURGED,
+        source="api",
+        user_id=user_id,
+        session_id=session_id,
+        correlation_id=_audit_correlation,
+        outcome="committed",
+        reason="session_purge",
+        conversation_ids=conv_ids,
+        contact_ids=contact_ids or None,
+        counts_before=_audit_before,
+        counts_after=await _data_audit.snapshot_counts(db, user_id),
+        idempotency_key=(
+            f"session_purged:{user_id}:{session_id or 'all'}:"
+            f"{','.join(str(c) for c in sorted(conv_ids))}"
+        )[:96],
+        detail={
+            "messages_deleted": purged["messages"],
+            "conversations_deleted": purged["conversations"],
+            "contacts_deleted": purged["contacts"],
+        },
+    )
 
     return purged
 

@@ -244,7 +244,23 @@ async def lifespan(app: FastAPI):
     await ensure_phase_10_7_indexes(engine)
     await ensure_whatsapp_private_lid_and_history_tables(engine)
     await ensure_repair_raw_lid_mentions(engine)
-    await purge_empty_ghost_conversations(engine)
+    _ghost_purged = await purge_empty_ghost_conversations(engine)
+    if _ghost_purged > 0:
+        try:
+            from backend.app.services import whatsapp_data_audit as _audit
+
+            async with AsyncSessionLocal() as _audit_db:
+                await _audit.record_data_event(
+                    _audit_db,
+                    event=_audit.EVENT_GHOST_PURGE,
+                    source="migration",
+                    outcome="committed",
+                    reason="purge_empty_ghost_conversations",
+                    idempotency_key=f"ghost_purge:{_dt.datetime.utcnow().isoformat()}"[:96],
+                    detail={"conversations_deleted": _ghost_purged},
+                )
+        except Exception as exc:  # noqa: BLE001 - audit hatasi acilisi dusurmez
+            logger.warning("[MIGRATION] ghost purge audit row failed: %s", exc)
     await ensure_campaigns_columns(engine)
     await ensure_campaign_sequence_leads_table(engine)
     await ensure_keyset_and_ordering_indexes(engine)

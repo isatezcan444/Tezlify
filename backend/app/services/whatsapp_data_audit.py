@@ -47,6 +47,7 @@ EVENT_SELF_IDENTITY_MERGE = "self_identity_merge"
 EVENT_SWEEP_RUN = "sweep_run"
 EVENT_GHOST_PURGE = "ghost_purge"
 EVENT_COUNT_SNAPSHOT = "count_snapshot"
+EVENT_SESSION_PURGED = "session_purged"
 
 # How long an audit row is kept. The table is append-only and small (one row per
 # delete/merge/snapshot), so this is a housekeeping bound, not a growth control:
