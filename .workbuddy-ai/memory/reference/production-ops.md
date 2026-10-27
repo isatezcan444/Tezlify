@@ -435,3 +435,45 @@ per build.
   an explicit baseline, never zero.
 - **Parallel `Edit` calls on one file clobber each other** — three concurrent edits to `MEMORY.md` landed
   only the first. Edit the same file sequentially, or rewrite it with one `Write`.
+
+## Latency metrics: instrumented, but OFF in production (measured 2026-10-27)
+
+`whatsapp-gateway/src/observability.js` gates both the logger and the emit on
+`WHATSAPP_LATENCY_PROFILING === 'true'`. Production does **not** set it:
+
+```
+docker exec tezlify-gateway printenv | grep -iE 'LATENCY|PROFILING'   -> NOT_SET
+grep -iE 'LATENCY|PROFILING' /opt/tezlify/docker-compose.prod.yml     -> NOT_IN_COMPOSE
+```
+
+So `socket_start_to_provider_qr_ms`, `qr_generation_ms` and `socket_start_to_ready_ms` emit **nothing**
+there. This is a config choice, not a defect — but it is why "measure the QR pairing" finds no numbers.
+Turning it on is a deliberate, temporary act; leaving it on grows log volume.
+
+Contract pinned by `whatsapp-gateway/scripts/test-latency-metrics.mjs` (in `npm test`): silent when the
+flag is off, correct name/JSON/`component` when on, opaque 12-char `session_ref`, and **no** session
+UUID / QR / phone / JID. It must run in a **child process** — pino's level is fixed at module load, so
+toggling the env var in-process changes nothing and would make the test unable to prove anything.
+
+Frontend `whatsappLatency.ts` is gated on `import.meta.env.DEV && VITE_…` — dev-only by design. The
+last-sync duration is likewise not logged in production.
+
+## Durable data-shape audit (`whatsapp_data_audit`, live since `70c0741`)
+
+Written **after** the caller's COMMIT, so a row means "this was committed", not "we tried". Carries
+`counts_before` / `counts_after`, a `correlation_id`, the `outbox_event_id` when one exists, and a small
+sanitised `detail`. **No message bodies, phones, JIDs, QR or credentials** — surrogate ids only.
+
+Read it with `GET /api/v1/whatsapp/data-audit` (auth required → 401 unauth, tenant-scoped, `limit` 1–200,
+optional `event`). The sweep writes a row **only when it actually changed something** (merged / deferred /
+errors / moved) — an empty table is the healthy state, not a broken recorder.
+
+A merge row carries `legacy_archived_not_deleted: true`. That is the point: it proves a LID merge does
+**not** change the conversation count, so the next "the count dropped" round can rule merges out with
+evidence instead of suspicion.
+
+**The "never raises" promise must cover resource ACQUISITION.** `record_data_event` opens its own session
+when called with `db=None` (the sweep does this). The first version put `AsyncSessionLocal()` *outside*
+the `try`, so a pool failure escaped and would have stopped the very repair loop the audit exists to
+explain. Pinned by `test_session_acquisition_failure_never_raises`; falsified by moving the acquisition
+back out (exactly that test goes red with `RuntimeError: pool exhausted`).
