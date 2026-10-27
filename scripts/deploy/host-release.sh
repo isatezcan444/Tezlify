@@ -138,9 +138,21 @@ CANDIDATE_NAME="tezlify-candidate-$TS"
 CUTOVER=0
 VERIFIED=0
 FRONTEND_BACKUP=""
+# Adacigin izole veritabani. Bos = izolasyon kurulmadi (henuz ya da basarisiz).
+# `on_error` bunu kosulsuz okur, bu yuzden `set -u` icin baslangicta tanimli.
+CANDIDATE_DB=""
+# Filigran karsilastirmasi (hedef commit'ten cozulur, asagida).
+WATERMARK_PY=""
 
 log() { printf '[release %s] %s\n' "$TS" "$*"; }
-die() { printf '[release %s] HATA: %s\n' "$TS" "$*" >&2; exit 1; }
+# `die` bir `exit` yapar; `exit` ERR tuzagini TETIKLEMEZ. Bu yuzden izole DB
+# temizligi burada da yapilir — aksi halde `die` ile biten her hata yolunda
+# gercek satirlar tasiyan bir kopya veritabaninda kalirdi.
+die() {
+  candidate_db_drop "${CANDIDATE_DB:-}"
+  printf '[release %s] HATA: %s\n' "$TS" "$*" >&2
+  exit 1
+}
 run() {
   if [ "$DRY_RUN" = "1" ]; then
     printf '[dry-run] %s\n' "$*"
@@ -148,6 +160,109 @@ run() {
     "$@"
   fi
 }
+
+# ---------------------------------------------------------------------------
+# ADACIK IZOLASYONU — aday artik URETIM DB'sine yazmaz
+# ---------------------------------------------------------------------------
+# ONCEKI DURUM (2026-10-27'ye kadar): adacik, canli container'in ortamini
+# oldugu gibi aliyordu; `DATABASE_URL` uretim veritabanini gosteriyordu. Yani
+# "aday saglikli mi" diye boot ettigimiz container, startup migration
+# zincirinin TAMAMINI uretim verisi uzerinde kosuyordu. Kapilar (sayim +
+# filigran) bunu ancak SONRADAN tespit ediyordu — 2026-10-27'de 1 sohbet +
+# 9 mesaj tam olarak boyle, cutover karari verilmeden once silindi.
+#
+# YENI DURUM: adacik, uretimin AYNI ANDAKI kopyasi uzerinde kosar. Boylece
+#  - "migration patliyor mu" sorusu gercek sekilli veride cevaplanir,
+#  - yikici bir migration'in NE SILECEGI kopyada olculur (uretimde degil),
+#  - uretim satirlarina yazma yetkisi hic verilmez.
+# Kopya, adacik olculdukten hemen sonra DROP edilir; kalici bir artik birakmaz.
+# Uretim verisine hicbir test satiri eklenmez.
+db_counts_for() {
+  # $1 = veritabani adi. Cikti: "conversations|messages|contacts"
+  local db="${1:-}"
+  case "$db" in ''|*[!A-Za-z0-9_]*) printf 'unavailable\n'; return 0 ;; esac
+  docker exec "${DB_CONTAINER:-tezlify-db}" psql -U "${DB_USER:-tezlify}" -d "$db" -t -A -F'|' -c \
+    "select (select count(*) from conversations), (select count(*) from messages), (select count(*) from contacts);" \
+    2>/dev/null || printf 'unavailable\n'
+}
+
+candidate_db_drop() {
+  # Idempotent ve sessiz: hata yolunda da cagrilir, hicbir zaman patlamaz.
+  local db="${1:-}"
+  case "$db" in ''|*[!A-Za-z0-9_]*) return 0 ;; esac
+  docker exec "${DB_CONTAINER:-tezlify-db}" psql -U "${DB_USER:-tezlify}" -d postgres -q \
+    -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" >/dev/null 2>&1 \
+    || docker exec "${DB_CONTAINER:-tezlify-db}" psql -U "${DB_USER:-tezlify}" -d postgres -q \
+         -c "DROP DATABASE IF EXISTS \"$db\"" >/dev/null 2>&1 || true
+  return 0
+}
+
+candidate_db_prune_stale() {
+  # SIGKILL (tuzak calismaz) ile biten bir kosum, icinde GERCEK satirlar olan
+  # bir kopya birakabilir. Ayni onekle gelen eski kopyalar burada temizlenir.
+  # Es zamanli deploy desteklenmiyor: "keep" disindaki her sey artik.
+  local keep="${1:-}" db
+  for db in $(docker exec "${DB_CONTAINER:-tezlify-db}" psql -U "${DB_USER:-tezlify}" \
+      -d postgres -t -A -c \
+      "select datname from pg_database where datname like '${DB_NAME}_cand_%' and datname <> '$keep';" \
+      2>/dev/null || true); do
+    case "$db" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    candidate_db_drop "$db"
+    log "eski adacik kopyasi temizlendi: $db"
+  done
+  return 0
+}
+
+candidate_db_create() {
+  # $1 = hedef DB, $2 = kaynak DB. Sema + VERI kopyasi.
+  # Veri kopyasi bilinclidir: yikici bir migration'in etkisi ancak gercek
+  # satirlar varken olculebilir. Kopya oldugu icin kayip riski yoktur.
+  local db="${1:-}" src="${2:-}"
+  case "$db" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
+  case "$src" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
+  candidate_db_prune_stale "$db"
+  candidate_db_drop "$db"
+  if ! docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d postgres -q \
+        -c "CREATE DATABASE \"$db\"" >/dev/null 2>&1; then
+    log "izole DB olusturulamadi: $db"
+    return 1
+  fi
+  if ! docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" -d "$src" \
+        --no-owner --no-privileges 2>"$RELEASE_DIR/candidate-db-dump.err" \
+       | docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$db" -q \
+         >"$RELEASE_DIR/candidate-db-restore.log" 2>&1; then
+    log "izole DB kopyasi basarisiz (candidate-db-dump.err / candidate-db-restore.log)"
+    candidate_db_drop "$db"
+    return 1
+  fi
+  local tables
+  tables="$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$db" -t -A -c \
+    "select count(*) from information_schema.tables where table_schema in ('public','whatsapp_private')" \
+    2>/dev/null || echo 0)"
+  # Kopya "oldu" demek icin tablolar gercekten gelmis olmali; psql hata
+  # yutabilir (ON_ERROR_STOP kapali, uzanti izinleri icin), bu yuzden olcut
+  # niyet degil SAYI: en az 10 tablo yoksa kopya yoktur.
+  if [ "${tables:-0}" -lt 10 ]; then
+    log "izole DB kopyasi eksik: yalnizca ${tables:-0} tablo"
+    candidate_db_drop "$db"
+    return 1
+  fi
+  log "izole DB hazir: $db ($tables tablo, $src kopyasi)"
+  return 0
+}
+
+candidate_env_isolate() {
+  # $1 = env dosyasi, $2 = izole DB. DATABASE_URL'i kopyaya cevirir.
+  # Uretim URL'i adacik env'inde KALMAZ: "yazma yetkisi yok" iddiasi ancak
+  # boyle dogrulanabilir. Donusum mantigi `candidate_db_url.py`'de durur —
+  # orada birim testiyle dogrulanir, burada yalnizca cagrilir.
+  local envfile="${1:-}" db="${2:-}"
+  [ -f "$envfile" ] || return 1
+  case "$db" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
+  [ -n "$CANDIDATE_DB_URL_PY" ] || return 1
+  python3 "$CANDIDATE_DB_URL_PY" "$envfile" "$db" || return 1
+}
+
 
 rollback() {
   log "GERI ALINIYOR: onceki imaj etiketlerine donuluyor"
@@ -172,6 +287,9 @@ rollback() {
 on_error() {
   local code=$?
   log "HATA (cikis kodu $code)"
+  # Izole DB her cikista temizlenir: yarim kalmis bir kopya, icinde gercek
+  # satirlar ve kimlik bilgileri tasiyan bir artik olarak kalmamali.
+  candidate_db_drop "$CANDIDATE_DB"
   if [ "$VERIFIED" = "1" ]; then
     # Dogrulama (hash'ler + public saglik) gectikten sonra hata artik GERI
     # DONME sebebi degil: cutover basarili, kanitlar alindi. Geri almak
@@ -218,6 +336,25 @@ db_counts() {
   if ! db_available; then printf 'unavailable\n'; return 0; fi
   docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -A -F'|' -c \
     "select (select count(*) from conversations), (select count(*) from messages), (select count(*) from contacts);" \
+    2>/dev/null || printf 'unavailable\n'
+}
+
+# Sohbet bazinda mesaj sayisi — "hangi sohbet kac mesaj kaybetti" sorusunu
+# cevaplar. `edge` verilirse YALNIZCA o kimlik esiginin altindaki mesajlar
+# sayilir; yeni gelen mesajlar ozeti degistirmez, yani once/sonra kiyasi
+# gercek kaybi gosterir.
+#
+# KARAR VERMEZ, KANIT URETIR: canli kimlik supurmesi mesru bir birlestirme
+# yaparsa mesajlar sohbetler ARASINDA tasinir ve bu ozet degisir — kayip
+# olmadan. Kayip karari filigrana aittir (kimlik tasinmaz, korunur).
+db_relation_digest() {
+  local edge="${1:-}" where=""
+  if [ -n "$edge" ]; then
+    case "$edge" in *[!0-9]*) printf 'unavailable\n'; return 0 ;; esac
+    where="where id <= $edge"
+  fi
+  docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
+    "select conversation_id||'|'||count(*) from messages $where group by 1 order by 1;" \
     2>/dev/null || printf 'unavailable\n'
 }
 
@@ -274,14 +411,14 @@ db_messages_upto() {
 }
 
 # Filigran oncesinde var olan mesajlardan kaci kayboldu? Kayip yoksa bos doner.
+# Karsilastirma `message_watermark.py`'de durur: bash icinde gomulu bir
+# kosul test edilemezdi, oysa bu olcu "veri kaybi var mi" sorusunun tek
+# dayanagi. Orada birim testiyle dogrulanir (yeni gelen mesajlarin sayimi
+# sisirmedigi dâhil), burada yalnizca cagrilir.
 messages_lost_since() {
-  local wm="${1:-}" after="${2:-}" edge before
-  case "$wm$after" in *unavailable*) return 0 ;; esac
-  IFS='|' read -r edge before <<<"$wm"
-  if [ -z "$edge" ] || [ -z "$before" ] || [ -z "$after" ]; then return 0; fi
-  if [ "$after" -lt "$before" ]; then
-    printf 'messages:%s->%s (id<=%s)\n' "$before" "$after" "$edge"
-  fi
+  local wm="${1:-}" after="${2:-}"
+  [ -n "${WATERMARK_PY:-}" ] || return 0
+  python3 "$WATERMARK_PY" "$wm" "$after" || true
   return 0
 }
 
@@ -379,9 +516,35 @@ else
   GUARD_PY=""
 fi
 
+# Ayni bootstrap mantigi: adacik env'ini izole kopyaya ceviren yardimci da
+# hedef commit'ten okunur. Yoksa izolasyon KANITLANAMAZ — ve kanitlanamayan
+# izolasyonla deploy edilmez (asagida `die`).
+CANDIDATE_DB_URL_PY="/tmp/tezlify-candidate-db-url-$TS.py"
+if git show "$TARGET_FULL:scripts/deploy/candidate_db_url.py" > "$CANDIDATE_DB_URL_PY" 2>/dev/null \
+    && [ -s "$CANDIDATE_DB_URL_PY" ]; then
+  :
+elif [ -f "$PROJECT_DIR/scripts/deploy/candidate_db_url.py" ]; then
+  CANDIDATE_DB_URL_PY="$PROJECT_DIR/scripts/deploy/candidate_db_url.py"
+  log "UYARI: candidate_db_url.py hedef commit'te yok; calisma agacindaki kopya kullaniliyor"
+else
+  CANDIDATE_DB_URL_PY=""
+fi
+
+# Filigran karsilastirmasi da hedef commit'ten okunur: denetlenen kod,
+# dagitilan koddur.
+WATERMARK_PY="/tmp/tezlify-message-watermark-$TS.py"
+if git show "$TARGET_FULL:scripts/deploy/message_watermark.py" > "$WATERMARK_PY" 2>/dev/null \
+    && [ -s "$WATERMARK_PY" ]; then
+  :
+elif [ -f "$PROJECT_DIR/scripts/deploy/message_watermark.py" ]; then
+  WATERMARK_PY="$PROJECT_DIR/scripts/deploy/message_watermark.py"
+  log "UYARI: message_watermark.py hedef commit'te yok; calisma agacindaki kopya kullaniliyor"
+else
+  WATERMARK_PY=""
+fi
+
 if [ -z "$GUARD_PY" ]; then
-  MIGRATION_GUARD_RESULT="skipped_no_guard"
-  log "UYARI: migration muhafizi ATLANDI — migration_guard.py bulunamadi"
+  MIGRATION_GUARD_RESULT="skipped_no_guard"  log "UYARI: migration muhafizi ATLANDI — migration_guard.py bulunamadi"
 elif [ -z "$PREV_DEPLOYED" ]; then
   MIGRATION_GUARD_RESULT="skipped_no_baseline"
   log "UYARI: migration muhafizi ATLANDI — karsilastirma tabani yok (.deployed-commit bos)"
@@ -413,7 +576,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "PLAN: normalize -> build -> adacik saglik -> cutover -> dogrula (degisiklik yapilmadi)"
   log "hedef: $TARGET_FULL"
   log "cutover servisleri: ${CUTOVER_SERVICES[*]}"
-  log "ek adimlar: db sayim+sema tabani, adacik logu, adacik sonrasi sayim karsilastirmasi"
+  log "ek adimlar: db sayim+sema tabani, adacik IZOLE DB kopyasi, adacik logu, adacik sonrasi sayim karsilastirmasi"
   exit 0
 fi
 
@@ -438,6 +601,8 @@ DB_COUNTS_BEFORE="$(db_counts)"
 printf '%s\n' "$DB_COUNTS_BEFORE" > "$RELEASE_DIR/db-counts-before.txt"
 MSG_WM_BEFORE="$(db_message_watermark)"
 printf '%s\n' "$MSG_WM_BEFORE" > "$RELEASE_DIR/message-watermark-before.txt"
+# Iliski ozeti: cutover oncesi sohbet->mesaj dagilimi (kimlik/iliskinin kaydi).
+db_relation_digest "" > "$RELEASE_DIR/relations-before.txt"
 schema_fingerprint > "$RELEASE_DIR/schema-before.txt"
 SCHEMA_BEFORE_HASH="$(sha256sum "$RELEASE_DIR/schema-before.txt" | cut -d' ' -f1)"
 log "db tabani: counts=${DB_COUNTS_BEFORE} filigran=${MSG_WM_BEFORE} sema=${SCHEMA_BEFORE_HASH:0:12}"
@@ -499,6 +664,32 @@ docker inspect "tezlify-$BACKEND_SERVICE" --format '{{range .Config.Env}}{{print
   | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > "$CANDIDATE_ENV_FILE" \
   || die "adacik ortami canli container'dan okunamadi"
 log "adacik ortami canlidan kopyalandi: $(wc -l < "$CANDIDATE_ENV_FILE" | tr -d ' ') degisken"
+
+# --- IZOLASYON: adacik uretim DB'sine YAZAMAZ ------------------------------
+# Bu blok olmadan adacik, uretimin tam kopyasi olan bir veritabaninda startup
+# migration zincirini kosar ve yikici bir migration'i cutover kararindan ONCE
+# uygular. Kanit tek bir seye dayanmaz: (1) env'deki DATABASE_URL kopyaya
+# cevrilir, (2) uretim DB adinin env'de kalmadigi grep ile dogrulanir,
+# (3) adacik penceresi boyunca uretim sayim/filigraninin DEGISMEDIGI olculur.
+CANDIDATE_DB="${DB_NAME}_cand_${TS}"
+[ -n "$CANDIDATE_DB_URL_PY" ] \
+  || die "candidate_db_url.py bulunamadi; adacik izolasyonu KANITLANAMAZ (cutover yapilmadi)"
+[ -n "$WATERMARK_PY" ] \
+  || die "message_watermark.py bulunamadi; veri kaybi OLCULEMEZ (cutover yapilmadi)"
+candidate_db_create "$CANDIDATE_DB" "$DB_NAME" \
+  || die "izole aday veritabani kurulamadi; adacik uretim DB'sine karsi kosmayacak (cutover yapilmadi)"
+candidate_env_isolate "$CANDIDATE_ENV_FILE" "$CANDIDATE_DB" \
+  || die "adacik DATABASE_URL'i izole kopyaya cevrilemedi; uretim DB'sine dokunma riski (cutover yapilmadi)"
+if grep -Eq "DATABASE_URL=.*/${DB_NAME}(\\?|$)" "$CANDIDATE_ENV_FILE"; then
+  die "adacik env'inde uretim DATABASE_URL kaldi; izolasyon kanitlanamadi (cutover yapilmadi)"
+fi
+printf '%s\n' "$CANDIDATE_DB" > "$RELEASE_DIR/candidate-db.txt"
+grep '^DATABASE_URL=' "$CANDIDATE_ENV_FILE" | sed 's#://[^@]*@#://***@#' \
+  > "$RELEASE_DIR/candidate-db-url.txt" || true
+CAND_DB_BEFORE="$(db_counts_for "$CANDIDATE_DB")"
+printf '%s\n' "$CAND_DB_BEFORE" > "$RELEASE_DIR/candidate-db-counts-before.txt"
+log "adacik IZOLE DB: $CANDIDATE_DB — uretim '$DB_NAME'e DOKUNULMUYOR (kopya sayimi=${CAND_DB_BEFORE})"
+
 docker run -d --name "$CANDIDATE_NAME" \
   --network "$NETWORK" \
   --env-file "$CANDIDATE_ENV_FILE" \
@@ -530,12 +721,40 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3b. ADACIK PENCERESINDE VERI DEGISTI MI?
+# 3b. ADACIK PENCERESINDE URETIM VERISI DEGISTI MI?
 # ---------------------------------------------------------------------------
-# Bu, 2026-10-27'de cevaplanamayan sorunun dogrudan cevabidir: "124 -> 123
-# oldu, kim sildi?". Sayim adacik kalkmadan once ve adacik oldukten hemen
-# sonra alinir; aradaki dusus bir migration'in eseridir ve artik ATFEDILEBILIR
-# (log da ayni release dizininde).
+# Adacik artik izole kopyada kostugu icin bu olcumun anlami DEGISTI ve daha
+# guclendi: uretim sayiminda/filigraninda gorulen HER degisiklik ya canli
+# trafiktir (artis) ya da IZOLASYON KUSURUDUR (azalma). Yani bu blok hem
+# "migration ne sildi" hem de "adacik uretime dokundu mu" sorusunu cevaplar.
+#
+# Kopyanin kendi sayimi ayrica tutulur: yikici bir migration'in gercek sekilli
+# veride NE silcegini gosterir — uretimde degil, atilabilir kopyada.
+CAND_DB_AFTER="$(db_counts_for "$CANDIDATE_DB")"
+printf '%s\n' "$CAND_DB_AFTER" > "$RELEASE_DIR/candidate-db-counts-after.txt"
+CLONE_DROPS="$(counts_dropped "$CAND_DB_BEFORE" "$CAND_DB_AFTER")"
+if [ -n "$CLONE_DROPS" ]; then
+  printf '%s\n' "$CLONE_DROPS" > "$RELEASE_DIR/candidate-clone-drop.txt"
+  log "BILGI: migration IZOLE KOPYADA satir sildi (uretim ETKILENMEDI):"
+  printf '%s\n' "$CLONE_DROPS" | sed 's/^/    /'
+  if [ -n "$GUARD_PY" ]; then
+    python3 "$GUARD_PY" log --file "$CANDIDATE_LOG" 2>&1 | sed 's/^/    /' || true
+  fi
+else
+  log "izole kopyada satir sayisi degismedi: $CAND_DB_AFTER"
+fi
+candidate_db_drop "$CANDIDATE_DB"
+CANDIDATE_DB=""
+
+# Iliski ozeti (kanit): esik oncesi mesajlarin sohbetlere dagilimi. Kayip
+# karari filigranda; burada "hangi sohbet" sorusunun cevabi saklanir.
+db_relation_digest "${MSG_WM_BEFORE%%|*}" > "$RELEASE_DIR/relations-after-candidate.txt"
+if ! diff -q "$RELEASE_DIR/relations-before.txt" "$RELEASE_DIR/relations-after-candidate.txt" >/dev/null 2>&1; then
+  diff "$RELEASE_DIR/relations-before.txt" "$RELEASE_DIR/relations-after-candidate.txt" \
+    > "$RELEASE_DIR/relations-diff.txt" 2>&1 || true
+  log "BILGI: sohbet bazinda mesaj dagilimi degisti (kanit: relations-diff.txt) — karar filigrana aittir"
+fi
+
 DB_COUNTS_AFTER_CANDIDATE="$(db_counts)"
 printf '%s\n' "$DB_COUNTS_AFTER_CANDIDATE" > "$RELEASE_DIR/db-counts-after-candidate.txt"
 CANDIDATE_DROPS="$(counts_dropped "$DB_COUNTS_BEFORE" "$DB_COUNTS_AFTER_CANDIDATE")"
@@ -544,29 +763,22 @@ CANDIDATE_DROPS="$(counts_dropped "$DB_COUNTS_BEFORE" "$DB_COUNTS_AFTER_CANDIDAT
 CANDIDATE_LOST="$(messages_lost_since "$MSG_WM_BEFORE" "$(db_messages_upto "${MSG_WM_BEFORE%%|*}")")"
 if [ -n "$CANDIDATE_LOST" ]; then
   printf '%s\n' "$CANDIDATE_LOST" > "$RELEASE_DIR/candidate-messages-lost.txt"
-  log "HATA: adacik penceresinde ONCEDEN VAR OLAN mesaj kayboldu:"
+  log "HATA: adacik penceresinde URETIMDE onceden var olan mesaj kayboldu:"
   printf '%s\n' "$CANDIDATE_LOST" | sed 's/^/    /'
-  if [ "$ALLOW_MIGRATIONS" != "1" ]; then
-    die "adacik penceresinde onceki mesajlar silindi ve --allow-migrations verilmedi; CUTOVER YAPILMADI, canli sistem etkilenmedi. Kanit: $RELEASE_DIR"
-  fi
-  log "--allow-migrations verildi; mesaj kaybi onaylandi, cutover'a devam ediliyor"
+  # Adacik izole kopyada kostugu icin bu artik "onaylanmis migration" degil,
+  # IZOLASYON IHLALIDIR. --allow-migrations bunu gecemez.
+  die "adacik izole olmasina ragmen uretimde mesaj kayboldu; CUTOVER YAPILMADI. Kanit: $RELEASE_DIR"
 fi
 if [ -n "$CANDIDATE_DROPS" ]; then
   printf '%s\n' "$CANDIDATE_DROPS" > "$RELEASE_DIR/candidate-data-drop.txt"
-  log "UYARI: adacik penceresinde satir sayisi DUSTU:"
+  log "HATA: adacik izole olmasina ragmen URETIMDE satir sayisi dustu:"
   printf '%s\n' "$CANDIDATE_DROPS" | sed 's/^/    /'
-  log "adacik logunda silme izleri:"
   if [ -n "$GUARD_PY" ]; then
     python3 "$GUARD_PY" log --file "$CANDIDATE_LOG" 2>&1 | sed 's/^/    /' || true
-  else
-    log "    (muhafiz betigi yok; ham log: $CANDIDATE_LOG)"
   fi
-  if [ "$ALLOW_MIGRATIONS" != "1" ]; then
-    die "adacik penceresinde veri azaldi ve --allow-migrations verilmedi; CUTOVER YAPILMADI, canli sistem etkilenmedi. Kanit: $RELEASE_DIR"
-  fi
-  log "--allow-migrations verildi; dusus onaylandi, cutover'a devam ediliyor"
+  die "adacik izolasyonu kanitlanamadi (uretim verisi azaldi); CUTOVER YAPILMADI. Kanit: $RELEASE_DIR"
 else
-  log "adacik penceresinde satir sayisi degismedi: $DB_COUNTS_AFTER_CANDIDATE"
+  log "adacik penceresinde uretim satir sayisi degismedi: $DB_COUNTS_AFTER_CANDIDATE (izolasyon kaniti)"
 fi
 
 # Adacigin GERCEKTEN calistirdigi migration setini kayda gecir. "Imaj boot etti"
