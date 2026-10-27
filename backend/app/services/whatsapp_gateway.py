@@ -301,9 +301,9 @@ async def get_messages(
         params["timeout_ms"] = int(timeout_ms)
         http_timeout = max(4.0, (timeout_ms / 1000.0) + 2.0)
     elif fetch_provider:
-        # Bounded budget for on-demand provider history: never block FastAPI worker for 30s!
-        params["timeout_ms"] = 4000
-        http_timeout = 6.0
+        # Full provider history window (~12-15s) so the primary phone has enough time to respond.
+        params["timeout_ms"] = 12000
+        http_timeout = 15.0
     else:
         http_timeout = 5.0
     try:

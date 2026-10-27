@@ -1102,17 +1102,17 @@ export function createSessionManager({
 
       let providerStatus = 'NOT_REQUESTED';
       // Hizli yol: Sohbeti ilk acarken (before yokken) bellek ici mesajlar varsa DERHAL donulur.
-      // 12 saniyelik telefon round-trip'i ile arayuz kilitlenmez. Yalnizca kullanici eski mesajlari
-      // yukari kaydirarak acikca istediginde (before veya oldestMsgId belirtilmisse) ve bellekte
-      // yeterli eski mesaj yoksa provider sorgulanir.
+      // 15 saniyelik telefon round-trip'i ile arayuz kilitlenmez. Yalnizca kullanici eski mesajlari
+      // yukari kaydirarak acikca istediginde (before veya oldestMsgId belirtilmisse) veya bellekte
+      // yeterli mesaj yokken acikca fetchProvider istendiginde provider sorgulanir.
+      const targetAnchorId = oldestMsgId || list[0]?.wa_message_id;
       const isPagingOlder = Boolean(before) || Boolean(oldestMsgId);
-      const providerFetchNeeded = fetchProvider && isPagingOlder && list.length < limit;
+      const providerFetchNeeded = fetchProvider && Boolean(targetAnchorId) && (isPagingOlder || list.length < limit);
       if (providerFetchNeeded) {
         const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function';
         if (!sockUsable) {
           providerStatus = 'SOCKET_UNAVAILABLE';
         } else {
-          const targetAnchorId = oldestMsgId || list[0]?.wa_message_id;
           if (!targetAnchorId) {
             providerStatus = 'NO_ANCHOR';
           } else {
@@ -1122,7 +1122,7 @@ export function createSessionManager({
               oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
               oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
               before,
-              timeoutMs: Math.min(timeoutMs || 4000, 5000),
+              timeoutMs: timeoutMs ? Number(timeoutMs) : 15000,
             });
             providerStatus = histResult?.status || 'OK';
             list = store.messagesByChat.get(key) || [];
