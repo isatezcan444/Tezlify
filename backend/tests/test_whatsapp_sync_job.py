@@ -102,19 +102,45 @@ async def _isolate():
 
 
 async def _drain_jobs():
-    for _ in range(3):
-        jobs = [j for j in ws._sync_jobs.values() if j.state == "SYNCING"]
-        if not jobs:
-            break
-        await asyncio.wait_for(
-            asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
-            timeout=10,
-        )
-    ws._sync_jobs.clear()
-    # Bulk-kanal algilama cache'i modul-global VE artik gateway_id ile anahtarli.
-    # Duz anahtar yazmak (eskiden oldugu gibi) girdiyi temizlemez, yani onceki
-    # testin "ok=True" sonucu 300 sn boyunca bu teste sizar. Tamamen bosalt.
-    ws._bulk_channel_cache.clear()
+    """Suren job'lari bosalt — temizlik ASLA test hatasina donusmemeli.
+
+    `SyncJob.done` bir `asyncio.Event`'tir ve yalnizca job'un gorevi gercekten
+    calisirsa `finally: job.done.set()` tetiklenir. Testin dongusu kapanirken
+    hala bekleyen bir gorev iptal edilir ve o `finally` HIC calismaz; `done`
+    sonsuza kadar set edilmemis kalir. Bu durumda `wait_for(..., 10)` her
+    seferinde TimeoutError firlatir.
+
+    Eski halinde bu istisna fixture KURULUMUNDAN disari cikiyordu:
+      (a) test ERROR oluyordu,
+      (b) alttaki `clear()` calismadigi icin sizan SYNCING job moduldeki her
+          sonraki testte yeniden 10 sn bekletiyordu (3 x 10 sn).
+    Yani tek bir sizinti komsularini vuruyordu ve hangi testin ERROR olacagi
+    tamamen rastgele siralama secimine bagliydi.
+
+    Ayni dosyadaki `test_whatsapp_live.py::_drain_sync_jobs` bu korumayi zaten
+    tasiyordu; bu dosya tasimiyordu. Fark buydu.
+
+    Artik bekleme sinirli ve sessiz, temizlik `finally`'de kosulsuz. Sizan
+    job'un KENDI testi kendi iddialariyla duser; komsusu dusmez.
+    """
+    try:
+        for _ in range(3):
+            jobs = [j for j in ws._sync_jobs.values() if j.state == "SYNCING"]
+            if not jobs:
+                break
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
+                    timeout=10,
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                break
+    finally:
+        ws._sync_jobs.clear()
+        # Bulk-kanal algilama cache'i modul-global VE artik gateway_id ile anahtarli.
+        # Duz anahtar yazmak (eskiden oldugu gibi) girdiyi temizlemez, yani onceki
+        # testin "ok=True" sonucu 300 sn boyunca bu teste sizar. Tamamen bosalt.
+        ws._bulk_channel_cache.clear()
 
 
 @pytest.fixture
@@ -1712,3 +1738,37 @@ async def test_46_no_recovery_pass_when_bulk_channel_is_unavailable(mock_gateway
     job = await _run_sync()
     assert job.backfill_total == 0
     assert not _recovery_calls(mock_gateway), "kanal yokken kurtarma turu atildi"
+
+
+@pytest.mark.asyncio
+async def test_47_cleanup_survives_a_job_whose_done_event_is_never_set():
+    """Temizlik, set edilmemis bir `done` yuzunden ASLA test hatasi uretmemeli.
+
+    Gercek mekanizma: `SyncJob.done` bir `asyncio.Event`. `job.done.set()` yalnizca
+    job gorevinin `finally` blogunda cagrilir. Testin event loop'u kapanirken hala
+    bekleyen bir gorev iptal edilirse o `finally` HIC calismaz; yani `done` sonsuza
+    kadar bos kalir. Boyle bir job modul-global `ws._sync_jobs` icinde kalirsa
+    sonraki testin fixture kurulumu 10 sn bekleyip TimeoutError firlatiyordu:
+    test ERROR oluyor VE alttaki `clear()` calismadigi icin sizan job komsularini
+    da 3 x 10 sn kilitliyordu. Hangi testin ERROR olacagi tamamen rastgele
+    siralama secimine bagliydi (ayni kod bir seed'de yesil, digerinde kirmizi).
+
+    Bekleme suresi kisaltilarak (0.05 sn) ayni yol hizli olculur; iddia edilen sey
+    istisnanin DISARI CIKMAMASI ve registry'nin TEMIZLENMESI.
+    """
+    from unittest.mock import patch as _patch
+
+    stuck = ws.SyncJob(sync_id="stuck-1", user_id=TEST_USER, session_key=None)
+    stuck.state = "SYNCING"
+    ws._sync_jobs["stuck-1"] = stuck
+
+    real_wait_for = asyncio.wait_for
+
+    async def _short_wait_for(aw, timeout):
+        return await real_wait_for(aw, 0.05)
+
+    with _patch("asyncio.wait_for", _short_wait_for):
+        await _drain_jobs()
+
+    assert "stuck-1" not in ws._sync_jobs, (
+        "zaman asimi temizligi atlamamali: sizan job komsu testleri de kilitler")
