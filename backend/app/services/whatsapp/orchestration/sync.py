@@ -39,6 +39,8 @@ from backend.app.models.message import (
 )
 from backend.app.models.message_reaction import MessageReaction
 from backend.app.models.whatsapp_session import WhatsAppSession
+from backend.app.models.whatsapp_connect_stage import STAGE_SYNC_COMPLETED
+from backend.app.services import whatsapp_connect_metrics as _connect_metrics
 from backend.app.services.whatsapp.exceptions import (
     NoWhatsAppSession,
     WhatsAppRelinkRequired,
@@ -2029,6 +2031,22 @@ class WhatsAppSyncOrchestrator:
                             await ws_manager.broadcast({"event": "conversations_updated", "user_id": owner})
                         except Exception:
                             pass
+                        # Faz 3: kapiyi acan damga ile AYNI anda olculur — bu,
+                        # kullanicinin "sohbetler gorundu" dedigi anin sunucu
+                        # tarafindaki karsiligidir. Arayuzde gorunme aninin
+                        # kendisi backend'den GOZLEMLENEMEZ (bkz. rapor §C).
+                        for _ws in sessions_to_sync:
+                            await _connect_metrics.record_stage_once(
+                                db,
+                                correlation_id=_connect_metrics.attempt_id_for_gateway(
+                                    getattr(_ws, "gateway_id", None)
+                                ),
+                                stage=STAGE_SYNC_COMPLETED,
+                                user_id=owner,
+                                session_id=getattr(_ws, "id", None),
+                                gateway_id=getattr(_ws, "gateway_id", None),
+                                detail={"conversations": len(conv_out)},
+                            )
 
                     try:
                         await reapply_chat_names(db, owner, items)
@@ -2111,6 +2129,21 @@ class WhatsAppSyncOrchestrator:
                         if hasattr(_ws, "__dict__"):
                             _ws.__dict__["initial_sync_completed_at"] = _initial_sync_now
                     await db.commit()
+                    # Faz 3: ikinci (geç) damga yolu. `record_stage_once` olduğu
+                    # için erken damga zaten yazıldıysa burada ikinci satır
+                    # oluşmaz — "senkron iki kez tamamlandı" gibi görünmez.
+                    for _ws in sessions_to_sync:
+                        await _connect_metrics.record_stage_once(
+                            db,
+                            correlation_id=_connect_metrics.attempt_id_for_gateway(
+                                getattr(_ws, "gateway_id", None)
+                            ),
+                            stage=STAGE_SYNC_COMPLETED,
+                            user_id=owner,
+                            session_id=getattr(_ws, "id", None),
+                            gateway_id=getattr(_ws, "gateway_id", None),
+                            detail={"conversations": len(all_items)},
+                        )
                 # Avatar backfill (QR sonrasi parite): kimi profil fotoğrafları
                 # rate limit / geç hydration nedeniyle ilk sweep'te düşer ve
                 # tek geçişli sweep'te başka retry tetikleyicisi olmadığından

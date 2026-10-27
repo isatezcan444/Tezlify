@@ -495,8 +495,20 @@ async def test_no_duplicate_public_session():
 
         assert res["status"] == "CONNECTED"
         assert res["session_id"] == 59
-        # Ensure db.add was NOT called (no new WhatsAppSession created)
-        assert not db.add.called
+        # Ensure no NEW WhatsAppSession row was created.
+        #
+        # This used to read `assert not db.add.called`, which is a broader claim
+        # than the test makes: since Phase 3 the same session also receives
+        # connect-metric stage rows (`WhatsAppConnectStage`), which are not
+        # public sessions and cannot duplicate one. Asserting on the MODEL keeps
+        # the original protection — "the relink path must not INSERT a session" —
+        # without failing on unrelated, intentional writes.
+        added_sessions = [
+            call.args[0]
+            for call in db.add.call_args_list
+            if isinstance(call.args[0], WhatsAppSession)
+        ]
+        assert added_sessions == [], added_sessions
 
 
 @pytest.mark.asyncio

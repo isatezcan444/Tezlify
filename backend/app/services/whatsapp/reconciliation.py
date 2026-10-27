@@ -1203,6 +1203,28 @@ async def run_identity_sweep_once(
                 "duration_ms": round(duration_ms, 3),
             },
         )
+    # Faz 3 — sayim anlik goruntusu.
+    #
+    # Her silme/birlestirme yolu artik enstrumante, ama "olay satiri yok" hala
+    # "aciklama yok" anlamina gelmemeli. Sayim yalnizca VERI SEKLI degistiginde
+    # yazildigi icin bu, bir degisimi en fazla bir tur araligina (900 s) baglar:
+    # 124 -> 123 gibi bir dusus bir daha "iki deploy arasinda bir yerde" olmaz.
+    try:
+        _factory = session_factory or AsyncSessionLocal
+        async with _factory() as _snap_db:
+            _users = (
+                await _snap_db.execute(
+                    text(
+                        "SELECT DISTINCT user_id FROM whatsapp_sessions "
+                        "WHERE user_id IS NOT NULL"
+                    )
+                )
+            ).fetchall()
+            for (_uid,) in _users:
+                await _data_audit.record_count_snapshot(_snap_db, user_id=str(_uid))
+    except Exception as exc:  # noqa: BLE001 - anlik goruntu turu durdurmamali
+        logger.debug("[sweep] sayim anlik goruntusu atlandi: %s", exc)
+
     return _SWEEP_STATE["last_report"]
 
 

@@ -17,7 +17,7 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 logger = logging.getLogger(__name__)
@@ -2224,7 +2224,7 @@ async def ensure_quick_replies_table(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_quick_replies_table verified")
 
 
-async def ensure_whatsapp_data_audit_table(engine: AsyncEngine) -> None:
+async def ensure_whatsapp_data_audit_table(engine: AsyncEngine) -> str:
     """Kalıcı veri olayı denetimi (whatsapp_data_audit) tablosunu güvence altına alır.
 
     NEDEN: 2026-10-27'de sohbet sayısı 124 → 123 düştü ve nedeni kanıtlanamadı —
@@ -2235,12 +2235,128 @@ async def ensure_whatsapp_data_audit_table(engine: AsyncEngine) -> None:
 
     Yalnızca EKLEME (additive): mevcut tablolara dokunmaz, `checkfirst=True` ile
     idempotenttir, geri alma veri kaybı yaratmaz (tablo düşürülür).
+
+    FAZ 3 — neden iki adım daha var
+    ------------------------------
+    Tablo Faz 2'de production'da zaten oluştu. `__table__.create(checkfirst=True)`
+    MEVCUT bir tabloyu tamamen atlar — indeksleri dahil. Yani modele yeni eklenen
+    `idempotency_key` kolonu ve UNIQUE indeksi, bu fonksiyon elle ALTER/INDEX
+    çalıştırmadıkça canlı veritabanına ASLA ulaşmaz. Bu, "testler yeşil ama
+    production'da kısıt yok" tuzağının tam kendisidir.
+
+    Dönüş değeri test edilebilir ve grep'lenebilir bir durumdur:
+    ``CREATED`` | ``ALREADY_PRESENT`` | ``BLOCKED`` | ``ERROR``.
+
+    ``BLOCKED``: kolonda zaten yinelenen değer varsa UNIQUE indeks oluşturulmaz.
+    Hangi satırın doğru olduğu bir domain kararıdır; migration bunu vermez ve
+    hiçbir satırı silmez. Denetim tablosunda satır silmek, denetimi yok etmekle
+    aynı şeydir.
     """
     from backend.app.models.whatsapp_data_audit import WhatsAppDataAudit
 
-    async with engine.begin() as conn:
-        await conn.run_sync(WhatsAppDataAudit.__table__.create, checkfirst=True)
-    logger.info("[MIGRATION] ensure_whatsapp_data_audit_table verified")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(WhatsAppDataAudit.__table__.create, checkfirst=True)
+
+            def _columns(sync_conn) -> set:
+                insp = inspect(sync_conn)
+                return {c["name"] for c in insp.get_columns("whatsapp_data_audit")}
+
+            columns = await conn.run_sync(_columns)
+            if "idempotency_key" not in columns:
+                if engine.dialect.name == "postgresql":
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE whatsapp_data_audit "
+                            "ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(96)"
+                        )
+                    )
+                else:
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE whatsapp_data_audit "
+                            "ADD COLUMN idempotency_key VARCHAR(96)"
+                        )
+                    )
+                logger.info(
+                    "[MIGRATION] whatsapp_data_audit.idempotency_key kolonu eklendi"
+                )
+
+            def _indexes(sync_conn) -> set:
+                insp = inspect(sync_conn)
+                return {i["name"] for i in insp.get_indexes("whatsapp_data_audit")}
+
+            if "uq_wa_data_audit_idempotency_key" in await conn.run_sync(_indexes):
+                logger.info("[MIGRATION] ensure_whatsapp_data_audit_table ALREADY_PRESENT")
+                return "ALREADY_PRESENT"
+
+            # Kısıtı kurmadan ÖNCE oku: yinelenen varsa hiçbir DDL çalıştırma.
+            duplicates = (
+                await conn.execute(
+                    text(
+                        "SELECT idempotency_key, COUNT(*) AS n FROM whatsapp_data_audit "
+                        "WHERE idempotency_key IS NOT NULL "
+                        "GROUP BY idempotency_key HAVING COUNT(*) > 1"
+                    )
+                )
+            ).fetchall()
+            if duplicates:
+                logger.error(
+                    "[MIGRATION][BLOCKED] whatsapp_data_audit.idempotency_key: %d yinelenen "
+                    "grup bulundu, UNIQUE indeks OLUSTURULMADI (ornek: %s). Hangi satirin "
+                    "dogru oldugu bir domain kararidir; hicbir satir silinmedi.",
+                    len(duplicates),
+                    [str(d[0])[:24] for d in duplicates[:3]],
+                )
+                return "BLOCKED"
+
+            # Kısmi indeks: NULL'lar çakışmaz (hem PostgreSQL hem SQLite'ta NULL
+            # tekil sayılır, ama bunu açıkça yazmak sözleşmeyi modele bağlıyor).
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_wa_data_audit_idempotency_key "
+                    "ON whatsapp_data_audit (idempotency_key) "
+                    "WHERE idempotency_key IS NOT NULL"
+                )
+            )
+        logger.info("[MIGRATION] ensure_whatsapp_data_audit_table CREATED")
+        return "CREATED"
+    except Exception as exc:  # noqa: BLE001 - tek bir indeks startup'ı düşürmemeli
+        logger.warning("[MIGRATION] ensure_whatsapp_data_audit_table: %s", exc)
+        return "ERROR"
+
+
+async def ensure_whatsapp_connect_stages_table(engine: AsyncEngine) -> str:
+    """Bağlantı ölçüm aşamaları (whatsapp_connect_stages) tablosunu güvence altına alır.
+
+    NEDEN: Faz 2'de QR/sync gecikme metriklerinin production'da HİÇ yazılmadığı
+    ölçüldü — `WHATSAPP_LATENCY_PROFILING` tanımlı değil (`printenv` → NOT_SET,
+    compose'da yok). Enstrümantasyon doğruydu, sadece kapalıydı; ve tek kayıt,
+    container'la birlikte ölen bir pino satırıydı.
+
+    Bu tablo ölçümün kendisidir ve BACKEND tarafından yazılır: gateway'i sırf
+    metrik açmak için yeniden yaratmak belleğindeki sohbet deposunu kaybettirir
+    (§A6), yani ölçüm toplamak canlı oturumu riske atamaz.
+
+    Yalnızca EKLEME, `checkfirst=True` ile idempotent. Dönüş: ``CREATED`` |
+    ``ALREADY_PRESENT`` | ``ERROR``.
+    """
+    from backend.app.models.whatsapp_connect_stage import WhatsAppConnectStage
+
+    try:
+        async with engine.begin() as conn:
+            existing = await conn.run_sync(
+                lambda sync_conn: inspect(sync_conn).has_table("whatsapp_connect_stages")
+            )
+            if existing:
+                logger.info("[MIGRATION] ensure_whatsapp_connect_stages_table ALREADY_PRESENT")
+                return "ALREADY_PRESENT"
+            await conn.run_sync(WhatsAppConnectStage.__table__.create, checkfirst=True)
+        logger.info("[MIGRATION] ensure_whatsapp_connect_stages_table CREATED")
+        return "CREATED"
+    except Exception as exc:  # noqa: BLE001 - ölçüm tablosu startup'ı düşürmemeli
+        logger.warning("[MIGRATION] ensure_whatsapp_connect_stages_table: %s", exc)
+        return "ERROR"
 
 
 async def clean_invalid_avatar_sentinels(engine: AsyncEngine) -> None:

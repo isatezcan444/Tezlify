@@ -2006,12 +2006,15 @@ async def delete_conversation(
         await db.execute(delete(Message).where(Message.conversation_id == conv.id))
     ).rowcount
     await db.delete(conv)
-    await db.commit()
 
-    # Denetim izi — COMMIT'TEN SONRA. Bu satir "silme gercekten kalici oldu"
-    # demektir; once/ sonra sayimlari, bir sonraki "sohbet sayisi dustu" turunu
-    # tahmin yerine kanitla aciklanabilir kilar.
-    await _data_audit.record_data_event(
+    # Denetim satiri AYNI transaction'da yazilir — Faz 2'de COMMIT'TEN SONRA
+    # yaziliyordu ve bu, sessiz bir delikti: COMMIT ile denetim INSERT'i arasinda
+    # bir cokme olursa silme kalici oluyor, kaydi ise kayboluyordu. Yani tam
+    # olarak aciklamaya calistigimiz "sayi dustu ama neden gorunmuyor" durumu.
+    #
+    # `flush()` once: `counts_after` gercekten silinmis hali gormeli.
+    await db.flush()
+    await _data_audit.stage_data_event(
         db,
         event=_data_audit.EVENT_CONVERSATION_DELETED,
         source="api",
@@ -2023,11 +2026,15 @@ async def delete_conversation(
         conversation_ids=[conversation_id],
         counts_before=_audit_before,
         counts_after=await _data_audit.snapshot_counts(db, user_id),
+        # Idempotency: ayni sohbetin ikinci kez silinmesi (client retry) ikinci
+        # bir satir uretmez — tek silme iki dusus gibi gorunmemeli.
+        idempotency_key=f"conversation_deleted:{user_id}:{conversation_id}",
         detail={
             "messages_deleted": int(messages_deleted or 0),
             "reactions_deleted": int(reactions_deleted or 0),
         },
     )
+    await db.commit()
 
     result = {
         "id": conversation_id,

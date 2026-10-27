@@ -26,6 +26,14 @@ from backend.app.models.conversation import Conversation
 from backend.app.models.message import Message
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services import whatsapp_gateway as gw
+from backend.app.services import whatsapp_connect_metrics as connect_metrics
+from backend.app.models.whatsapp_connect_stage import (
+    STAGE_ATTEMPT_FAILED,
+    STAGE_PAIRING_REQUESTED,
+    STAGE_QR_RECEIVED,
+    STAGE_QR_SERVED,
+    STAGE_SOCKET_OPEN,
+)
 from backend.app.services.whatsapp.exceptions import (
     NoWhatsAppSession,
     PairingPromotionRefused,
@@ -578,6 +586,19 @@ async def start_pairing_session(
             session_name=gw_session.get("session_name") or line_name,
             logical_session_id=logical_session_id,
         )
+        # Faz 3 — t0 of this attempt. The correlation id is DERIVED from the
+        # gateway id (see `attempt_id_for_gateway`), so every later stage can
+        # recompute it from data it already holds instead of carrying it in
+        # process memory — a restart between the QR and the first message must
+        # not break the chain. Instrumentation never raises, so it cannot fail
+        # a pairing.
+        await connect_metrics.record_stage(
+            db,
+            correlation_id=connect_metrics.attempt_id_for_gateway(gateway_id),
+            stage=STAGE_PAIRING_REQUESTED,
+            user_id=str(user_id),
+            gateway_id=gateway_id,
+        )
     return {
         "pair_token": pair_token,
         "gateway_id": gateway_id,
@@ -632,6 +653,18 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
         raise
 
     status_val = data.get("status")
+    _attempt_id = connect_metrics.attempt_id_for_gateway(gateway_id)
+    if status_val != "CONNECTED" and data.get("qr_code"):
+        # The gateway handed us a real QR. This is the earliest moment the
+        # backend can SEE a code exist — it is not "the provider generated one"
+        # and it is emphatically not "the user scanned it".
+        await connect_metrics.record_stage(
+            db,
+            correlation_id=_attempt_id,
+            stage=STAGE_QR_RECEIVED,
+            user_id=str(user_id),
+            gateway_id=gateway_id,
+        )
     if status_val == "CONNECTED":
         phone = (data.get("phone") or data.get("phone_number") or "").strip()
         log_id = pairing.get("logical_session_id")
@@ -697,6 +730,18 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
             session_id=getattr(row, "id", None),
             phone=getattr(row, "phone_number", None) or (phone or None),
         )
+        # Faz 3: the socket is open and the durable row exists. This is the
+        # first stage that is genuinely a *connection* event rather than a
+        # request, so `socket_open` — not `pairing_requested` — is the honest
+        # baseline for "how long until data arrives".
+        await connect_metrics.record_stage(
+            db,
+            correlation_id=_attempt_id,
+            stage=STAGE_SOCKET_OPEN,
+            user_id=str(user_id),
+            session_id=getattr(row, "id", None),
+            gateway_id=gateway_id,
+        )
         return {
             "status": "CONNECTED",
             "session_id": row.id,
@@ -705,6 +750,17 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
             "error_message": None,
         }
 
+    if data.get("qr_code"):
+        # `qr_received` says the code exists; `qr_served` says it left this
+        # process. They are recorded separately because a serialisation or
+        # response failure between them is a real (and invisible) failure mode.
+        await connect_metrics.record_stage(
+            db,
+            correlation_id=_attempt_id,
+            stage=STAGE_QR_SERVED,
+            user_id=str(user_id),
+            gateway_id=gateway_id,
+        )
     return {
         "status": status_val or "SCAN_QR",
         "qr_code": data.get("qr_code"),
@@ -808,6 +864,19 @@ async def cancel_pairing_session(
         logger.warning("[WhatsApp] Ephemeral gateway oturumu silinirken hata: %s", exc)
     if db is not None:
         await pairing_registry.consume_pairing(db, gateway_id)
+        # Faz 3: a cancelled attempt is a FAILED attempt, and it must be visible
+        # as one. Without this row a cancelled pairing and a pairing that never
+        # happened look identical in the table — and the success rate would be
+        # silently inflated.
+        await connect_metrics.record_stage(
+            db,
+            correlation_id=connect_metrics.attempt_id_for_gateway(gateway_id),
+            stage=STAGE_ATTEMPT_FAILED,
+            user_id=str(user_id),
+            gateway_id=gateway_id,
+            outcome="cancelled",
+            reason_code="cancelled_by_client",
+        )
     return {"success": True, "cancelled": True}
 
 

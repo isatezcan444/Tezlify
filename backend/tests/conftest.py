@@ -9,6 +9,7 @@ def run_db_migrations():
         ensure_campaigns_columns,
         ensure_quick_replies_table,
         ensure_whatsapp_data_audit_table,
+        ensure_whatsapp_connect_stages_table,
         ensure_messages_media_columns,
         ensure_api_keys_and_webhooks_tables,
         ensure_subscription_and_quota_tables,
@@ -21,6 +22,7 @@ def run_db_migrations():
         await ensure_campaigns_columns(engine)
         await ensure_quick_replies_table(engine)
         await ensure_whatsapp_data_audit_table(engine)
+        await ensure_whatsapp_connect_stages_table(engine)
         await ensure_messages_media_columns(engine)
         await ensure_api_keys_and_webhooks_tables(engine)
         await ensure_subscription_and_quota_tables(engine)

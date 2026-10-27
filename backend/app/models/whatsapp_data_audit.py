@@ -25,12 +25,37 @@ they are meaningless outside this database.
 
 `counts_before` / `counts_after` are the point of the whole exercise: they make a
 `-1` attributable to a specific operation instead of an unexplained drift.
+
+ATOMICITY (Phase 3)
+-------------------
+The row is written **inside the caller's transaction** wherever the caller still
+has one open (`stage_data_event`). Two failure modes matter and only one of them
+is obvious:
+
+* a rolled-back delete must not leave a "committed" row — the obvious one;
+* a committed delete must not leave *no* row — the one that made the original
+  124→123 unattributable. Post-commit recording has exactly this hole: a crash
+  between COMMIT and the audit INSERT loses the row while keeping the delete.
+
+Writing both in one transaction closes both. `record_data_event` (own commit)
+remains for callers whose transaction is already gone — the reconciliation
+sweep's rollback path.
 """
 
 import json
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Index, Integer, JSON, String, Text, Uuid
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    Uuid,
+    text,
+)
 
 from backend.app.core.database import Base
 from backend.app.core.datetime_utils import utc_now_naive
@@ -69,6 +94,14 @@ class WhatsAppDataAudit(Base):
     # The gateway outbox event that caused this, when there was one.
     outbox_event_id = Column(String(64), nullable=True)
 
+    # Retry-safe identity for this event. A gateway redelivery, a client retry
+    # or a sweep that re-examines the same pair must NOT append a second row —
+    # a duplicated audit row makes a `-1` look like a `-2`. Nullable because
+    # some callers (a sweep run summary) have no natural key; NULLs are
+    # distinct in a unique index on both PostgreSQL and SQLite, so those rows
+    # are never constrained.
+    idempotency_key = Column(String(96), nullable=True)
+
     # Small, sanitised extras. Never put a body, a phone or a JID in here.
     detail = Column(Text, nullable=True)
 
@@ -76,6 +109,13 @@ class WhatsAppDataAudit(Base):
         Index("idx_wa_data_audit_created", "created_at"),
         Index("idx_wa_data_audit_event_created", "event", "created_at"),
         Index("idx_wa_data_audit_user_created", "user_id", "created_at"),
+        Index(
+            "uq_wa_data_audit_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            sqlite_where=text("idempotency_key IS NOT NULL"),
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
 
     def as_dict(self) -> dict:
@@ -93,6 +133,7 @@ class WhatsAppDataAudit(Base):
             "counts_before": self.counts_before,
             "counts_after": self.counts_after,
             "outbox_event_id": self.outbox_event_id,
+            "idempotency_key": self.idempotency_key,
             "detail": _decode_detail(self.detail),
         }
 

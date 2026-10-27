@@ -72,6 +72,7 @@ from backend.app.schemas.quick_reply import (
 )
 from backend.app.services import whatsapp_service, quick_reply_service
 from backend.app.services import whatsapp_data_audit as _data_audit
+from backend.app.services import whatsapp_connect_metrics as _connect_metrics
 from backend.app.services.ai_responder_service import AiResponderService
 from backend.app.services.link_preview.service import (
     get_preview_image_bytes as _get_preview_image_bytes,
@@ -1434,3 +1435,41 @@ async def get_data_audit(
         db, user_id=current_user.id, limit=limit, event=event
     )
     return {"items": rows, "count": len(rows), "limit": limit}
+
+
+@router.get("/connect-metrics")
+async def get_connect_metrics(
+    days: int = Query(7, ge=1, le=90),
+    correlation_id: Optional[str] = Query(
+        None, description="Tek bir baglanti denemesinin tum asamalari"
+    ),
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Baglanti denemesi asama olcumleri (QR -> ilk sohbet).
+
+    NEDEN VAR: QR/sync gecikme metrikleri gateway'de dogru enstrumante edilmis
+    ama production'da KAPALIYDI (`WHATSAPP_LATENCY_PROFILING` tanimli degil),
+    yani "QR eslesmesini olc" gorevi okuyacak sayi bulamiyordu. Tek kayit da
+    container'la birlikte olen bir log satiriydi.
+
+    Burada olcum KALICI ve BACKEND tarafinda: gateway'i sırf metrik icin yeniden
+    baslatmak bellek icindeki sohbet deposunu kaybettirir (§A6).
+
+    SOZLESME:
+      * Her asama yalnizca GERCEKTEN gozlemlendiyse kaydedilir; gozlenmeyen
+        asama satir olarak YOKTUR (0 ms diye gorunmez).
+      * `elapsed_ms` denemenin kendi baslangicindan olculur, bu yuzden iki
+        deneme birbirinin saatini odunc alamaz.
+      * p50/p95 yalnizca yeterli ornek varsa uretilir; altinda ham degerler
+        ve `percentiles_reliable: false` doner.
+
+    Kullanicinin QR'i taradigi an WhatsApp tarafindan bildirilmez, bu yuzden
+    boyle bir asama YOKTUR — tahmin edip "olculmus" gibi sunulmaz.
+    """
+    if correlation_id:
+        return {
+            "correlation_id": correlation_id,
+            "stages": await _connect_metrics.attempt_timeline(db, correlation_id),
+        }
+    return await _connect_metrics.stage_summary(db, days=days, user_id=current_user.id)

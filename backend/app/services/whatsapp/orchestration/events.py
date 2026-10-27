@@ -21,6 +21,12 @@ import uuid
 
 from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.services import whatsapp_data_audit as _data_audit
+from backend.app.services import whatsapp_connect_metrics as _connect_metrics
+from backend.app.models.whatsapp_connect_stage import (
+    STAGE_FIRST_CONTACT,
+    STAGE_FIRST_CONVERSATION,
+    STAGE_FIRST_MESSAGE,
+)
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
 
 from sqlalchemy import delete, func, inspect as sa_inspect, or_, select, text
@@ -1752,6 +1758,24 @@ class WhatsAppEventOrchestrator:
         deleted_msgs = 0
         deleted_contacts: List[int] = []
 
+        # Faz 3 — DENETIM BOSLUGU KAPATILIYOR.
+        #
+        # Bu yol, sohbet sayisini VE kisi sayisini AYNI transaction'da birer
+        # azaltabilir: `dup_conv` silinir, ardindan ona bagli kisi kalmissa o da
+        # silinir. 2026-10-27'de gozlenen "-1 sohbet, -1 kisi" imzasina EN COK
+        # benzeyen yol buydu ve o gun bu satirlar HICBIR iz birakmadi — 124→123'un
+        # atfedilememesinin nedeni tam olarak bu denetimsizlikti.
+        #
+        # (Aday olarak elenmesi asagida: `flush()` yorumuna bak. Kisi silme dali
+        # olu oldugu icin bu yol tek basina kisi sayisini degistiremez.)
+        #
+        # Snapshot donguden ONCE alinir, kayit COMMIT'TEN ONCE ve AYNI
+        # transaction'a yazilir: rollback olursa ne silme ne denetim satiri
+        # kalir; commit olursa ikisi birlikte kalir.
+        _audit_correlation = _data_audit.new_correlation_id()
+        _audit_before = await _data_audit.snapshot_counts(db, str(user_id))
+        _audit_session_id = getattr(session, "id", None)
+
         for dup_c in duplicate_contacts:
             canonical_avatar = _get_contact_avatar(canonical_contact)
             dup_avatar = _get_contact_avatar(dup_c)
@@ -1804,12 +1828,59 @@ class WhatsAppEventOrchestrator:
                 await db.delete(dup_conv)
                 merged_convs.append(dup_conv.id)
 
+            # `flush()` ZORUNLU, kozmetik degil.
+            #
+            # `AsyncSessionLocal` `autoflush=False` ile kurulu, yani bu SELECT
+            # silinmek uzere isaretlenmis `dup_conv` satirini HALA goruyor.
+            # Sonuc: `remaining_ref` asla None donmuyor, `deleted_contacts`
+            # hicbir zaman dolmuyor ve asagidaki `db.delete(dup_c)` OLU BIR DAL.
+            #
+            # Bu, Faz 3'te testle yakalandi: bir birlesme sohbeti siliyor ama
+            # kisi hic silinmiyordu. 2026-10-27'de gozlenen "-1 sohbet VE -1
+            # kisi" imzasinin bu yoldan geldigi iddiasi da bu yuzden CURUDU —
+            # bu yol tek basina kisi sayisini degistiremez.
+            await db.flush()
             remaining_ref = await db.execute(
                 select(Conversation.id).where(Conversation.contact_id == dup_c.id).limit(1)
             )
             if remaining_ref.first() is None:
                 await db.delete(dup_c)
                 deleted_contacts.append(dup_c.id)
+
+        # Denetim satiri, silmelerle AYNI transaction'da. `flush()` once
+        # cagriliyor ki `counts_after` gercekten silinmis hali gorsun: aksi
+        # halde SQLAlchemy'nin autoflush sirasina bagli bir sayim yazariz.
+        if merged_convs or deleted_contacts:
+            await db.flush()
+            await _data_audit.stage_data_event(
+                db,
+                event=_data_audit.EVENT_SELF_IDENTITY_MERGE,
+                source="ingest",
+                user_id=str(user_id),
+                session_id=_audit_session_id,
+                correlation_id=_audit_correlation,
+                outcome="committed",
+                reason="self_identity_duplicate",
+                conversation_ids=merged_convs,
+                contact_ids=deleted_contacts,
+                counts_before=_audit_before,
+                counts_after=await _data_audit.snapshot_counts(db, str(user_id)),
+                # Idempotency: ayni canonical/dup cifti icin ikinci bir satir
+                # yazilmaz. Tek bir birlesme iki kez sayilirsa sayim dususu
+                # oldugundan buyuk gorunur.
+                idempotency_key=(
+                    f"self_identity_merge:{user_id}:"
+                    f"{canonical_conv.id}:{','.join(str(c) for c in sorted(merged_convs))}"
+                )[:96],
+                detail={
+                    "merged_conversation_count": len(merged_convs),
+                    "deleted_contact_count": len(deleted_contacts),
+                    "moved_messages": moved_msgs,
+                    "deleted_duplicate_messages": deleted_msgs,
+                    "canonical_conversation_id": canonical_conv.id,
+                    "canonical_contact_id": canonical_contact.id,
+                },
+            )
 
         await db.commit()
         if merged_convs or deleted_contacts:
@@ -2479,16 +2550,12 @@ class WhatsAppEventOrchestrator:
             await db.execute(delete(Message).where(Message.conversation_id == conv_id))
         ).rowcount
         await db.delete(conv)
-        await db.commit()
-        logger.info(
-            "Telefondan silinen sohbet kaldirildi (conv=%s, messages=%s, reactions=%s)",
-            conv_id,
-            int(messages_deleted or 0),
-            int(reactions_deleted or 0),
-        )
+        # Faz 3: denetim satiri silmeyle AYNI transaction'da. `flush()` once
+        # cagriliyor ki `counts_after` gercekten silinmis hali gorsun.
+        await db.flush()
         # Denetim izi: bu silme bir gateway olayindan geldigi icin `outbox_event_id`
         # tasir — "hangi olay bu satiri goturdu" sorusu boylece cevaplanabilir.
-        await _data_audit.record_data_event(
+        await _data_audit.stage_data_event(
             db,
             event=_data_audit.EVENT_CONVERSATION_DELETED,
             source="ingest",
@@ -2500,10 +2567,21 @@ class WhatsAppEventOrchestrator:
             counts_before=_audit_before,
             counts_after=await _data_audit.snapshot_counts(db, owner),
             outbox_event_id=event.get("event_id"),
+            # Idempotency: outbox yeniden oynatmasi ayni olayi ikinci kez
+            # getirebilir; sohbet zaten yoksa yukarida erken donuyoruz, ama
+            # yaris kosulunda iki satir olusmasin diye anahtar yine de veriliyor.
+            idempotency_key=f"conversation_deleted_ingest:{conv_id}",
             detail={
                 "messages_deleted": int(messages_deleted or 0),
                 "reactions_deleted": int(reactions_deleted or 0),
             },
+        )
+        await db.commit()
+        logger.info(
+            "Telefondan silinen sohbet kaldirildi (conv=%s, messages=%s, reactions=%s)",
+            conv_id,
+            int(messages_deleted or 0),
+            int(reactions_deleted or 0),
         )
         # NUMERIC id: this is exactly the shape `delete_conversation` broadcasts,
         # so the frontend's existing `conversation_deleted` branch handles both
@@ -2759,6 +2837,36 @@ class WhatsAppEventOrchestrator:
                 await db.commit()
                 if event_id:
                     _mark_recently_processed_event(event_id)
+
+                # Faz 3 — baglanti denemesi asama olcumu.
+                #
+                # BURADA, cunku tek commit noktasi burasi: bir asamanin
+                # "gerceklesti" sayilmasi icin veritabanina YAZILMIS olmasi
+                # gerekir. Handler'in dondurdugu sozluge guvenmek, commit
+                # patlarsa olmayan bir olcumu kaydetmek olurdu.
+                #
+                # Korelasyon kimligi gateway oturumundan TURETILIR (deneme
+                # basina yeni UUID), bu yuzden iki denemenin asamalari asla
+                # birbirine karismaz ve surec yeniden baslasa da zincir kopmaz.
+                _gw_sid = event.get("gateway_session_id")
+                _attempt = _connect_metrics.attempt_id_for_gateway(_gw_sid)
+                if _attempt:
+                    if evt == "message_new":
+                        _stage = STAGE_FIRST_MESSAGE
+                    elif evt in ("conversation_updated", "chat_update"):
+                        _stage = STAGE_FIRST_CONVERSATION
+                    elif evt == "contact_synced":
+                        _stage = STAGE_FIRST_CONTACT
+                    else:
+                        _stage = None
+                    if _stage:
+                        await _connect_metrics.record_stage_once(
+                            db,
+                            correlation_id=_attempt,
+                            stage=_stage,
+                            user_id=result.get("user_id"),
+                            gateway_id=_gw_sid,
+                        )
 
                 # Dış Webhook Abonelerine Inbound WhatsApp mesajını bildir
                 if evt == "message_new" and isinstance(result, dict) and result.get("message"):

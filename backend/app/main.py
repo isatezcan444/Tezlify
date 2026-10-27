@@ -47,6 +47,7 @@ from backend.app.core.migrations import (
     ensure_keyset_and_ordering_indexes,
     ensure_quick_replies_table,
     ensure_whatsapp_data_audit_table,
+    ensure_whatsapp_connect_stages_table,
     clean_invalid_avatar_sentinels,
     ensure_api_keys_and_webhooks_tables,
     ensure_subscription_and_quota_tables,
@@ -249,6 +250,28 @@ async def lifespan(app: FastAPI):
     await ensure_keyset_and_ordering_indexes(engine)
     await ensure_quick_replies_table(engine)
     await ensure_whatsapp_data_audit_table(engine)
+    await ensure_whatsapp_connect_stages_table(engine)
+
+    # Retention — iki tablo da append-only. Sinirsiz buyumelerine izin vermek,
+    # bir sure sonra "olcum tablosu disk doldurdu" olayina donusur. Budama
+    # startup'ta bir kez, indeksli birer DELETE; basarisiz olursa acilis
+    # DURMAZ (disk sorunu dogruluk sorunu degildir).
+    try:
+        from backend.app.core.database import AsyncSessionLocal
+        from backend.app.services import whatsapp_connect_metrics as _cm
+        from backend.app.services import whatsapp_data_audit as _audit
+
+        async with AsyncSessionLocal() as _prune_db:
+            _pruned_audit = await _audit.prune_old_events(_prune_db)
+            _pruned_stages = await _cm.prune_old_stages(_prune_db)
+        if _pruned_audit or _pruned_stages:
+            logger.info(
+                "[MIGRATION] retention: audit=%d stage=%d satir budandi",
+                _pruned_audit,
+                _pruned_stages,
+            )
+    except Exception as exc:  # noqa: BLE001 - budama acilisi engellememeli
+        logger.warning("[MIGRATION] retention budamasi atlandi: %s", exc)
     await clean_invalid_avatar_sentinels(engine)
     await ensure_api_keys_and_webhooks_tables(engine)
     await ensure_subscription_and_quota_tables(engine)
@@ -716,7 +739,28 @@ async def health_check():
         },
         # Bekleyen bölünmüş sohbet işini kabuk komudu olmadan görünür kılar.
         "whatsapp_identity_sweep": merge_sweep_status(),
+        # Denetim kaydedicisinin KENDİ sağlığı. Tablo boş olabilir (sağlıklı
+        # durum: değişiklik yok), ama `failed` sıfırdan büyükse kayıt
+        # yazılamıyor demektir — ve o zaman tablonun boşluğu "olay olmadı"
+        # diye okunmamalıdır. Sayaçlar süreç belleğidir (restart'ta sıfırlanır);
+        # bu yüzden geçmişin kaynağı DEĞİL, yalnızca "şu an bozuk mu" sinyalidir.
+        "whatsapp_data_audit": _data_audit_stats(),
     }
+
+
+def _data_audit_stats() -> Dict[str, Any]:
+    """Safe, PII-free health signal for the audit recorder itself.
+
+    A recorder that has silently stopped writing looks exactly like a system
+    where nothing changed. This is the difference, and it is why the counters
+    are exported rather than only logged.
+    """
+    try:
+        from backend.app.services import whatsapp_data_audit as _audit
+
+        return _audit.stats()
+    except Exception as exc:  # noqa: BLE001 - health must never fail on a probe
+        return {"error": str(exc)[:120]}
 
 
 @app.api_route("/metrics", methods=["GET", "HEAD"], tags=["Health"])

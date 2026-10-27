@@ -74,6 +74,16 @@ class _Db:
     async def delete(self, obj):
         self.orm_deletes.append(obj)
 
+    async def flush(self):
+        """`AsyncSession.flush()` is part of the real interface.
+
+        The delete path flushes before counting, so that `counts_after` in the
+        audit row describes the state AFTER the delete rather than whatever
+        happened to be autoflushed. A double without `flush` is an incomplete
+        double, not a test that proves anything.
+        """
+        self.flushes = getattr(self, "flushes", 0) + 1
+
     async def commit(self):
         self.commits += 1
 
