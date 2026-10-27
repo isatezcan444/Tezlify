@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 import uuid
 
 from backend.app.core.datetime_utils import utc_now_naive
+from backend.app.services import whatsapp_data_audit as _data_audit
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
 
 from sqlalchemy import delete, func, inspect as sa_inspect, or_, select, text
@@ -2468,6 +2469,7 @@ class WhatsAppEventOrchestrator:
             return _skip_event(event, f"conversation_deleted: sohbet zaten yok ({clean_jid})")
 
         conv_id = int(conv.id)
+        _audit_before = await _data_audit.snapshot_counts(db, owner)
         reactions_deleted = (
             await db.execute(
                 delete(MessageReaction).where(MessageReaction.conversation_id == conv_id)
@@ -2483,6 +2485,25 @@ class WhatsAppEventOrchestrator:
             conv_id,
             int(messages_deleted or 0),
             int(reactions_deleted or 0),
+        )
+        # Denetim izi: bu silme bir gateway olayindan geldigi icin `outbox_event_id`
+        # tasir — "hangi olay bu satiri goturdu" sorusu boylece cevaplanabilir.
+        await _data_audit.record_data_event(
+            db,
+            event=_data_audit.EVENT_CONVERSATION_DELETED,
+            source="ingest",
+            user_id=owner,
+            session_id=ws_session_id,
+            outcome="committed",
+            reason="phone_deleted_chat",
+            conversation_ids=[conv_id],
+            counts_before=_audit_before,
+            counts_after=await _data_audit.snapshot_counts(db, owner),
+            outbox_event_id=event.get("event_id"),
+            detail={
+                "messages_deleted": int(messages_deleted or 0),
+                "reactions_deleted": int(reactions_deleted or 0),
+            },
         )
         # NUMERIC id: this is exactly the shape `delete_conversation` broadcasts,
         # so the frontend's existing `conversation_deleted` branch handles both

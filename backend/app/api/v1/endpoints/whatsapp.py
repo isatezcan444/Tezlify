@@ -71,6 +71,7 @@ from backend.app.schemas.quick_reply import (
     QuickReplyDeleteResponse,
 )
 from backend.app.services import whatsapp_service, quick_reply_service
+from backend.app.services import whatsapp_data_audit as _data_audit
 from backend.app.services.ai_responder_service import AiResponderService
 from backend.app.services.link_preview.service import (
     get_preview_image_bytes as _get_preview_image_bytes,
@@ -1410,4 +1411,26 @@ async def delete_quick_reply(
         raise _not_found(exc) from exc
 
 
+@router.get("/data-audit")
+async def get_data_audit(
+    limit: int = Query(50, ge=1, le=200),
+    event: Optional[str] = Query(None, description="Olay tipine gore filtre (conversation_deleted, identity_merge, sweep_run)"),
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Kalici veri olayi denetimi (silme / birlestirme / sweep).
 
+    NEDEN VAR: 2026-10-27'de sohbet sayisi 124 -> 123 dustu ve nedeni
+    kanitlanamadi; kanit deploy'un degistirdigi container loglariyla birlikte
+    yok oldu, outbox payload'i sifreli, sweep sayaclari modul globaliydi.
+    Bu uc nokta o bosluğu kapatir: her satir bir once/sonra sayimi tasir, yani
+    bir sonraki degisim tahminle degil kanitla aciklanir.
+
+    GUVENLIK: mesaj icerigi, telefon numarasi, JID, QR veya auth bilgisi
+    DONDURULMEZ — yalnizca dahili surrogate id'ler, sayimlar ve gerekce.
+    Kiracı kapsami: yalnizca current_user'in satirlari.
+    """
+    rows = await _data_audit.recent_events(
+        db, user_id=current_user.id, limit=limit, event=event
+    )
+    return {"items": rows, "count": len(rows), "limit": limit}

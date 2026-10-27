@@ -2224,6 +2224,25 @@ async def ensure_quick_replies_table(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_quick_replies_table verified")
 
 
+async def ensure_whatsapp_data_audit_table(engine: AsyncEngine) -> None:
+    """Kalıcı veri olayı denetimi (whatsapp_data_audit) tablosunu güvence altına alır.
+
+    NEDEN: 2026-10-27'de sohbet sayısı 124 → 123 düştü ve nedeni kanıtlanamadı —
+    kanıt deploy'un değiştirdiği container'ın loglarıyla birlikte yok oldu, outbox
+    payload'ı şifreli, `wa_merge_locks` kira tutuyor, sweep sayaçları modül
+    globali olduğu için restart'ta sıfırlanıyor. Bu tablo bir sonraki değişimin
+    arkasında satır bırakır.
+
+    Yalnızca EKLEME (additive): mevcut tablolara dokunmaz, `checkfirst=True` ile
+    idempotenttir, geri alma veri kaybı yaratmaz (tablo düşürülür).
+    """
+    from backend.app.models.whatsapp_data_audit import WhatsAppDataAudit
+
+    async with engine.begin() as conn:
+        await conn.run_sync(WhatsAppDataAudit.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_whatsapp_data_audit_table verified")
+
+
 async def clean_invalid_avatar_sentinels(engine: AsyncEngine) -> None:
     """Temizler: contacts.custom_attributes icindeki gecersiz 'changed', 'remove', 'null' sentinel avatar_url degerleri."""
     dialect = engine.dialect.name

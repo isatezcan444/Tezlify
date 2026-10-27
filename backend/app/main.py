@@ -46,6 +46,7 @@ from backend.app.core.migrations import (
     ensure_campaign_sequence_leads_table,
     ensure_keyset_and_ordering_indexes,
     ensure_quick_replies_table,
+    ensure_whatsapp_data_audit_table,
     clean_invalid_avatar_sentinels,
     ensure_api_keys_and_webhooks_tables,
     ensure_subscription_and_quota_tables,
@@ -247,6 +248,7 @@ async def lifespan(app: FastAPI):
     await ensure_campaign_sequence_leads_table(engine)
     await ensure_keyset_and_ordering_indexes(engine)
     await ensure_quick_replies_table(engine)
+    await ensure_whatsapp_data_audit_table(engine)
     await clean_invalid_avatar_sentinels(engine)
     await ensure_api_keys_and_webhooks_tables(engine)
     await ensure_subscription_and_quota_tables(engine)

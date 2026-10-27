@@ -40,6 +40,10 @@ from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from backend.app.core.datetime_utils import utc_now_naive
 
+# Kalıcı veri olayı denetimi (silme/birleştirme/sweep). Ayrı modül: bu dosya
+# zaten cok buyuk ve denetim yazimi tek bir yerden yonetilmeli.
+from backend.app.services import whatsapp_data_audit as _data_audit
+
 # Bir sohbetin `last_message_at` damgasi, elimizdeki EN YENI mesaj satirindan bu
 # kadar ilerideyse "kismi gecmis boslugu" bildirilir (bkz. list_conversations).
 # 10 dk secildi cunku mesaj satiri uretmeyen aktiviteler (reaksiyon, arama)
@@ -1902,6 +1906,15 @@ async def delete_conversation(
 
     conv = await _get_conversation_or_404(db, user_id, conversation_id)
 
+    # Denetim izi: silme sonrasi sayim degisimini kanitlayabilmek icin ONCE
+    # olcuyoruz. Basarisiz olursa None kalir — sifir YAZILMAZ (0 "her sey
+    # silindi" gibi okunurdu).
+    _audit_before = await _data_audit.snapshot_counts(db, user_id)
+    _audit_correlation = _data_audit.new_correlation_id()
+    # Satir silindikten sonra ORM nesnesine dokunmak refresh denemesi yapar;
+    # kimligi simdiden al.
+    _audit_session_id = getattr(conv, "session_id", None)
+
     # --- Uzaktan silme: WhatsApp tarafi -------------------------------------
     # WhatsApp Web'de bir sohbeti silmek, hesabin DIGER cihazlarinda (telefon)
     # kalan kopyayi kaldirmaz; bunun icin `deleteChatAction` app-state yamasi
@@ -1994,6 +2007,27 @@ async def delete_conversation(
     ).rowcount
     await db.delete(conv)
     await db.commit()
+
+    # Denetim izi — COMMIT'TEN SONRA. Bu satir "silme gercekten kalici oldu"
+    # demektir; once/ sonra sayimlari, bir sonraki "sohbet sayisi dustu" turunu
+    # tahmin yerine kanitla aciklanabilir kilar.
+    await _data_audit.record_data_event(
+        db,
+        event=_data_audit.EVENT_CONVERSATION_DELETED,
+        source="api",
+        user_id=user_id,
+        session_id=_audit_session_id,
+        correlation_id=_audit_correlation,
+        outcome="committed",
+        reason=("remote_deleted" if remote_deleted else (remote_error or "local_only")),
+        conversation_ids=[conversation_id],
+        counts_before=_audit_before,
+        counts_after=await _data_audit.snapshot_counts(db, user_id),
+        detail={
+            "messages_deleted": int(messages_deleted or 0),
+            "reactions_deleted": int(reactions_deleted or 0),
+        },
+    )
 
     result = {
         "id": conversation_id,

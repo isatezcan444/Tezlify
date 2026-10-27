@@ -70,7 +70,7 @@ const QR_A = 'data:image/png;base64,QRAAA';
 const QR_B = 'data:image/png;base64,QRBBB';
 
 function makeBackend(opts = {}) {
-  const calls = { start: 0, qrPoll: 0, pair: 0, cancel: 0 };
+  const calls = { start: 0, qrPoll: 0, pair: 0, cancel: 0, health: 0 };
   const state = {
     qr: opts.initialQr ?? null,
     status: opts.initialStatus ?? 'SCAN_QR',
@@ -88,6 +88,17 @@ function makeBackend(opts = {}) {
   const fetchImpl = async (url) => {
     const u = String(url);
     if (process.env.TRACE) console.log('   TRACE', u);
+    // The modal probes the gateway BEFORE it starts a pairing
+    // (`probeLive()` -> GET /whatsapp/gateway/health, contract: 200
+    // `{ gateway_available: true }`). This route was missing, so the fixture
+    // answered `500 unexpected`, the modal rendered its "gateway Down" state,
+    // `startPairing` was never reached and TWELVE checks reported false
+    // failures with `calls=0`. A harness that cannot reach the code under test
+    // reports the harness's limitation, not a product defect.
+    if (u.includes('/whatsapp/gateway/health')) {
+      calls.health += 1;
+      return json({ gateway_available: true });
+    }
     if (u.includes('/whatsapp/pairing/start')) {
       calls.start += 1;
       if (opts.startFails) return json({ detail: 'gateway unavailable' }, 503);

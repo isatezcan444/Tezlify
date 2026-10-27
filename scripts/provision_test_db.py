@@ -48,6 +48,7 @@ async def main() -> int:
         ensure_messages_wa_message_id_unique,
         ensure_phase_10_7_indexes,
         ensure_whatsapp_private_lid_and_history_tables,
+        ensure_whatsapp_data_audit_table,
     )
 
     async with engine.begin() as conn:
@@ -72,6 +73,7 @@ async def main() -> int:
     await ensure_messages_wa_message_id_unique(engine)
     await ensure_phase_10_7_indexes(engine)
     await ensure_whatsapp_private_lid_and_history_tables(engine)
+    await ensure_whatsapp_data_audit_table(engine)
 
     await engine.dispose()
 

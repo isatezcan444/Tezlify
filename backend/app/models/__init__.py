@@ -23,6 +23,7 @@ from backend.app.models.api_key import ApiKey
 from backend.app.models.webhook import WebhookSubscription, WebhookDeliveryLog
 from backend.app.models.subscription import UserSubscription
 from backend.app.models.task_queue import TaskJob, TaskJobStatus
+from backend.app.models.whatsapp_data_audit import WhatsAppDataAudit
 
 __all__ = [
     "Base",
@@ -64,4 +65,5 @@ __all__ = [
     "UserSubscription",
     "TaskJob",
     "TaskJobStatus",
+    "WhatsAppDataAudit",
 ]

@@ -48,6 +48,7 @@ from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message
+from backend.app.services import whatsapp_data_audit as _data_audit
 from backend.app.services.whatsapp.identity import (
     contact_phone_for_jid,
     strip_jid_prefix,
@@ -756,6 +757,29 @@ async def _merge_under_lease(
         await db.commit()
         await db.refresh(canonical_conv)
         canonical_conv._contact = canonical_contact
+        # Denetim izi. ÖNEMLİ: birleştirme sohbet SAYISINI değiştirmez —
+        # LID sohbeti SİLİNMEZ, arşivlenir; mesajlar taşınır. Bu satır tam da
+        # bunu kanıtlar, böylece bir sonraki "sayı düştü" turunda birleştirme
+        # makul şüpheli olmaktan çıkar.
+        await _data_audit.record_data_event(
+            db,
+            event=_data_audit.EVENT_IDENTITY_MERGE,
+            source="sweep",
+            user_id=user_id,
+            session_id=session_id,
+            outcome="committed",
+            reason=("stranded_after_merge" if stranded else "merged"),
+            conversation_ids=[int(legacy_conv.id), int(canonical_conv.id)],
+            contact_ids=[int(lid_contact.id), int(canonical_contact.id)],
+            counts_after=await _data_audit.snapshot_counts(db, user_id),
+            detail={
+                "moved_unique": int(moved_unique),
+                "deduped_duplicates": len(deduped_ids),
+                "stranded_unique": int(stranded),
+                "merge_passes": int(passes),
+                "legacy_archived_not_deleted": True,
+            },
+        )
         return canonical_conv
 
     # Süreçler arası lease zaten alındı; bu kilit aynı süreçteki eşzamanlı
@@ -1150,6 +1174,35 @@ async def run_identity_sweep_once(
         _SWEEP_STATE["last_error"] = last_error
     _SWEEP_STATE["last_finished_at"] = utc_now_naive().isoformat()
     _SWEEP_STATE["last_report"] = {"splits": report, "stranded": stranded}
+
+    # Kalıcı özet: `_SWEEP_STATE` bir modül globali olduğu için her restart'ta
+    # sıfırlanır ve "geçen sefer ne oldu" sorusunu cevaplayamaz. Bir turda
+    # gerçekten bir şey değiştiyse (birleştirme/erteleme/hata/taşıma) kalıcı bir
+    # satır bırakılır; her 5 dakikada boş satır yazmak gürültüdür.
+    changed = bool(
+        int(report.get("merged") or 0)
+        or int(report.get("deferred") or 0)
+        or int(report.get("errors") or 0)
+        or int(stranded.get("moved_unique_total") or 0)
+        or int(stranded.get("still_stranded") or 0)
+    )
+    if changed:
+        await _data_audit.record_data_event(
+            None,
+            event=_data_audit.EVENT_SWEEP_RUN,
+            source="sweep",
+            outcome=("partial" if (report.get("error") or stranded.get("error")) else "committed"),
+            reason=("sweep_error" if (report.get("error") or stranded.get("error")) else "sweep_changed_state"),
+            detail={
+                "merged": int(report.get("merged") or 0),
+                "deferred": int(report.get("deferred") or 0),
+                "errors": int(report.get("errors") or 0),
+                "moved_unique": int(report.get("moved_unique_total") or 0),
+                "still_stranded": int(report.get("still_stranded") or 0),
+                "stranded_moved": int(stranded.get("moved_unique_total") or 0),
+                "duration_ms": round(duration_ms, 3),
+            },
+        )
     return _SWEEP_STATE["last_report"]
 
 
