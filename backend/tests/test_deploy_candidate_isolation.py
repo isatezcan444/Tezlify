@@ -16,6 +16,22 @@ Bu dosya iki seviyeyi ayri ayri civiLer:
 2. **Betik sozlesmesi** — `host-release.sh` izolasyonu *kanitlayamazsa*
    deploy etmeyi REDDEDER; uretim adi env'de kalirsa `die` eder; `die` ve
    hata yolu izole DB'yi temizler.
+
+Ikinci tur (2026-10-28) — ilk uygulama canlida KENDI kapisina takildi
+--------------------------------------------------------------------
+Ilk surum yalnizca tam adi `DATABASE_URL` olan satiri ceviriyordu. Canli env'de
+IKINCI bir baglanti dizesi var: `GATEWAY_DATABASE_URL`. Yani adacik izole
+kopyaya baglanirken gateway katmani uretim veritabanina bagli kaliyordu —
+kapatmasi gereken delik tam olarak acikti.
+
+Dogrulama grep'i de `DATABASE_URL=.*/<db>` idi; bu desen `GATEWAY_DATABASE_URL=`
+satirini de eslestirdi (o metin adin ICINDE geciyor) ve sinir kontrolu
+olmadigi icin `/tezlify_cand_...` degerini bile ihlal sayabilirdi. Deploy
+"uretim URL'i kaldi" diyerek durdu — dogru karar, yanlis teshis.
+
+Ders: bir *ailenin* (burada `*DATABASE_URL`) tamamini kapsayan kural, tek bir
+tam ada gore yazilmaz; ve dogrulama "kotu deger gecmesin" (negatif) degil,
+"her deger BEKLENEN olmali" (pozitif) biciminde yazilir.
 """
 
 from __future__ import annotations
@@ -28,8 +44,12 @@ import pytest
 
 from scripts.deploy.candidate_db_url import (
     InvalidDatabaseName,
+    db_url_vars,
+    is_db_url_var,
     isolated_url,
+    main,
     rewrite_env_file,
+    unexpected_db_urls,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -117,6 +137,71 @@ class TestEnvFileRewrite:
         assert re.search(r"/(tezlify)(\?|$)", text) is None
         assert "/" + CAND in text
 
+    def test_the_second_connection_string_is_rewritten_too(self, tmp_path):
+        """CANLI REGRESYON (2026-10-28).
+
+        Canli env'de IKI baglanti dizesi var: `DATABASE_URL` ve
+        `GATEWAY_DATABASE_URL`. Ilk surum yalnizca tam adi `DATABASE_URL` olan
+        satiri ceviriyordu; gateway katmani uretim veritabanina bagli kaliyordu.
+        Adacik "izole" gorunurken yazma yetkisi hala acikti.
+        """
+        env = tmp_path / "candidate-env"
+        env.write_text(
+            "DATABASE_URL=" + PROD + "\n"
+            "GATEWAY_DATABASE_URL=" + PROD + "\n"
+            "PORT=8001\n",
+            encoding="utf-8",
+        )
+        rewritten = rewrite_env_file(str(env), CAND)
+        assert sorted(rewritten) == ["DATABASE_URL", "GATEWAY_DATABASE_URL"]
+        for name, url in db_url_vars(str(env)).items():
+            assert url.endswith("/" + CAND), (name, url)
+        assert unexpected_db_urls(str(env), CAND) == []
+
+    def test_a_prefixed_variable_name_is_recognised(self):
+        # Kural ada gore: `DATABASE_URL` ile BITEN her ad bir baglanti dizesidir.
+        assert is_db_url_var("DATABASE_URL")
+        assert is_db_url_var("GATEWAY_DATABASE_URL")
+        assert is_db_url_var("SOMETHING_ELSE_DATABASE_URL")
+        assert not is_db_url_var("DATABASE_POOL_SIZE")
+        assert not is_db_url_var("DATABASE_URL_BACKUP")
+
+    def test_an_unparseable_connection_string_is_reported_by_name(self, tmp_path):
+        """Cozemedigimiz bir dize sessizce gecmemeli — adiyla raporlanmali.
+
+        libpq formati (`host=db dbname=tezlify`) bir URL degildir; cevrilemez.
+        Sessizce oldugu gibi birakmak, "izole edildi" yalanini uretirdi.
+        """
+        env = tmp_path / "candidate-env"
+        env.write_text(
+            "DATABASE_URL=" + PROD + "\n"
+            "GATEWAY_DATABASE_URL=host=db dbname=tezlify\n",
+            encoding="utf-8",
+        )
+        rewrite_env_file(str(env), CAND)
+        assert unexpected_db_urls(str(env), CAND) == ["GATEWAY_DATABASE_URL"]
+
+    def test_cli_exit_codes(self, tmp_path):
+        good = tmp_path / "good"
+        good.write_text("DATABASE_URL=" + PROD + "\n", encoding="utf-8")
+        assert main(["x", str(good), CAND]) == 0
+
+        empty = tmp_path / "empty"
+        empty.write_text("PORT=8001\n", encoding="utf-8")
+        assert main(["x", str(empty), CAND]) == 2
+
+        bad_name = tmp_path / "badname"
+        bad_name.write_text("DATABASE_URL=" + PROD + "\n", encoding="utf-8")
+        assert main(["x", str(bad_name), "tezlify; drop database x"]) == 3
+
+        leaky = tmp_path / "leaky"
+        leaky.write_text(
+            "DATABASE_URL=" + PROD + "\n"
+            "GATEWAY_DATABASE_URL=host=db dbname=tezlify\n",
+            encoding="utf-8",
+        )
+        assert main(["x", str(leaky), CAND]) == 4
+
 
 @pytest.fixture(scope="module")
 def script() -> str:
@@ -144,7 +229,20 @@ class TestScriptContract:
         assert "adacik izolasyonu KANITLANAMAZ" in script
 
     def test_production_url_left_in_env_is_fatal(self, script):
-        assert 'grep -Eq "DATABASE_URL=.*/${DB_NAME}' in script
+        assert "uretim baglanti dizesi kaldi" in script
+        assert "cutover yapilmadi" in script
+
+    def test_the_guard_is_anchored_and_covers_prefixed_names(self, script):
+        """Desen ANKORLU olmali ve `*DATABASE_URL` adlarini TAM yakalamali.
+
+        Eski desen `DATABASE_URL=.*/<db>` idi: (a) `GATEWAY_DATABASE_URL=`
+        satirini da eslestiriyordu (o metin adin ICINDE geciyor), (b) sinir
+        kontrolu olmadigi icin `/tezlify_cand_...` degerini de ihlal sayardi.
+        Sonuc: kontrol, cevrilmis satir yuzunden degil cevrilmemis IKINCI satir
+        yuzunden patladi — teshis yanlis yere gitti.
+        """
+        assert "^([A-Za-z_][A-Za-z0-9_]*)?DATABASE_URL=" in script
+        assert "([?]|$)" in script
 
     def test_production_drop_is_fatal_even_with_allow_migrations(self, script):
         # Adacik izole oldugu icin uretimde dusus artik onaylanmis migration

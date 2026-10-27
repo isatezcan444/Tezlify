@@ -252,10 +252,12 @@ candidate_db_create() {
 }
 
 candidate_env_isolate() {
-  # $1 = env dosyasi, $2 = izole DB. DATABASE_URL'i kopyaya cevirir.
+  # $1 = env dosyasi, $2 = izole DB. HER `*DATABASE_URL` degiskenini kopyaya cevirir.
   # Uretim URL'i adacik env'inde KALMAZ: "yazma yetkisi yok" iddiasi ancak
   # boyle dogrulanabilir. Donusum mantigi `candidate_db_url.py`'de durur —
-  # orada birim testiyle dogrulanir, burada yalnizca cagrilir.
+  # orada birim testiyle dogrulanir, burada yalnizca cagrilir. Betik, cevirdikten
+  # SONRA pozitif kontrol de yapar (her dize izole kopyaya bakmali) ve 4 ile
+  # cikar; yani bu fonksiyonun 0 donmesi "dogrulandi" demektir.
   local envfile="${1:-}" db="${2:-}"
   [ -f "$envfile" ] || return 1
   case "$db" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
@@ -668,9 +670,11 @@ log "adacik ortami canlidan kopyalandi: $(wc -l < "$CANDIDATE_ENV_FILE" | tr -d 
 # --- IZOLASYON: adacik uretim DB'sine YAZAMAZ ------------------------------
 # Bu blok olmadan adacik, uretimin tam kopyasi olan bir veritabaninda startup
 # migration zincirini kosar ve yikici bir migration'i cutover kararindan ONCE
-# uygular. Kanit tek bir seye dayanmaz: (1) env'deki DATABASE_URL kopyaya
-# cevrilir, (2) uretim DB adinin env'de kalmadigi grep ile dogrulanir,
-# (3) adacik penceresi boyunca uretim sayim/filigraninin DEGISMEDIGI olculur.
+# uygular. Kanit tek bir seye dayanmaz: (1) env'deki HER `*DATABASE_URL`
+# kopyaya cevrilir — canlida IKI tane var (`DATABASE_URL` ve
+# `GATEWAY_DATABASE_URL`), (2) hicbirinin uretim DB'sine bakmadigi iki BAGIMSIZ
+# yolla dogrulanir (python'un pozitif kontrolu + ankora'li grep), (3) adacik
+# penceresi boyunca uretim sayim/filigraninin DEGISMEDIGI olculur.
 CANDIDATE_DB="${DB_NAME}_cand_${TS}"
 [ -n "$CANDIDATE_DB_URL_PY" ] \
   || die "candidate_db_url.py bulunamadi; adacik izolasyonu KANITLANAMAZ (cutover yapilmadi)"
@@ -679,9 +683,23 @@ CANDIDATE_DB="${DB_NAME}_cand_${TS}"
 candidate_db_create "$CANDIDATE_DB" "$DB_NAME" \
   || die "izole aday veritabani kurulamadi; adacik uretim DB'sine karsi kosmayacak (cutover yapilmadi)"
 candidate_env_isolate "$CANDIDATE_ENV_FILE" "$CANDIDATE_DB" \
-  || die "adacik DATABASE_URL'i izole kopyaya cevrilemedi; uretim DB'sine dokunma riski (cutover yapilmadi)"
-if grep -Eq "DATABASE_URL=.*/${DB_NAME}(\\?|$)" "$CANDIDATE_ENV_FILE"; then
-  die "adacik env'inde uretim DATABASE_URL kaldi; izolasyon kanitlanamadi (cutover yapilmadi)"
+  || die "adacik baglanti dizeleri izole kopyaya cevrilemedi; uretim DB'sine dokunma riski (cutover yapilmadi)"
+# BAGIMSIZ IKINCI KANIT.
+#
+# Desen ANKORLU ve degisken adini TAM yakalar: `^([A-Za-z_][A-Za-z0-9_]*)?DATABASE_URL=`.
+# 2026-10-28'de buradaki ilk desen `DATABASE_URL=.*/<db>` idi; `GATEWAY_DATABASE_URL=`
+# satirini de eslestirdi, cunku o metin adin ICINDE geciyor. Sonuc: kontrol
+# cevrilmis satir yuzunden degil, cevrilmemis IKINCI satir yuzunden patladi ve
+# teshis yanlis yere gitti. Ayrica gercek delik acikti: env'de IKI baglanti
+# dizesi var (DATABASE_URL + GATEWAY_DATABASE_URL) ve yalnizca biri cevrilmisti.
+#
+# `([?]|$)` sarti onemli: `/tezlify_cand_...` degeri `/tezlify` ile BASLIYOR,
+# yani sinir kontrolu olmadan izole kopya da ihlal sayilirdi.
+if grep -Eq "^([A-Za-z_][A-Za-z0-9_]*)?DATABASE_URL=.*/${DB_NAME}([?]|$)" "$CANDIDATE_ENV_FILE"; then
+  log "ihlal eden satirlar (maskeli):"
+  grep -E "^([A-Za-z_][A-Za-z0-9_]*)?DATABASE_URL=.*/${DB_NAME}([?]|$)" "$CANDIDATE_ENV_FILE" \
+    | sed 's#://[^@]*@#://***@#' | sed 's/^/    /' || true
+  die "adacik env'inde uretim baglanti dizesi kaldi; izolasyon kanitlanamadi (cutover yapilmadi)"
 fi
 printf '%s\n' "$CANDIDATE_DB" > "$RELEASE_DIR/candidate-db.txt"
 grep '^DATABASE_URL=' "$CANDIDATE_ENV_FILE" | sed 's#://[^@]*@#://***@#' \
