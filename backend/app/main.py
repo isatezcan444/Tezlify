@@ -86,8 +86,25 @@ _gateway_bridge = {
     "connected": False,
     "last_connected_at": None,
     "last_event_at": None,
+    "last_pong_at": None,
     "reconnect_count": 0,
 }
+
+# Gateway bridge keepalive.
+#
+# `start.py` passes `ws_ping_interval=None, ws_ping_timeout=None` to uvicorn, so
+# there is NO protocol-level ping on any WebSocket endpoint. Liveness therefore
+# rests entirely on the application-level ping/pong below — which means the pong
+# has to be ASSERTED, not merely tolerated. A half-open TCP peer (NAT rebind,
+# Wi-Fi switch, proxy restart without a FIN) leaves `receive_text()` blocked
+# forever: no disconnect, no reconnect, and every gateway event silently lost
+# while `/health` still claims `connected: true`.
+#
+# Two intervals of silence is the deadline: long enough that one slow round trip
+# never tears down a healthy link, short enough that a dead one is replaced
+# inside a minute.
+_GW_PING_INTERVAL_S = 20.0
+_GW_PONG_DEADLINE_S = _GW_PING_INTERVAL_S * 2
 
 
 async def recover_stranded_outbound_messages() -> int:
@@ -447,14 +464,31 @@ async def gateway_websocket_endpoint(
     logger.info("[WS-GATEWAY] Baileys gateway bağlandı.")
     counters = {
         "received": 0, "broadcast": 0, "skipped": 0,
-        "failed": 0, "acked": 0, "nacked": 0,
+        "failed": 0, "acked": 0, "nacked": 0, "pongs": 0, "pong_timeouts": 0,
     }
-    _GW_PING_INTERVAL_S = 20.0
+    loop = asyncio.get_running_loop()
+    # Seeded at accept time: a peer that never answers a single keepalive is
+    # dead too, and must not be granted a deadline it never started earning.
+    last_pong = loop.time()
+    _gateway_bridge["last_pong_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
     async def _keepalive_loop():
+        nonlocal last_pong
         try:
             while True:
                 await asyncio.sleep(_GW_PING_INTERVAL_S)
+                silence = loop.time() - last_pong
+                if silence > _GW_PONG_DEADLINE_S:
+                    counters["pong_timeouts"] += 1
+                    logger.warning(
+                        "[WS-GATEWAY] Keepalive yanitsiz (%.1fs sessizlik) — "
+                        "soket kapatiliyor ki gateway yeniden baglansin.",
+                        silence,
+                    )
+                    # 1011 tells the gateway this is our decision, not a network
+                    # blip: it must re-dial rather than wait for a frame.
+                    await websocket.close(code=1011, reason="keepalive timeout")
+                    return
                 await websocket.send_json({"type": "ping"})
         except asyncio.CancelledError:
             pass
@@ -590,6 +624,10 @@ async def gateway_websocket_endpoint(
                 counters["failed"] += 1
                 continue
             if event_data.get("type") == "pong":
+                # The proof of life the keepalive loop is waiting for.
+                last_pong = loop.time()
+                counters["pongs"] += 1
+                _gateway_bridge["last_pong_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
                 continue
             if event_data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -625,9 +663,11 @@ async def gateway_websocket_endpoint(
         _gateway_bridge["connected"] = False
         logger.info(
             "[WS-GATEWAY] Bağlantı kapandı "
-            "(received=%d broadcast=%d skipped=%d failed=%d acked=%d nacked=%d).",
+            "(received=%d broadcast=%d skipped=%d failed=%d acked=%d nacked=%d "
+            "pongs=%d pong_timeouts=%d).",
             counters["received"], counters["broadcast"], counters["skipped"],
             counters["failed"], counters["acked"], counters["nacked"],
+            counters["pongs"], counters["pong_timeouts"],
         )
 # Include API Router
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -664,6 +704,12 @@ async def health_check():
             "connected": _gateway_bridge["connected"],
             "last_connected_at": _gateway_bridge["last_connected_at"],
             "last_event_at": _gateway_bridge["last_event_at"],
+            # Liveness, not just presence: `connected` is only flipped by the
+            # receive loop, so a half-open socket used to read as connected
+            # forever. A `last_pong_at` older than _GW_PONG_DEADLINE_S while
+            # `connected` is true is the operator's signal that the bridge is
+            # about to be torn down and re-dialled.
+            "last_pong_at": _gateway_bridge["last_pong_at"],
             "reconnect_count": _gateway_bridge["reconnect_count"],
         },
         # Bekleyen bölünmüş sohbet işini kabuk komudu olmadan görünür kılar.

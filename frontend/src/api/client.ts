@@ -1039,7 +1039,21 @@ export function createWebSocket(
   let authFailures = 0;
   let _openedAt = 0;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // Timestamp of the last frame the server actually sent back.
+  //
+  // `readyState` is NOT a liveness signal. The backend runs uvicorn with
+  // `ws_ping_interval=None` (see `start.py`), so there is no protocol-level
+  // ping; the app-level ping/pong below is the ONLY proof of life. A half-open
+  // socket — laptop sleep, Wi-Fi switch, NAT rebind, a proxy restart that sends
+  // no FIN — stays OPEN forever: `send()` buffers into a black hole, `onclose`
+  // never fires, no reconnect is scheduled and the UI keeps claiming it is
+  // connected while nothing arrives again. Recording the pong is what makes the
+  // difference between "connected" and "connected, and still talking".
+  let lastPongAt = 0;
   const HEARTBEAT_INTERVAL_MS = 25000;
+  // Two missed intervals before declaring the link dead: a single slow round
+  // trip must never tear down a healthy socket.
+  const HEARTBEAT_DEADLINE_MS = HEARTBEAT_INTERVAL_MS * 2;
 
   function stopHeartbeat() {
     if (heartbeatTimer) {
@@ -1048,17 +1062,62 @@ export function createWebSocket(
     }
   }
 
+  /**
+   * Tear down a socket the peer has stopped answering, then reconnect.
+   *
+   * Deliberately bypasses `ws.onclose`: that handler schedules its own
+   * reconnect, and letting both run would double the backoff. `ws` is cleared
+   * FIRST so `connect()`'s "already OPEN/CONNECTING" guard cannot refuse the
+   * replacement socket.
+   */
+  function forceReconnect(reason: string) {
+    const dead = ws;
+    ws = null;
+    stopHeartbeat();
+    onStatusChange?.(false);
+    console.warn(`[Tezlify WS] Bağlantı yanıt vermiyor (${reason}); yeniden bağlanılıyor.`);
+    if (dead) {
+      dead.onclose = null;
+      dead.onerror = null;
+      try {
+        dead.close();
+      } catch {
+        // already gone
+      }
+    }
+    if (isManuallyClosed) return;
+    attempt += 1;
+    scheduleReconnect();
+  }
+
   function startHeartbeat() {
     stopHeartbeat();
+    lastPongAt = Date.now();
     heartbeatTimer = setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(JSON.stringify({ type: 'ping' }));
-        } catch (e) {
-          // ignore transient send failure if socket closing
-        }
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastPongAt > HEARTBEAT_DEADLINE_MS) {
+        forceReconnect('keepalive_timeout');
+        return;
+      }
+      try {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      } catch (e) {
+        // ignore transient send failure if socket closing
       }
     }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  /**
+   * A laptop that sleeps and wakes leaves a socket that will never speak again,
+   * and the heartbeat timer froze with the machine — so the watchdog would not
+   * fire until a full interval after resume. Check immediately instead.
+   */
+  function onVisibilityChange() {
+    if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+    if (isManuallyClosed || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastPongAt > HEARTBEAT_DEADLINE_MS) {
+      forceReconnect('resume_after_sleep');
+    }
   }
 
   function backoffMs(): number {
@@ -1152,6 +1211,8 @@ export function createWebSocket(
         try {
           const data = JSON.parse(event.data);
           if (data && data.type === 'pong') {
+            // The proof of life the heartbeat watchdog is waiting for.
+            lastPongAt = Date.now();
             return;
           }
           onMessage(data);
@@ -1193,12 +1254,19 @@ export function createWebSocket(
     }
   }
 
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
   connect();
 
   return {
     close: () => {
       isManuallyClosed = true;
       stopHeartbeat();
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
       // Bump first: any reconnect already in flight compares against this and
       // bails instead of resurrecting the socket we are closing.
       closeGeneration += 1;
