@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,6 +94,39 @@ def _json_safe(value: Any) -> Optional[str]:
         return None
 
 
+def _conflict_free_insert(db: AsyncSession, values: Dict[str, Any]):
+    """`INSERT ... ON CONFLICT DO NOTHING` for the dialect in use, or None.
+
+    WHY NOT "insert and catch IntegrityError"
+    -----------------------------------------
+    That is what this module used to do, and it is functionally correct — the
+    row was suppressed and `record_stage` returned False. But Postgres logs a
+    failed unique insert as an **ERROR** line even when the client catches it,
+    and `record_stage` is called from the QR *poll*: measured in production on
+    2026-10-27, one pairing produced **6 `uq_wa_connect_stage` ERRORs** in
+    `docker logs tezlify-db` against a single `qr_received` row.
+
+    Two costs, one of them serious:
+      * one failed INSERT + ROLLBACK per poll (the round-trip the `_once` helper
+        exists to avoid), and
+      * an ERROR in the database log that is indistinguishable from a real
+        failure. It was reported to this engineer as evidence of a broken
+        system, and reading it as "harmless" requires knowing this function's
+        internals. An error line that has to be explained away is a defect.
+
+    ON CONFLICT DO NOTHING writes nothing, raises nothing, logs nothing, and
+    needs no rollback — so the caller's transaction is never disturbed.
+    """
+    bind = getattr(db, "bind", None)
+    dialect = getattr(bind, "dialect", None)
+    name = getattr(dialect, "name", "")
+    if name == "postgresql":
+        return pg_insert(WhatsAppConnectStage).values(**values).on_conflict_do_nothing()
+    if name == "sqlite":
+        return sqlite_insert(WhatsAppConnectStage).values(**values).on_conflict_do_nothing()
+    return None
+
+
 async def record_stage(
     db: AsyncSession,
     *,
@@ -137,20 +172,42 @@ async def record_stage(
             # attempt look unmeasured.
             elapsed_ms = 0
 
-        db.add(
-            WhatsAppConnectStage(
-                correlation_id=str(correlation_id)[:36],
-                stage=str(stage)[:40],
-                occurred_at=now,
-                user_id=str(user_id) if user_id is not None else None,
-                session_id=int(session_id) if session_id is not None else None,
-                gateway_ref=gateway_ref(gateway_id),
-                outcome=str(outcome)[:16],
-                reason_code=(str(reason_code)[:48] if reason_code else None),
-                elapsed_ms=elapsed_ms,
-                detail=_json_safe(detail),
-            )
-        )
+        values: Dict[str, Any] = {
+            "correlation_id": str(correlation_id)[:36],
+            "stage": str(stage)[:40],
+            "occurred_at": now,
+            "user_id": str(user_id) if user_id is not None else None,
+            "session_id": int(session_id) if session_id is not None else None,
+            "gateway_ref": gateway_ref(gateway_id),
+            "outcome": str(outcome)[:16],
+            "reason_code": (str(reason_code)[:48] if reason_code else None),
+            "elapsed_ms": elapsed_ms,
+            "detail": _json_safe(detail),
+        }
+
+        conflict_free = _conflict_free_insert(db, values)
+        if conflict_free is not None:
+            result = await db.execute(conflict_free)
+            inserted = (result.rowcount or 0) > 0
+            if inserted:
+                if commit:
+                    await db.commit()
+                else:
+                    await db.flush()
+            else:
+                # Nothing was written, so nothing is committed and nothing is
+                # rolled back: a redelivery must not disturb the caller's
+                # transaction. (The old code rolled back here, which would also
+                # discard any sibling write the caller had staged.)
+                logger.debug(
+                    "[CONNECT-METRICS] yinelenen asama atlandi (corr=%s stage=%s)",
+                    correlation_id,
+                    stage,
+                )
+            return inserted
+
+        # Unknown dialect — no ON CONFLICT support. Fall back to insert+rollback.
+        db.add(WhatsAppConnectStage(**values))
         if commit:
             await db.commit()
         else:

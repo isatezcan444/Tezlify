@@ -24,6 +24,7 @@ from backend.app.models.whatsapp_connect_stage import (
     STAGE_FIRST_MESSAGE,
     STAGE_PAIRING_REQUESTED,
     STAGE_QR_RECEIVED,
+    STAGE_QR_SERVED,
     STAGE_SOCKET_OPEN,
     STAGE_SYNC_COMPLETED,
     WhatsAppConnectStage,
@@ -442,3 +443,105 @@ async def test_record_stage_never_raises_on_a_broken_session() -> None:
         gateway_id=_gw(),
     )
     assert ok_once is False
+
+
+# ---------------------------------------------------------------------------
+# Yinelenen asama: Postgres log'una ERROR yazmadan atlanmali
+# ---------------------------------------------------------------------------
+# Üretimde ölçüldü (2026-10-27): tek bir eşleştirme, `docker logs tezlify-db`
+# içine **6 adet** `uq_wa_connect_stage` ERROR'u yazdı — tabloda ise tek bir
+# `qr_received` satırı vardı. Sebep: `record_stage` QR **poll** yolundan
+# çağrılıyor; eski kod `INSERT` edip `IntegrityError`'ı yakalıyordu. Satır
+# doğru şekilde bastırılıyordu, ama Postgres başarısız unique INSERT'i istemci
+# yakalasa bile ERROR olarak loglar. Operatör için bu, gerçek bir arızadan
+# ayırt edilemez — bu mühendise de "sistem bozuk" kanıtı olarak bildirildi.
+#
+# Bu yüzden davranış ON CONFLICT DO NOTHING'e taşındı: hiç yazmaz, hiç
+# hata üretmez, hiç rollback gerektirmez.
+
+
+@pytest.mark.asyncio
+async def test_duplicate_stage_is_suppressed_without_a_failed_insert() -> None:
+    """İkinci yazma tek satır bırakmalı ve `ON CONFLICT` kullanmalı."""
+    from sqlalchemy import event
+
+    from backend.app.core.database import engine
+
+    cid = cm.new_attempt_id()
+    statements = []
+
+    def _capture(conn, cursor, statement, params, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _capture)
+    try:
+        async with AsyncSessionLocal() as db:
+            first = await cm.record_stage(
+                db, correlation_id=cid, stage=STAGE_QR_RECEIVED
+            )
+            second = await cm.record_stage(
+                db, correlation_id=cid, stage=STAGE_QR_RECEIVED
+            )
+            third = await cm.record_stage(
+                db, correlation_id=cid, stage=STAGE_QR_RECEIVED
+            )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _capture)
+        await _purge(cid)
+
+    assert (first, second, third) == (True, False, False)
+    inserts = [s for s in statements if "INSERT INTO whatsapp_connect_stages" in s]
+    assert inserts, "hiç INSERT denenmedi — test yanlış yeri ölçüyor"
+    for stmt in inserts:
+        assert "ON CONFLICT" in stmt.upper(), (
+            "yinelenen asama hala catismali INSERT kullaniyor: Postgres bunu "
+            f"ERROR olarak loglar. SQL: {stmt}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_stage_does_not_roll_back_a_sibling_write() -> None:
+    """Yinelenen asama, aynı oturumdaki BEKLEYEN yazmayı düşürmemeli.
+
+    Eski kod `except IntegrityError: await db.rollback()` yapıyordu. Çağıran
+    aynı oturumda başka bir satır hazırlamışsa, o satır da sessizce gidiyordu.
+    """
+    cid = cm.new_attempt_id()
+    try:
+        async with AsyncSessionLocal() as db:
+            await cm.record_stage(db, correlation_id=cid, stage=STAGE_QR_RECEIVED)
+
+            # Aynı oturumda, HENÜZ commit edilmemiş bir kardeş yazma.
+            db.add(
+                WhatsAppConnectStage(
+                    correlation_id=cid,
+                    stage=STAGE_QR_SERVED,
+                    occurred_at=cm.utc_now_naive(),
+                    outcome="observed",
+                    elapsed_ms=None,
+                )
+            )
+
+            # Yinelenen asama: eski kod burada rollback yapıp kardeşi silerdi.
+            duplicate = await cm.record_stage(
+                db, correlation_id=cid, stage=STAGE_QR_RECEIVED
+            )
+            assert duplicate is False
+
+            await db.commit()
+
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    select(WhatsAppConnectStage.stage).where(
+                        WhatsAppConnectStage.correlation_id == cid
+                    )
+                )
+            ).scalars().all()
+        assert STAGE_QR_SERVED in rows, (
+            "yinelenen asama, ayni oturumdaki bekleyen kardes yazmayi geri aldi "
+            f"(kalan satirlar: {rows})"
+        )
+        assert rows.count(STAGE_QR_RECEIVED) == 1
+    finally:
+        await _purge(cid)
