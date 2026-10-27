@@ -54,6 +54,12 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **A group known only from its subject has no timestamp at all** (A13) — `_ensureGroupSubjects` seeds
   `last_message_at: null` and WhatsApp never sent one, so it sorts last by design. Distinguish from A11
   (stamp frozen by a bug) before "fixing" it.
+- **A LID bridge is keyed to the CONNECTION, never the person** (A14) — `lid_mappings.session_id` is a
+  `gateway_sessions` UUID that rotates on every socket open; `whatsapp_sessions.gateway_id` only names the
+  *current* one. Joining `ws.gateway_id = lm.session_id` saw **4 of 4107** mappings, so each post-reconnect
+  boot called bridged ghosts "unbridged" and deleted their messages, while the merge found nothing. Tell:
+  a bridge table whose row count dwarfs what the join matches. Defer on `lid_jid` alone; take ownership
+  from `contacts.user_id`. Fixtures hide it by seeding session and mapping with the same id.
 - **The durable `whatsapp_sessions` row has exactly ONE writer** — `promote_ephemeral_pairing` (G). The QR
   poll delegates; it must never relink/reuse/INSERT. A refusal is a **409**, never a 502.
 - **Gateway owns the unread count including decreases**; never `Math.max` (B). Message uniqueness
