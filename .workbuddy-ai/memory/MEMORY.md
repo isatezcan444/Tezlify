@@ -25,7 +25,13 @@ Curated index only. Detail lives elsewhere, deliberately:
   for any release that does not touch `whatsapp-gateway/` or a compose file (the flag REFUSES, exit 1, if
   `.deployed-commit..target` changes either — never trust the claim, it is verified). A gateway recreate
   costs its in-memory store, §A6. (`--rollback-to` still recreates both.)
+  **The script that runs is always the OLD one** — a release cannot be protected by a guard it ships; run
+  the target commit's copy (`git show <sha>:scripts/deploy/host-release.sh > /tmp/hr.sh`) since
+  `PROJECT_DIR` is hardcoded. Destructive added SQL now exits **3** before any container starts
+  (`migration_guard.py`, needs `--allow-migrations`); the candidate log is saved before `docker rm -f`,
+  which otherwise deletes it.
 - **Never run pytest on the dev DB** (some tests assert global row counts) — use a schema-only copy.
+  `conftest` now REFUSES a non-localhost `DATABASE_URL` (the autouse session fixture would migrate it).
 
 ## WhatsApp invariants — the one-line "tell" each (full detail in the reference)
 

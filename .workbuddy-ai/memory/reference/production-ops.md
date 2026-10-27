@@ -220,7 +220,45 @@ Rules that follow:
 
 ## Deploy state (2026-09-26; refreshed 2026-10-02)
 
-- **Measured 2026-10-27 19:17Z (LATEST): deployed = `9a772068d38bf5333a696efd198fc20794728c25`**
+- **Measured 2026-10-27 20:24Z (LATEST): deployed = `978c1fe9ba479bbea46f8c324d7b4a21968f87cf`**
+  (`feat(deploy): yikici migration'i HICBIR container kalkmadan durdur`), release
+  `backups/releases/20261027T202239Z`, backend `sha256:67906f5f…`, 94 s, `RELEASE_EXIT=0`,
+  `--no-gateway`. Docs commit `8e26844` on top is report-only and needs **no** deploy (HEAD ≠ deployed
+  is expected here).
+  - **Gateway still untouched**: container `5b867095d376`, `StartedAt=2026-10-27T17:25:57.8181699Z`,
+    `restarts=0`; `db f6d79c4a1f8b` / `caddy ee66a5cab371` unchanged; only backend recreated
+    (`969a0c8f1774`, 20:24:01). Line **200 CONNECTED**, gateway `/health` `{total:1,connected:1,
+    pending_qr:0}`, `auto_restore=true`. **No QR, no pairing.**
+  - Counts `123|1096|1535` identical at all three checkpoints (before candidate / after candidate /
+    after cutover); schema fingerprint `82e6003b1b9f → 82e6003b1b9f`; `migration_lines=24`;
+    `candidate.log` preserved (36 lines, zero WARNING/ERROR). 1099 seen at 20:25Z is post-cutover
+    organic traffic, not migration.
+  - `/health.whatsapp_data_audit` now carries **`table_status` + `table_ready`** (`ALREADY_PRESENT` /
+    `true`). `failed==0` alone does not mean the table exists.
+- **The deploy script that runs is ALWAYS the OLD one** — the new `host-release.sh` only lands after
+  the script's own `git reset --hard`, so a release cannot be protected by a guard it ships. To run the
+  target commit's script: `git show <sha>:scripts/deploy/host-release.sh > /tmp/hr.sh && bash /tmp/hr.sh
+  <sha> --no-gateway`. `PROJECT_DIR="/opt/tezlify"` is hardcoded, so /tmp works, and the sha256 matches
+  local byte-for-byte (measured `e9d0f3c7…`). `migration_guard.py` is read from the **target commit**
+  for the same reason; if absent → `skipped_no_guard` (rollback stays possible, recorded in
+  `release.json`).
+- **Destructive-migration gate** (`migration_guard.py` + `--allow-migrations`): added `DELETE FROM` /
+  `TRUNCATE` / `DROP TABLE` / `DROP COLUMN` in `backend/app/core/migrations.py` or `main.py` → exit
+  **3** → `die` **before any container starts** (the gate sits above the `--dry-run` exit). `UPDATE …
+  SET` is reported only; `DROP INDEX` is out of scope. Measured `407e8e4..3d50c1d` → 3, and the
+  candidate-window count comparison refuses cutover on a drop.
+- **`docker rm -f` deletes the candidate's log dir.** The candidate log is now copied to
+  `releases/<TS>/candidate.log` **before** removal; count + schema fingerprints are captured before the
+  candidate starts and after cutover, and `release.json` carries a `migrations` block.
+- **pytest would run migrations against whatever `settings.DATABASE_URL` says** — the autouse
+  session-scoped `run_db_migrations` fixture in `backend/tests/conftest.py`. A leftover production DSN
+  in the shell would silently migrate production. `assert_test_db_is_not_remote()` now refuses any
+  non-localhost host (escape hatch `TEZLIFY_TEST_DB_REMOTE_OK=1`); verified against the real prod DSN.
+- **Schema gotchas for integrity probes:** `messages` has **no `contact_id`** — contact consistency is
+  `conversations.contact_id`. The **backend container has no `wget`** (use `curl`); the **gateway
+  container has no `curl`** (use `node`). `curl 127.0.0.1:8000` from the host is closed — probe inside
+  the container.
+- **Measured 2026-10-27 19:17Z (previous): deployed = `9a772068d38bf5333a696efd198fc20794728c25`**
   (`fix(whatsapp): ghost purge audit row was never written`). Two `--no-gateway` releases, both
   `RELEASE_EXIT=0`:
   - `8cd4223` → `backups/releases/20261027T190404Z`, backend `7c20f3b`, 94 s.
@@ -231,8 +269,8 @@ Rules that follow:
     `auto_restore=true`. **No QR, no pairing, no session touch.**
   - Counts identical before/after **both** deploys: **123 conversations / 1050 messages / 1535
     contacts / 1 audit row**. The recurring `124→123` did NOT reproduce this time.
-  - **`--no-gateway` is still valid** for backend-only commits: the deployed baseline is now
-    `9a77206`, which already contains every gateway change up to `a46eb0e`.
+  - **`--no-gateway` is still valid** for backend-only commits: the deployed baseline at that time was
+    `9a77206` (now `978c1fe`), which already contains every gateway change up to `a46eb0e`.
 - **"No docker locally" does NOT mean "cannot deploy".** A previous session marked the deploy
   `BLOCKED` on `NO_DOCKER_HERE`; that was wrong. `host-release.sh` is a **HOST-side** script — run it
   over SSH (`ssh -i ~/.ssh/id_tezlify_oracle ubuntu@130.162.247.20 'cd /opt/tezlify && bash
