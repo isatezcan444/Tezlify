@@ -199,7 +199,40 @@ async def campaign_scheduler_loop(interval_seconds: float = 15.0) -> None:
         await asyncio.sleep(max(5.0, float(interval_seconds)))
 
 
-async def _record_ghost_purge_audit(deleted: int) -> None:
+# Denetim tablosunun acilistaki son hazirlik durumu. `/health` bunu yayinlar:
+# "tablo yok" ile "kayit yazacak bir sey olmadi" ayni sey degildir ve ikisi de
+# bos bir `whatsapp_data_audit` tablosu gibi gorunur.
+_DATA_AUDIT_TABLE_STATUS = "UNKNOWN"
+
+
+async def _ensure_audit_table_ready(engine) -> str:
+    """`whatsapp_data_audit` tablosunu DENETLENEN ilk adimdan ONCE hazirlar.
+
+    Neden ayri bir adim: `purge_empty_ghost_conversations` (ve purge yollarinin
+    geri kalani) bu tabloya satir yazar. Tablo, o adimdan SONRA olusturulursa
+    ilk acilisin denetim satiri "tablo yok" hatasiyla duser — ve bu hata
+    yutuldugu icin sistem "denetim calisiyor" gorunur.
+
+    Donus degeri `CREATED` | `ALREADY_PRESENT` | `BLOCKED` | `ERROR`.
+    `BLOCKED`/`ERROR` SESSIZ sayilmaz: ERROR seviyesinde loglanir ve /health'te
+    `table_ready: false` olarak gorunur. Startup'i dusurmez — denetim kaydi
+    kaybetmek, API'yi ayaga kaldirmamaktan daha kucuk bir kayiptir.
+    """
+    global _DATA_AUDIT_TABLE_STATUS
+    status = await ensure_whatsapp_data_audit_table(engine)
+    _DATA_AUDIT_TABLE_STATUS = status
+    if status in ("BLOCKED", "ERROR"):
+        logger.error(
+            "[MIGRATION][AUDIT] whatsapp_data_audit HAZIR DEGIL (status=%s) — "
+            "denetim satirlari yazilamayacak; /health table_ready=false",
+            status,
+        )
+    else:
+        logger.info("[MIGRATION][AUDIT] whatsapp_data_audit hazir (status=%s)", status)
+    return status
+
+
+async def _record_ghost_purge_audit(deleted: int) -> bool:
     """`ghost_purge` denetim satirini yazar; acilisi ASLA dusurmez.
 
     Neden ayri bir fonksiyon: `lifespan` icinde satir ici yazildiginda
@@ -211,13 +244,20 @@ async def _record_ghost_purge_audit(deleted: int) -> None:
     kilar.
     """
     if deleted <= 0:
-        return
+        return True
+    if _DATA_AUDIT_TABLE_STATUS in ("BLOCKED", "ERROR"):
+        logger.error(
+            "[MIGRATION][AUDIT] ghost purge %d satir sildi ama denetim tablosu "
+            "hazir degil (status=%s) — bu silme KAYIT ALTINA ALINAMADI",
+            deleted,
+            _DATA_AUDIT_TABLE_STATUS,
+        )
     try:
         from backend.app.core.database import AsyncSessionLocal
         from backend.app.services import whatsapp_data_audit as _audit
 
         async with AsyncSessionLocal() as _audit_db:
-            await _audit.record_data_event(
+            return await _audit.record_data_event(
                 _audit_db,
                 event=_audit.EVENT_GHOST_PURGE,
                 source="migration",
@@ -228,6 +268,7 @@ async def _record_ghost_purge_audit(deleted: int) -> None:
             )
     except Exception as exc:  # noqa: BLE001 - audit hatasi acilisi dusurmez
         logger.warning("[MIGRATION] ghost purge audit row failed: %s", exc)
+        return False
 
 
 @asynccontextmanager
@@ -275,13 +316,16 @@ async def lifespan(app: FastAPI):
     await ensure_phase_10_7_indexes(engine)
     await ensure_whatsapp_private_lid_and_history_tables(engine)
     await ensure_repair_raw_lid_mentions(engine)
+    # SIRA ONEMLI: denetim tablosu, denetlenen ILK yikici adimdan (ghost purge)
+    # ONCE hazir olmali. Onceki sirada tablo purge'ten SONRA olusturuluyordu;
+    # taze bir kurulumda ilk temizligin denetim satiri "tablo yok" ile duserdi.
+    await _ensure_audit_table_ready(engine)
     _ghost_purged = await purge_empty_ghost_conversations(engine)
     await _record_ghost_purge_audit(_ghost_purged)
     await ensure_campaigns_columns(engine)
     await ensure_campaign_sequence_leads_table(engine)
     await ensure_keyset_and_ordering_indexes(engine)
     await ensure_quick_replies_table(engine)
-    await ensure_whatsapp_data_audit_table(engine)
     await ensure_whatsapp_connect_stages_table(engine)
 
     # Retention — iki tablo da append-only. Sinirsiz buyumelerine izin vermek,
@@ -786,11 +830,18 @@ def _data_audit_stats() -> Dict[str, Any]:
     A recorder that has silently stopped writing looks exactly like a system
     where nothing changed. This is the difference, and it is why the counters
     are exported rather than only logged.
+
+    `table_ready` closes the remaining hole: `failed == 0` is also true when the
+    table was never created and no audited step has run yet. The status is
+    written once at startup by `_ensure_audit_table_ready`.
     """
     try:
         from backend.app.services import whatsapp_data_audit as _audit
 
-        return _audit.stats()
+        stats = _audit.stats()
+        stats["table_status"] = _DATA_AUDIT_TABLE_STATUS
+        stats["table_ready"] = _DATA_AUDIT_TABLE_STATUS in ("CREATED", "ALREADY_PRESENT")
+        return stats
     except Exception as exc:  # noqa: BLE001 - health must never fail on a probe
         return {"error": str(exc)[:120]}
 

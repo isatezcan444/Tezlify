@@ -1,8 +1,51 @@
+import os
+
 import pytest
 from backend.app.core.config import settings
 
+# Uzak bir veritabanina karsi test kosmayi ENGELLE.
+#
+# Neden: asagidaki `run_db_migrations` fixture'i autouse ve SESSION kapsamlidir;
+# `settings.DATABASE_URL` neyi gosteriyorsa ona karsi migration calistirir.
+# Yerelde bu bir SQLite dosyasidir ve zararsizdir. Ama kabukta unutulmus bir
+# `DATABASE_URL=postgresql+asyncpg://...@uretim-hostu/...` ile `pytest`
+# calistirmak, hicbir uyari vermeden URETIM semasina migration uygulardi —
+# "test kostum" sanilan islem veriyi degistirirdi. Kural kagitta degil, kodda.
+#
+# Kacis yolu bilincli olarak tek ve acik: `TEZLIFY_TEST_DB_REMOTE_OK=1`.
+_LOCAL_DB_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal", ""}
+
+
+def assert_test_db_is_not_remote(database_url: str) -> None:
+    """Uzak (localhost olmayan) bir DB URL'i icin RuntimeError atar."""
+    url = (database_url or "").strip()
+    if not url or url.startswith("sqlite"):
+        return
+    if os.environ.get("TEZLIFY_TEST_DB_REMOTE_OK") == "1":
+        return
+    host = ""
+    try:
+        from sqlalchemy.engine import make_url
+
+        host = (make_url(url).host or "").strip()
+    except Exception:  # noqa: BLE001 - cozulemeyen URL de uzak sayilir
+        host = ""
+    if host.lower() in _LOCAL_DB_HOSTS:
+        return
+    raise RuntimeError(
+        "Testler uzak bir veritabanina baglanmayi reddetti: host=%r. "
+        "Bu fixture autouse ve session kapsamli oldugu icin hedef semaya "
+        "migration uygular. Uretim DB'sine karsi test kosmak veriyi degistirir. "
+        "Yerel SQLite kullanin veya bilincli olarak TEZLIFY_TEST_DB_REMOTE_OK=1 verin."
+        % (host,)
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def run_db_migrations():
+    # HERHANGI bir baglanti kurulmadan once: hedef gercekten yerel mi?
+    assert_test_db_is_not_remote(settings.DATABASE_URL)
+
     import asyncio
     from backend.app.core.database import engine
     from backend.app.core.migrations import (
