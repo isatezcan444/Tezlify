@@ -77,7 +77,15 @@ try {
   assert.equal(fetchHistoryCalls.length, 1, 'getMessages with fetchProvider should call provider');
   assert.equal(localAfterFetch.length, 2);
 
-  console.log('[test-history-orchestration] ALL 5 assertions passed.');
+  // TEST 6: Real Baileys socket with ws.isOpen=true (readyState is undefined) is recognized as ready
+  fetchHistoryCalls = [];
+  session.sock.ws = { isOpen: true, socket: { readyState: 1 } };
+  const p6 = sm.getMessages(sid, chatJid, { limit: 10, fetchProvider: true, timeoutMs: 50 });
+  const res6 = await p6;
+  assert.equal(fetchHistoryCalls.length, 1, 'Baileys sock with ws.isOpen=true should be recognized as usable');
+  assert.notEqual(res6.provider_status, 'SOCKET_UNAVAILABLE', 'provider_status must NOT be SOCKET_UNAVAILABLE');
+
+  console.log('[test-history-orchestration] ALL 6 assertions passed.');
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

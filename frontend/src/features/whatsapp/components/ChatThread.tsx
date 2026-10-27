@@ -1119,9 +1119,20 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   }
 
 
-  const loadingOlderIndicator = loadingOlder ? (
+  const olderMessagesAffordance = loadingOlder ? (
     <div className="flex justify-center py-2 shrink-0" data-testid="loading-older-indicator">
       <Loader2 className="w-4 h-4 animate-spin text-[#7367F0]" />
+    </div>
+  ) : (hasMore && onLoadOlder) ? (
+    <div className="flex justify-center py-2 shrink-0" data-testid="load-older-affordance">
+      <button
+        type="button"
+        onClick={() => handleLoadOlder()}
+        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold text-[#7367F0] dark:text-[#9E95F5] bg-white dark:bg-[#1E2333] hover:bg-[#7367F0]/10 border border-[#7367F0]/30 shadow-xs transition-all cursor-pointer select-none"
+      >
+        <RotateCcw className="w-3.5 h-3.5" />
+        <span>{t('whatsapp.loadOlderMessages')}</span>
+      </button>
     </div>
   ) : null;
 
@@ -1149,7 +1160,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         <div
           ref={containerRef}
           onScroll={handleScroll}
-          onWheel={markUserInteracting}
+          onWheel={(e) => {
+            markUserInteracting();
+            if (e.deltaY < 0 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
+              if (!containerRef.current || containerRef.current.scrollTop < 50) {
+                handleLoadOlder();
+              }
+            }
+          }}
           onTouchMove={markUserInteracting}
           onPointerDown={markUserInteracting}
           onKeyDown={(e) => {
@@ -1162,7 +1180,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         >
           <div ref={contentWrapperRef} className="flex flex-col min-h-full space-y-1">
             <div className="flex-1 min-h-0" />
-            {loadingOlderIndicator}
+            {olderMessagesAffordance}
             {rows.map((row) => (
               <React.Fragment key={row.key}>{renderRowBody(row)}</React.Fragment>
             ))}
@@ -1191,7 +1209,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        onWheel={markUserInteracting}
+        onWheel={(e) => {
+          markUserInteracting();
+          if (e.deltaY < 0 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
+            if (!containerRef.current || containerRef.current.scrollTop < 50) {
+              handleLoadOlder();
+            }
+          }
+        }}
         onTouchMove={markUserInteracting}
         onPointerDown={markUserInteracting}
         onKeyDown={(e) => {
@@ -1202,7 +1227,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         style={{ overflowAnchor: 'none', scrollBehavior: 'auto' }}
         className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
       >
-        {win.start <= 0 && loadingOlderIndicator}
+        {win.start <= 0 && olderMessagesAffordance}
         <div aria-hidden style={{ height: `${topSpacer}px` }} />
         {mountedRows.map((row) => (
           <div

@@ -331,6 +331,17 @@ function getSessionDir(sessionsDir, sessionId) {
   return path.join(sessionsDir, sessionId);
 }
 
+/** Check if Baileys socket connection is ready (handles both Baileys WebSocketClient and raw WebSocket) */
+function isSocketReady(sock) {
+  if (!sock) return false;
+  const ws = sock.ws;
+  if (!ws) return true;
+  if (typeof ws.isOpen === 'boolean') return ws.isOpen;
+  if (ws.socket && typeof ws.socket.readyState === 'number') return ws.socket.readyState === 1;
+  if (typeof ws.readyState === 'number') return ws.readyState === 1;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Backward-compatible named exports
 // ---------------------------------------------------------------------------
@@ -998,7 +1009,7 @@ export function createSessionManager({
       }
 
       const sock = session.sock;
-      if (!sock || typeof sock.fetchMessageHistory !== 'function' || (sock.ws && sock.ws.readyState !== 1)) {
+      if (!sock || typeof sock.fetchMessageHistory !== 'function' || !isSocketReady(sock)) {
         return { messages: [], count: 0, status: 'SOCKET_UNAVAILABLE' };
       }
 
@@ -1109,7 +1120,7 @@ export function createSessionManager({
       const isPagingOlder = Boolean(before) || Boolean(oldestMsgId);
       const providerFetchNeeded = fetchProvider && Boolean(targetAnchorId) && (isPagingOlder || list.length < limit);
       if (providerFetchNeeded) {
-        const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function';
+        const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function' && isSocketReady(session.sock);
         if (!sockUsable) {
           providerStatus = 'SOCKET_UNAVAILABLE';
         } else {
@@ -1556,7 +1567,7 @@ export function createSessionManager({
 
     async subscribePresence(sessionId, jid) {
       const session = this.getSession(sessionId);
-      if (!session || session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+      if (!session || session.status !== 'CONNECTED' || !session.sock || !isSocketReady(session.sock)) {
         return { success: false, reason: 'SESSION_NOT_CONNECTED' };
       }
       const store = this._storeOf(session);
@@ -1580,7 +1591,7 @@ export function createSessionManager({
 
     async sendTyping(sessionId, jid, typing = true, durationMs = 4000) {
       const session = this.getSession(sessionId);
-      if (!session || session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+      if (!session || session.status !== 'CONNECTED' || !session.sock || !isSocketReady(session.sock)) {
         return { success: false, reason: 'SESSION_NOT_CONNECTED' };
       }
       const key = resolveJidKey(this._storeOf(session), jid);
@@ -1617,7 +1628,7 @@ export function createSessionManager({
         gateway_session_id: session.id,
       });
 
-      if (session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+      if (session.status !== 'CONNECTED' || !session.sock || !isSocketReady(session.sock)) {
         return { success: true, receipt_sent: false, reason: 'SESSION_NOT_CONNECTED' };
       }
 
@@ -3613,7 +3624,7 @@ export function createSessionManager({
       if (!key.endsWith('@g.us')) {
         throw new Error('Not a group JID');
       }
-      if (session.status !== 'CONNECTED' || !session.sock || (session.sock.ws && session.sock.ws.readyState !== 1)) {
+      if (session.status !== 'CONNECTED' || !session.sock || !isSocketReady(session.sock)) {
         return {
           id: key,
           subject: store.chats.get(key)?.name || '',
