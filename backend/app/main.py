@@ -199,6 +199,37 @@ async def campaign_scheduler_loop(interval_seconds: float = 15.0) -> None:
         await asyncio.sleep(max(5.0, float(interval_seconds)))
 
 
+async def _record_ghost_purge_audit(deleted: int) -> None:
+    """`ghost_purge` denetim satirini yazar; acilisi ASLA dusurmez.
+
+    Neden ayri bir fonksiyon: `lifespan` icinde satir ici yazildiginda
+    `AsyncSessionLocal` adi, fonksiyonun ILERISINDEKI bir `from ... import`
+    (retention blogu) yuzunden `lifespan`in YEREL degiskeni olur ve bu noktada
+    henuz baglanmamis olur — `UnboundLocalError`, `except` tarafindan yutulur ve
+    denetim satiri HIC yazilmaz. Import burada, kullanimdan once ve ayni
+    fonksiyonun icinde. Yanlislanabilir: import'u silmek bu yolu tekrar olu
+    kilar.
+    """
+    if deleted <= 0:
+        return
+    try:
+        from backend.app.core.database import AsyncSessionLocal
+        from backend.app.services import whatsapp_data_audit as _audit
+
+        async with AsyncSessionLocal() as _audit_db:
+            await _audit.record_data_event(
+                _audit_db,
+                event=_audit.EVENT_GHOST_PURGE,
+                source="migration",
+                outcome="committed",
+                reason="purge_empty_ghost_conversations",
+                idempotency_key=f"ghost_purge:{_dt.datetime.utcnow().isoformat()}"[:96],
+                detail={"conversations_deleted": deleted},
+            )
+    except Exception as exc:  # noqa: BLE001 - audit hatasi acilisi dusurmez
+        logger.warning("[MIGRATION] ghost purge audit row failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Connecting to Database & Creating Tables...")
@@ -245,22 +276,7 @@ async def lifespan(app: FastAPI):
     await ensure_whatsapp_private_lid_and_history_tables(engine)
     await ensure_repair_raw_lid_mentions(engine)
     _ghost_purged = await purge_empty_ghost_conversations(engine)
-    if _ghost_purged > 0:
-        try:
-            from backend.app.services import whatsapp_data_audit as _audit
-
-            async with AsyncSessionLocal() as _audit_db:
-                await _audit.record_data_event(
-                    _audit_db,
-                    event=_audit.EVENT_GHOST_PURGE,
-                    source="migration",
-                    outcome="committed",
-                    reason="purge_empty_ghost_conversations",
-                    idempotency_key=f"ghost_purge:{_dt.datetime.utcnow().isoformat()}"[:96],
-                    detail={"conversations_deleted": _ghost_purged},
-                )
-        except Exception as exc:  # noqa: BLE001 - audit hatasi acilisi dusurmez
-            logger.warning("[MIGRATION] ghost purge audit row failed: %s", exc)
+    await _record_ghost_purge_audit(_ghost_purged)
     await ensure_campaigns_columns(engine)
     await ensure_campaign_sequence_leads_table(engine)
     await ensure_keyset_and_ordering_indexes(engine)

@@ -546,3 +546,242 @@ async def test_count_snapshot_writes_only_when_the_data_shape_changes() -> None:
         assert decoded["has_baseline"] is True
     finally:
         await _purge(user_id)
+
+
+# ---------------------------------------------------------------------------
+# ghost_purge instrumentation
+#
+# The boot-time ghost purge and its audit row were added together, and the row
+# was NEVER written in production: `AsyncSessionLocal` was referenced inside
+# `lifespan` before the `from ... import` that binds it *later in the same
+# function* — which makes it a LOCAL for the whole function. The resulting
+# `UnboundLocalError` was swallowed by the surrounding `except Exception`, so
+# the only trace was a warning that could not fire because the code path that
+# logs it was the one that failed. A green suite proved nothing: nothing
+# asserted the row.
+# ---------------------------------------------------------------------------
+
+
+def test_lifespan_does_not_read_an_imported_local_before_binding_it() -> None:
+    """A function-local import binds the name for the WHOLE function.
+
+    So a use that appears ABOVE the import is not a `NameError` on a missing
+    module attribute — it is an `UnboundLocalError` on an empty local slot, and
+    an enclosing `except Exception` hides it completely. This walks the real
+    `lifespan` bytecode and requires every name bound by an in-function import
+    to be STOREd before it is ever LOADed.
+
+    Falsifiable: on the code that shipped in `8cd4223` this reports
+    `AsyncSessionLocal` (LOAD at offset 1516, first STORE at 2074).
+    """
+    import ast
+    import dis
+    import inspect
+    import pathlib
+
+    import backend.app.main as main_module
+
+    source = pathlib.Path(main_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    lifespan_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    imported_locally = set()
+    for node in ast.walk(lifespan_node):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported_locally.add((alias.asname or alias.name).split(".")[0])
+
+    # `lifespan` is wrapped by @asynccontextmanager; the code object is the original.
+    code = getattr(main_module.lifespan, "__wrapped__", main_module.lifespan).__code__
+
+    first_load: dict = {}
+    first_store: dict = {}
+    for instr in dis.get_instructions(code):
+        name = instr.argval
+        if not isinstance(name, str) or name not in imported_locally:
+            continue
+        if instr.opname.startswith("LOAD_FAST"):
+            first_load.setdefault(name, instr.offset)
+        elif instr.opname == "STORE_FAST":
+            first_store.setdefault(name, instr.offset)
+
+    offenders = {
+        name: (load_at, first_store.get(name))
+        for name, load_at in first_load.items()
+        if first_store.get(name) is None or load_at < first_store[name]
+    }
+    assert not offenders, (
+        "lifespan reads a locally-imported name before the import binds it "
+        f"(UnboundLocalError swallowed by an except): {offenders}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ghost_purge_audit_row_is_actually_written() -> None:
+    """The purge deletes conversations, so its audit row must exist.
+
+    Without this row a boot-time `DELETE FROM conversations` is unattributable
+    after the fact — exactly the gap `whatsapp_data_audit` was built to close.
+    """
+    from backend.app.main import _record_ghost_purge_audit
+
+    async def _ghost_rows():
+        async with AsyncSessionLocal() as db:
+            return (
+                await db.execute(
+                    select(WhatsAppDataAudit).where(
+                        WhatsAppDataAudit.event == audit.EVENT_GHOST_PURGE
+                    )
+                )
+            ).scalars().all()
+
+    try:
+        before = len(await _ghost_rows())
+        await _record_ghost_purge_audit(3)
+
+        rows = await _ghost_rows()
+        assert len(rows) == before + 1, "the ghost purge audit row was not written"
+        row = rows[-1]
+        assert row.event == audit.EVENT_GHOST_PURGE
+        assert row.source == "migration"
+        assert row.outcome == "committed"
+        assert row.idempotency_key
+        decoded = row.as_dict()["detail"]
+        assert decoded["conversations_deleted"] == 3
+    finally:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                delete(WhatsAppDataAudit).where(
+                    WhatsAppDataAudit.event == audit.EVENT_GHOST_PURGE
+                )
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_ghost_purge_audit_writes_nothing_when_nothing_was_deleted() -> None:
+    """A boot that deleted 0 rows must not claim it deleted something."""
+    from backend.app.main import _record_ghost_purge_audit
+
+    async with AsyncSessionLocal() as db:
+        before = (
+            await db.execute(
+                select(WhatsAppDataAudit).where(
+                    WhatsAppDataAudit.event == audit.EVENT_GHOST_PURGE
+                )
+            )
+        ).scalars().all()
+
+    await _record_ghost_purge_audit(0)
+
+    async with AsyncSessionLocal() as db:
+        after = (
+            await db.execute(
+                select(WhatsAppDataAudit).where(
+                    WhatsAppDataAudit.event == audit.EVENT_GHOST_PURGE
+                )
+            )
+        ).scalars().all()
+
+    assert len(after) == len(before), "a zero-delete boot must not write an audit row"
+
+
+@pytest.mark.asyncio
+async def test_purge_whatsapp_data_stages_a_session_purged_row() -> None:
+    """The API purge is the one destructive path a USER can trigger.
+
+    It stages its audit row INSIDE the caller's transaction (after `flush()`,
+    before `commit()`), so the row and the delete are one atomic fact. Two
+    sessions are seeded on purpose: with a single session the filter widens to
+    `session_id IS NULL` and the test would purge unrelated fixtures.
+    """
+    from backend.app.models.whatsapp_session import WhatsAppSession
+    from backend.app.services.whatsapp.orchestration.sessions import purge_whatsapp_data
+
+    user_id = str(uuid.uuid4())
+    try:
+        async with AsyncSessionLocal() as db:
+            first = WhatsAppSession(
+                user_id=user_id,
+                gateway_id=f"gw-{uuid.uuid4().hex[:12]}",
+                session_name="audit-purge-target",
+            )
+            second = WhatsAppSession(
+                user_id=user_id,
+                gateway_id=f"gw-{uuid.uuid4().hex[:12]}",
+                session_name="audit-purge-other",
+            )
+            db.add_all([first, second])
+            await db.commit()
+            await db.refresh(first)
+            session_id = first.id
+
+        async with AsyncSessionLocal() as db:
+            contact = Contact(
+                user_id=user_id, phone_e164="+905550009999", display_name="Purge Fixture"
+            )
+            db.add(contact)
+            await db.flush()
+            conv = Conversation(
+                user_id=user_id,
+                contact_id=contact.id,
+                channel="WHATSAPP",
+                session_id=session_id,
+            )
+            db.add(conv)
+            await db.flush()
+            for i in range(2):
+                db.add(
+                    Message(
+                        user_id=user_id,
+                        conversation_id=conv.id,
+                        wa_message_id=f"PURGE-{uuid.uuid4().hex[:10]}-{i}",
+                        body=f"purge body {i}",
+                        direction=MessageDirection.INBOUND,
+                        sender_phone="+905550009999",
+                        recipient_phone="+905550009998",
+                    )
+                )
+            await db.commit()
+            conv_id = conv.id
+
+        async with AsyncSessionLocal() as db:
+            purged = await purge_whatsapp_data(db, user_id, session_id)
+            await db.commit()
+
+        assert purged["conversations"] == 1, purged
+        assert purged["messages"] == 2, purged
+
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    select(WhatsAppDataAudit).where(
+                        WhatsAppDataAudit.event == audit.EVENT_SESSION_PURGED,
+                        WhatsAppDataAudit.user_id == user_id,
+                    )
+                )
+            ).scalars().all()
+
+        assert len(rows) == 1, [r.as_dict() for r in rows]
+        row = rows[0]
+        assert row.source == "api"
+        assert row.outcome == "committed"
+        assert row.idempotency_key
+        assert conv_id in (row.conversation_ids or [])
+        assert row.counts_before is not None, "counts_before must not be a fake zero"
+        assert row.counts_after is not None
+        assert row.counts_after["conversations"] == row.counts_before["conversations"] - 1
+        detail = row.as_dict()["detail"]
+        assert detail["conversations_deleted"] == 1
+        assert detail["messages_deleted"] == 2
+    finally:
+        from backend.app.models.whatsapp_session import WhatsAppSession as _WS
+
+        async with AsyncSessionLocal() as db:
+            await db.execute(delete(_WS).where(_WS.user_id == user_id))
+            await db.commit()
+        await _purge(user_id)
