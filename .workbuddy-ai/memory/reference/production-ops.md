@@ -194,9 +194,68 @@ per build.
 - Vite's `prepareOutDir` calls `emptyDir` on `dist/assets`; the sandbox's bulk-delete guard (>50 files)
   makes that fail and it *looks* like a build error. `rm -rf dist` first.
 
+### The candidate container runs migrations against PRODUCTION, then its log is DELETED
+
+Step 3 of the release lifts the new image in an **adacık (candidate)** container on `PORT=8001` with
+`GATEWAY_ENCRYPTION_KEY` empty — safe for the WhatsApp session, but it points at the **same production
+database** and therefore executes the **whole migration suite** against live data. After cutover the
+script removes that container, and Docker deletes its log directory with it.
+
+Consequence, measured 2026-10-27: a conversation vanished during the deploy window and **no surviving
+artifact says which migration did it**. `docker ps -a` has no candidate, and
+`/var/lib/docker/containers/` has no log dir for it. Any destructive migration
+(`purge_raw_jid_identity_data`, `merge_deferred_lid_ghosts`, `purge_empty_ghost_conversations`,
+`DELETE FROM conversations …`) is **unattributable after the fact**.
+
+Rules that follow:
+- **Never attribute a count drop to a migration without the candidate's log — you cannot get it.**
+  Report `UNATTRIBUTED_HISTORICAL_EVENT` instead of naming a plausible function.
+- Before a release, capture counts; after it, capture again. The deploy is the only window where a
+  destructive migration can run unobserved.
+- `purge_empty_ghost_conversations` logs **only when `deleted > 0`** (plus the exception branch), so
+  *absence* of its log means it deleted 0 that run — that is a usable negative, but it says nothing
+  about an earlier run whose log is gone.
+- To make this observable, the candidate would have to persist its stdout somewhere (or migrations
+  would have to write audit rows). Not done yet — it is the direct cause of the unattributed event.
+
 ## Deploy state (2026-09-26; refreshed 2026-10-02)
 
-- **Measured 2026-10-02 (latest): the prod checkout is CLEAN at `e8a86ee`**, `/opt/tezlify/.deployed-commit`
+- **Measured 2026-10-27 19:17Z (LATEST): deployed = `9a772068d38bf5333a696efd198fc20794728c25`**
+  (`fix(whatsapp): ghost purge audit row was never written`). Two `--no-gateway` releases, both
+  `RELEASE_EXIT=0`:
+  - `8cd4223` → `backups/releases/20261027T190404Z`, backend `7c20f3b`, 94 s.
+  - `9a77206` → `backups/releases/20261027T191541Z`, backend `3cfdd`, 90 s.
+  - **Gateway untouched by both**: same container `id=5d37669a9671`, `StartedAt=17:25:57`,
+    `live_gateway_image=a1ba2` unchanged, `gateway_touched: false` in both records. Line 200 stayed
+    `CONNECTED`/`is_phone_online=t`; gateway `/health` `{total:1,connected:1,pending_qr:0}`,
+    `auto_restore=true`. **No QR, no pairing, no session touch.**
+  - Counts identical before/after **both** deploys: **123 conversations / 1050 messages / 1535
+    contacts / 1 audit row**. The recurring `124→123` did NOT reproduce this time.
+  - **`--no-gateway` is still valid** for backend-only commits: the deployed baseline is now
+    `9a77206`, which already contains every gateway change up to `a46eb0e`.
+- **"No docker locally" does NOT mean "cannot deploy".** A previous session marked the deploy
+  `BLOCKED` on `NO_DOCKER_HERE`; that was wrong. `host-release.sh` is a **HOST-side** script — run it
+  over SSH (`ssh -i ~/.ssh/id_tezlify_oracle ubuntu@130.162.247.20 'cd /opt/tezlify && bash
+  scripts/deploy/host-release.sh <sha> --no-gateway'`). Pipe a `<<'EOS'` heredoc to `bash -s` for
+  multi-step probes; never nest `sh -c "… node -e \"…\""` (quoting does not survive ssh).
+- **A function-local `import` binds the name for the WHOLE function.** `main.py`'s new `ghost_purge`
+  audit block used `AsyncSessionLocal` above the `from … import AsyncSessionLocal` that sits further
+  down in `lifespan` (the retention block) → the use compiled to `LOAD_FAST_CHECK` (offset 1516),
+  first `STORE_FAST` at 2074 → **`UnboundLocalError`**, swallowed by the enclosing
+  `except Exception`. The audit row was dead code and the only log line that could say so was the one
+  that failed. Not a `NameError` — do not reason about this as "missing attribute". Falsified by
+  stashing only `main.py`: the bytecode guard reports `{'AsyncSessionLocal': (1516, 2074)}`.
+  Fixed in `9a77206` by extracting `_record_ghost_purge_audit()` with the import inside it.
+- **Measured 2026-10-27 17:26Z: deployed = `a46eb0e214ed892f758b207cf16e4744ffc0065d`**, released
+  17:23:40Z–17:26:44Z, `RELEASE_EXIT=0`, cutover `backend=sha256:a6ca7 gateway=sha256:a1ba2`. This one
+  **did recreate the gateway** (StartedAt 11:39:38 → 17:25:57) — the range `70c0741..a46eb0e` contained
+  `whatsapp-gateway/` (`bfc218c`, pushed earlier but never deployed), so `--no-gateway` **refused with
+  exit 1** and the choice was "recreate or do not deploy". Session came back from credentials with **no
+  QR** (`auto_restore=true`, `sessions:{total:1,connected:1,pending_qr:0}`); in-memory store was lost (§A6).
+  Counts moved 124→123 / 1536→1535 (see the candidate-container section above).
+  **`--no-gateway` is usable again from here** for any backend-only commit, because the deployed range
+  now starts at `a46eb0e`, which already contains the gateway change.
+- **Measured 2026-10-02:** the prod checkout is CLEAN at `e8a86ee`, `/opt/tezlify/.deployed-commit`
   = `e8a86ee8799c9e3657664208e0ccf40768ac2168`. This is a **deliberate rollback** (below), NOT the tip of
   `main` — do not "fix" it by deploying `main` without checking with the user. The older note that the tree
   is "deliberately left dirty as the deploy marker" at `359fe6d` is **stale**: `host-release.sh` resets hard
@@ -436,19 +495,37 @@ per build.
 - **Parallel `Edit` calls on one file clobber each other** — three concurrent edits to `MEMORY.md` landed
   only the first. Edit the same file sequentially, or rewrite it with one `Write`.
 
-## Latency metrics: instrumented, but OFF in production (measured 2026-10-27)
+## Latency metrics: ON BY DEFAULT since `a46eb0e` (2026-10-27)
 
-`whatsapp-gateway/src/observability.js` gates both the logger and the emit on
-`WHATSAPP_LATENCY_PROFILING === 'true'`. Production does **not** set it:
+**This section previously said "OFF in production — turning it on is a deliberate, temporary act".
+That is now STALE.** The old gate required `WHATSAPP_LATENCY_PROFILING === 'true'` and production
+never set it (`printenv` → NOT_SET, absent from all three compose files), so every metric was silent
+and "measure the QR pairing" had no number to read. A metric that needs an operator to remember an
+env var is a metric that does not exist, so the default flipped:
 
+```js
+const latencyEnabled =
+  String(process.env.WHATSAPP_LATENCY_PROFILING ?? 'true').toLowerCase() !== 'false';
 ```
-docker exec tezlify-gateway printenv | grep -iE 'LATENCY|PROFILING'   -> NOT_SET
-grep -iE 'LATENCY|PROFILING' /opt/tezlify/docker-compose.prod.yml     -> NOT_IN_COMPOSE
-```
 
-So `socket_start_to_provider_qr_ms`, `qr_generation_ms` and `socket_start_to_ready_ms` emit **nothing**
-there. This is a config choice, not a defect — but it is why "measure the QR pairing" finds no numbers.
-Turning it on is a deliberate, temporary act; leaving it on grows log volume.
+Verified live after the `a46eb0e` deploy — 4 real lines from one **restore**, before the flip it was
+**0**: `auth_state_load_ms` 1807.17, `provider_version_lookup_ms` 177.99,
+`socket_initialization_ms` 2009.85, `socket_start_to_ready_ms` **3581.82 ms**, all keyed to
+`session_ref=244d0d725095`. `LOG_LEVEL=info` (compose:149) is enough; `=false` restores silence.
+
+`extra` now accepts **scalars only** — a nested object/array is *dropped, not serialised*. That is a
+structural filter, not a key blocklist someone has to maintain: a caller passing a message or contact
+object cannot leak its body. Falsified by deleting the filter (the log line then carried
+`"body":"merhaba","jid":"905551112233@s…`).
+
+**`session_ref` is the join key to the backend.** The gateway's `session_ref` (12-char hash) equals
+`whatsapp_connect_stages.gateway_ref` for the same attempt — use it to correlate a gateway log line
+with a durable stage row. Neither side ever stores the session UUID.
+
+Trap when checking emission: `sudo grep -a "\"metric\":" <logpath>` returned **0** while 4 metrics
+were present — nested quote layers mangled the pattern. Grep for the **component** instead
+(`grep -a whatsapp-latency`) or for `duration_ms`. Same family as the `grep "a\|b"` trap: a grep that
+matches nothing reads as "not present".
 
 Contract pinned by `whatsapp-gateway/scripts/test-latency-metrics.mjs` (in `npm test`): silent when the
 flag is off, correct name/JSON/`component` when on, opaque 12-char `session_ref`, and **no** session
@@ -460,9 +537,26 @@ last-sync duration is likewise not logged in production.
 
 ## Durable data-shape audit (`whatsapp_data_audit`, live since `70c0741`)
 
-Written **after** the caller's COMMIT, so a row means "this was committed", not "we tried". Carries
-`counts_before` / `counts_after`, a `correlation_id`, the `outbox_event_id` when one exists, and a small
-sanitised `detail`. **No message bodies, phones, JIDs, QR or credentials** — surrogate ids only.
+**ATOMICITY — corrected in Phase 3.** This section used to say rows are "written **after** the
+caller's COMMIT, so a row means 'this was committed', not 'we tried'". That guarantee was
+**backwards**: between the COMMIT and the audit INSERT a crash left the delete permanent and the
+explanation gone — exactly the "the count dropped and nothing says why" state the table exists to
+prevent. Delete/merge paths now use `stage_data_event()`, which writes **inside the caller's
+transaction** (after `flush()`, before `commit()`), so a rollback takes the row with it and a commit
+keeps it. `record_data_event()` (own commit) survives only for the sweep's rollback path, where the
+caller's transaction is already gone.
+
+`stage_data_event` **pre-checks the idempotency key before `db.add`**. A staged duplicate otherwise
+surfaces at the *caller's* commit as `IntegrityError`, which breaks the "never break the caller"
+promise — it cost 6 red tests before the pre-check existed. The partial unique index
+(`WHERE idempotency_key IS NOT NULL`, both dialects) stays as the concurrency backstop.
+
+Carries `counts_before` / `counts_after`, a `correlation_id`, the `outbox_event_id` when one exists, and
+a small sanitised `detail`. **No message bodies, phones, JIDs, QR or credentials** — surrogate ids only.
+
+`snapshot_counts(user_id)` is **tenant-scoped**; a raw `SELECT count(*)` is **global**. Do not compare
+the two (live: 698 tenant contacts vs 1535 global) — that gap is the scoping working, not a mismatch.
+A failed snapshot returns `None`, never `0` (0 reads as "everything was deleted").
 
 Read it with `GET /api/v1/whatsapp/data-audit` (auth required → 401 unauth, tenant-scoped, `limit` 1–200,
 optional `event`). The sweep writes a row **only when it actually changed something** (merged / deferred /
