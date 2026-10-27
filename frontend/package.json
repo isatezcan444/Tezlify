@@ -54,7 +54,8 @@
     "verify:health-recovery": "node scripts/verify-whatsapp-gateway-health-recovery.mjs",
     "verify:bubble-media": "node scripts/verify-whatsapp-chat-bubble-media.mjs",
     "verify:phase24": "node scripts/test-phase24-hydration-silent-reconciliation.mjs",
-    "verify:delivery-retry": "node scripts/test-whatsapp-delivery-and-retry.mjs"
+    "verify:delivery-retry": "node scripts/test-whatsapp-delivery-and-retry.mjs",
+    "verify:i18n-keys": "node scripts/verify-i18n-keys.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

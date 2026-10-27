@@ -494,6 +494,10 @@ export const tr = {
     reactionPickerTitle: 'İfade seç',
     reply: 'Yanıtla',
     scrollToBottom: 'En alta kaydır',
+    // `ChatThread.tsx` `whatsapp.loadOlderMessages` çağırıyor; anahtar yalnızca
+    // `leads.loadOlderMessages` altında olduğu için buton ham anahtar yolunu
+    // gösteriyordu ("[i18n] Missing translation for key" konsol hatası).
+    loadOlderMessages: 'Daha Eski Mesajları Yükle',
     searchInChat: 'Bu sohbette ara',
     searchMatches: '{current} / {total}',
     noSearchMatches: 'Eşleşme bulunamadı',

@@ -494,6 +494,9 @@ export const en = {
     reactionPickerTitle: 'Pick a reaction',
     reply: 'Reply',
     scrollToBottom: 'Scroll to bottom',
+    // `ChatThread.tsx` calls `whatsapp.loadOlderMessages`. The key existed only
+    // as `leads.loadOlderMessages`, so the button rendered the raw key path.
+    loadOlderMessages: 'Load Older Messages',
     searchInChat: 'Search in this chat',
     searchMatches: '{current} of {total}',
     noSearchMatches: 'No matches found',
