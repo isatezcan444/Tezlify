@@ -4,8 +4,9 @@ Curated index only. Detail lives elsewhere, deliberately:
 
 | Where | What |
 | --- | --- |
-| `reference/whatsapp-subsystem-invariants.md` | WhatsApp subsystem invariants, sections **A–P** (the `A11`-style refs point here) |
+| `reference/whatsapp-subsystem-invariants.md` | WhatsApp subsystem invariants, sections **A–S** (the `A11`-style refs point here) |
 | `reference/production-ops.md` | Production topology, deploy state, release mechanics, test baselines |
+| `reference/cross-cutting-rules.md` | General defect patterns (X1–X4): response-model drop, positive cache, bytes-over-name, tenant-global unique |
 | `YYYY-MM-DD.md` | Deploy narratives, timings, falsification evidence (most recent first) |
 | the skills listed at the end | Reusable procedures — never duplicate them into memory |
 
@@ -68,6 +69,9 @@ Curated index only. Detail lives elsewhere, deliberately:
   what was PUBLISHED; a repair job can be starved by the cleanup that runs first; the merge needs a DB-row
   lease with a **normalised** key; a process-global "already initialised" flag must be keyed by the
   **resource**, not by a coarse family label (`_bulk_channel_cache` broke this — `production-ops.md`).
+- **A preview is a summary string, never a message row** (§S) — never synthesise a message from it; a
+  missing row is `UNSYNCED`, not "no messages" (§R). A `LIMIT` applied before filtering scans a fixed
+  prefix, not the work (§Q).
 
 ## Cross-cutting
 
@@ -75,33 +79,14 @@ Curated index only. Detail lives elsewhere, deliberately:
   activity only.
 - **An exported-but-never-called guard is a dead guard** (`setSessionPhone()` had no call site) — grep the
   call site before trusting any defensive branch. See `dead-guard-by-construction`.
-- **A parity check between two mirrors cannot detect something missing from both.** The i18n check compared
-  `en` against `tr`, so 19 keys absent from *both* passed it while the UI rendered raw key paths (`useI18n`
-  warns and returns the path). Derive the required set from the **consumer** (the `t('...')` call sites),
-  not the sibling copy.
+- **A parity check between two mirrors cannot detect something missing from both** — the i18n check compared
+  `en` against `tr`, so 19 keys absent from *both* passed while the UI rendered raw key paths (`useI18n`
+  warns and returns the path). Derive the required set from the **consumer** (`t('...')` call sites).
 - **Two writers on one unique key: the loser must ADOPT, not fail.** If only one writer has the try/except,
   **that other writer is the bug** — check both. Before "fixing" a duplicate implementation, measure whether
   its branches have ever actually run.
-- **A key the serializer emits but the `response_model` does not DECLARE never reaches the client.**
-  Pydantic v2 defaults to `extra="ignore"`, so `link_preview` ran correctly server-side and was
-  **invisible in production**. Tell: the **asymmetry** (`reactions` was declared on the same model and
-  worked). Already fixed once for `WhatsAppSessionResponse.sync` (A8), so the pattern recurred
-  (`2026-09-30.md`). See `fastapi-response-model-silent-field-drop`.
-- **A code fix is not retroactive over a positive cache.** Correcting how a value is *computed* leaves
-  cached rows holding the old value for their full TTL (two 7-day consent-interstitial rows kept wrong
-  titles until `expires_at` was forced into the past). Always pair a compute-path fix with a cache
-  invalidation.
-- **A served type must come from the BYTES, never from the name or the client's claim.** Campaign media
-  trusted `file.content_type` on upload and then re-guessed the type from the stored *filename* and served
-  it `inline` — so `text/plain` + `evil.html` came back as `text/html` and executed on the API origin.
-  Sniff magic bytes at upload AND again at serve (that is what makes the rule retroactive over files
-  already stored with a lying extension); `inline` only for jpeg/png/webp, everything else `attachment`,
-  plus `nosniff`. `text/plain` has no magic bytes — it cannot be validated, and it was the carrier.
-- **A GLOBAL `unique=True` on a nullable identity column is a tenant-isolation bug, not a data-quality
-  guard.** It makes the second tenant's row impossible *and* pushes the code into "merge into whatever row
-  matched" — a cross-tenant write. Use a PARTIAL composite index (`(user_id, col) WHERE col IS NOT NULL`)
-  and scope every dedup lookup by tenant. Migration order matters: create the new index first, drop the
-  old global one only if it succeeded, in ONE transaction.
+- **Undeclared response fields, positive caches, bytes-over-name, tenant-global unique →
+  `reference/cross-cutting-rules.md` (X1–X4).**
 
 ## Operational quick hits — full detail in `reference/production-ops.md`
 
