@@ -713,3 +713,27 @@ look like `3EB0…` / `false_…`, so nothing genuine can match. **Tell for a re
 `wa_message_id` matches that shape, or a chat whose thread shows exactly one message that is really a
 preview marker.
 
+
+## T. LID bridge — keyed to the CONNECTION, never to the person (FIXED 2026-10-27, `7b510c7`)
+
+`lid_mappings.session_id` is a **per-connection** `whatsapp_private.gateway_sessions` UUID that rotates on
+every socket open (`lid-repository.js:70-84`). `whatsapp_sessions.gateway_id` names only the **current**
+connection. Joining `ws.gateway_id = lm.session_id` therefore matched **4 of 4107** mappings (0.1%) on
+production — and that is the whole bug: every post-reconnect boot called bridged ghosts "unbridged",
+deleted their messages, while the merge (`candidate_lid_split_pairs`) found nothing to merge.
+
+**Tell.** A bridge table whose row count dwarfs what the join matches. This is the general shape: a join
+key that *looks* stable (a session) but is actually re-issued per handshake.
+
+**Rule.**
+- Deferral (the purge) must key on **`lid_jid` alone** — `NOT EXISTS (SELECT 1 FROM lid_mappings lm
+  WHERE lm.lid_jid = substr(c.phone_e164, 5) AND lm.phone_jid IS NOT NULL AND lm.phone_jid <> '')`.
+  Never join `whatsapp_sessions` there. Connection identity is irrelevant to "is this person bridged?".
+- Ownership comes from **`contacts.user_id`** of the ghost contact, never from the mapping's session.
+  That is what keeps tenant isolation: two tenants may hold the same LID, and neither may move the
+  other's messages.
+- **Never guess.** No mapping row ⇒ defer, do not merge and do not delete.
+
+**Why the fixtures hid it.** They seeded the session and the mapping with the *same* id, so the broken
+join matched 100% in tests. The regression suite (`test_whatsapp_lid_tenant_isolation.py`) now seeds
+`mapping_session_id` **different** from the live `gateway_id` — that is the only way the bug is visible.

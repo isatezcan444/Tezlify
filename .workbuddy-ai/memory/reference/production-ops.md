@@ -512,6 +512,17 @@ Rules that follow:
     `.clear()`.
   - Still re-run with `-p no:randomly` *and* the file in isolation before calling anything
     "pre-existing" or blaming your change.
+  - **A cleanup helper whose `clear()` sits AFTER an `await` is a cascade, not a cleanup** (2026-10-28).
+    `test_whatsapp_sync_job.py::_drain_jobs` awaited `j.done.wait()` with `timeout=10` and only then
+    called `ws._sync_jobs.clear()`. `SyncJob.done` is an `asyncio.Event` set in the job coroutine's
+    `finally`; when a test's loop closes with the task still pending that `finally` never runs, so `done`
+    is never set and the wait **always** times out. The `TimeoutError` escaped the autouse fixture's
+    *setup* → `ERROR`, and because `clear()` was skipped the leaked `SYNCING` job re-stalled **every**
+    subsequent test in the module (3 × 10 s). Which test errored depended purely on the random seed
+    (green at some seeds, red at others) — it looked like "my new test file broke the suite".
+    `test_whatsapp_live.py::_drain_sync_jobs` already had the `try/except`; only this copy did not.
+    **Rule:** cleanup goes in `finally`, and a drain helper must never raise. Falsified by replicating the
+    old body: `raised=TimeoutError leaked=True`.
 - Previous run (2026-09-26): backend **1169 pass / 4 skip / 0 fail**; gateway all **8** `npm test` scripts
   pass (`test-system-content-preview.mjs` 14 checks, `test-contact-cache.mjs` 37,
   `test-contact-hydration.mjs` 26); frontend `verify:logic` **45/45** (incl. the two i18n checks),
