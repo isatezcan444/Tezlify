@@ -105,6 +105,7 @@ async def _seed_split(
     phone: str = PHONE,
     phone_jid: str = PHONE_JID,
     gw_id: str = GW_ID,
+    mapping_session_id: str | None = None,
     wa_tag: str = "",
     archive_legacy: bool = False,
     user_id: str = TEST_USER,
@@ -180,12 +181,19 @@ async def _seed_split(
         )
 
         if mapping:
+            # `mapping_session_id`: köprünün kaydedildiği GATEWAY BAĞLANTISI.
+            # Gerçekte her yeniden bağlanmada değişir; varsayılan, oturumun
+            # şu anki `gateway_id`'siyle aynı (eski fixture'ların varsayımı).
             await db.execute(
                 text(
                     "INSERT INTO lid_mappings (session_id, lid_jid, phone_jid) "
                     "VALUES (:s, :l, :p)"
                 ),
-                {"s": gw_id, "l": lid_jid, "p": phone_jid},
+                {
+                    "s": mapping_session_id or gw_id,
+                    "l": lid_jid,
+                    "p": phone_jid,
+                },
             )
         await db.commit()
         return legacy_conv.id, canonical_conv.id
@@ -271,6 +279,50 @@ async def test_purge_defers_then_merge_repairs_on_the_same_boot():
         "already-canonical",
         "lid-1",
     ], "purge sonrası merge mesajları taşımalı (hiçbiri kaybolmadan)"
+    assert (await _legacy_state(legacy_id)).is_archived is True
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_from_a_previous_connection_still_defers_the_purge():
+    """Köprü KALICI, bağlantı kimliği GEÇİCİ — erteleme bağlantıya bakamaz.
+
+    `lid_mappings.session_id` her gateway bağlantısında yeni bir UUID'dir;
+    `whatsapp_sessions.gateway_id` ise yalnızca O ANKİ bağlantıyı gösterir.
+    Üretimde ölçüldü (2026-10-27): 20 bağlantı × ~216 eşleme = 4107 satır,
+    birleştirme yalnızca 4 satırını görüyordu (%0,1). Bağlantıya bakan
+    erteleme, geçmiş bir bağlantıda kaydedilmiş köprüyü "köprü yok" sayar ve
+    hayaleti mesajlarıyla birlikte SİLER — canlıda 1 sohbet + 9 mesaj tam
+    olarak böyle gitti (oturum 200→201 yeniden kurulduktan sonraki ilk boot).
+    """
+    legacy_id, _ = await _seed_split(mapping_session_id="gw-previous-connection")
+
+    await purge_raw_jid_identity_data(engine)
+
+    ghost = await _legacy_state(legacy_id)
+    assert ghost is not None, "önceki bağlantıda kaydedilen köprü de köprüdür"
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_from_a_previous_connection_is_still_merged():
+    """Onarım da AYNI köprü tanımını kullanmalı: erteleme birleştirme değildir.
+
+    Erteleme düzeltilip birleştirme düzeltilmezse hayalet isimsiz bir sohbet
+    olarak kalır ve kullanıcı için sonuç yine "mesajlarım kayıp" olur. Bu kapı
+    iki yolun (purge ertelemesi + merge adaylığı) tek bir köprü tanımında
+    buluştuğunu çiviler.
+    """
+    legacy_id, canonical_id = await _seed_split(
+        mapping_session_id="gw-previous-connection"
+    )
+
+    report = await merge_deferred_lid_ghosts(engine, limit=10)
+
+    assert report["merged"] == 1, "geçmiş bağlantıdaki köprü de birleştirmeli"
+    rows = await _message_conversations()
+    assert sorted(body for c, _w, body in rows if c == canonical_id) == [
+        "already-canonical",
+        "lid-1",
+    ], "mesajlar canonical sohbete taşınmalı (hiçbiri kaybolmadan)"
     assert (await _legacy_state(legacy_id)).is_archived is True
 
 

@@ -247,6 +247,44 @@ counts_dropped() {
   return 0
 }
 
+# Mesaj KIMLIK filigrani — "yeni gelen mesaj sayimi sisirdi mi?" sorusunu
+# ortadan kaldirir.
+#
+# `counts_dropped` yalnizca TOPLAM sayiya bakar. Canli bir hatta pencere
+# boyunca yeni mesaj gelir: 9 mesaj silinip 9 yeni mesaj gelirse toplam
+# DEGISMEZ ve kayip gorunmez. Filigran bunu kapatir — once `max(id)` ve o ana
+# kadarki mesaj sayisi alinir, sonra "id'si bu esigin ALTINDA kalan kac mesaj
+# duruyor" sorulur. Yeni mesajlar esigin USTUNDE oldugu icin sayima girmez,
+# silinen her eski mesaj ise kesinlikle gorunur.
+db_message_watermark() {
+  # Cikti: "max_id|adet" veya "unavailable"
+  if ! db_available; then printf 'unavailable\n'; return 0; fi
+  docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -A -F'|' -c \
+    "select coalesce(max(id),0), count(*) from messages;" \
+    2>/dev/null || printf 'unavailable\n'
+}
+
+db_messages_upto() {
+  local edge="${1:-}"
+  case "$edge" in ''|*[!0-9]*) printf 'unavailable\n'; return 0 ;; esac
+  if ! db_available; then printf 'unavailable\n'; return 0; fi
+  docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
+    "select count(*) from messages where id <= $edge;" \
+    2>/dev/null || printf 'unavailable\n'
+}
+
+# Filigran oncesinde var olan mesajlardan kaci kayboldu? Kayip yoksa bos doner.
+messages_lost_since() {
+  local wm="${1:-}" after="${2:-}" edge before
+  case "$wm$after" in *unavailable*) return 0 ;; esac
+  IFS='|' read -r edge before <<<"$wm"
+  if [ -z "$edge" ] || [ -z "$before" ] || [ -z "$after" ]; then return 0; fi
+  if [ "$after" -lt "$before" ]; then
+    printf 'messages:%s->%s (id<=%s)\n' "$before" "$after" "$edge"
+  fi
+  return 0
+}
+
 # Adacik logunu container SILINMEDEN once diske al.
 #
 # `docker rm -f` container'in log dizinini de siler; 2026-10-27'de yikici bir
@@ -398,9 +436,11 @@ log "denetim kaydi: $RELEASE_DIR"
 # kalkmadan once alinmis olmasi SART. Sayim + sema parmak izi burada sabitlenir.
 DB_COUNTS_BEFORE="$(db_counts)"
 printf '%s\n' "$DB_COUNTS_BEFORE" > "$RELEASE_DIR/db-counts-before.txt"
+MSG_WM_BEFORE="$(db_message_watermark)"
+printf '%s\n' "$MSG_WM_BEFORE" > "$RELEASE_DIR/message-watermark-before.txt"
 schema_fingerprint > "$RELEASE_DIR/schema-before.txt"
 SCHEMA_BEFORE_HASH="$(sha256sum "$RELEASE_DIR/schema-before.txt" | cut -d' ' -f1)"
-log "db tabani: counts=${DB_COUNTS_BEFORE} sema=${SCHEMA_BEFORE_HASH:0:12}"
+log "db tabani: counts=${DB_COUNTS_BEFORE} filigran=${MSG_WM_BEFORE} sema=${SCHEMA_BEFORE_HASH:0:12}"
 
 # ---------------------------------------------------------------------------
 # 1. Checkout'u hedef SHA'ya normalize et
@@ -499,6 +539,18 @@ fi
 DB_COUNTS_AFTER_CANDIDATE="$(db_counts)"
 printf '%s\n' "$DB_COUNTS_AFTER_CANDIDATE" > "$RELEASE_DIR/db-counts-after-candidate.txt"
 CANDIDATE_DROPS="$(counts_dropped "$DB_COUNTS_BEFORE" "$DB_COUNTS_AFTER_CANDIDATE")"
+# Filigran kontrolu ONCE gelir: toplam sayim degismemis olsa bile (silinen
+# kadar yeni mesaj geldiyse) kaybi yakalayan tek olcu budur.
+CANDIDATE_LOST="$(messages_lost_since "$MSG_WM_BEFORE" "$(db_messages_upto "${MSG_WM_BEFORE%%|*}")")"
+if [ -n "$CANDIDATE_LOST" ]; then
+  printf '%s\n' "$CANDIDATE_LOST" > "$RELEASE_DIR/candidate-messages-lost.txt"
+  log "HATA: adacik penceresinde ONCEDEN VAR OLAN mesaj kayboldu:"
+  printf '%s\n' "$CANDIDATE_LOST" | sed 's/^/    /'
+  if [ "$ALLOW_MIGRATIONS" != "1" ]; then
+    die "adacik penceresinde onceki mesajlar silindi ve --allow-migrations verilmedi; CUTOVER YAPILMADI, canli sistem etkilenmedi. Kanit: $RELEASE_DIR"
+  fi
+  log "--allow-migrations verildi; mesaj kaybi onaylandi, cutover'a devam ediliyor"
+fi
 if [ -n "$CANDIDATE_DROPS" ]; then
   printf '%s\n' "$CANDIDATE_DROPS" > "$RELEASE_DIR/candidate-data-drop.txt"
   log "UYARI: adacik penceresinde satir sayisi DUSTU:"
@@ -592,6 +644,15 @@ else
   log "sema degismedi (${SCHEMA_BEFORE_HASH:0:12})"
 fi
 CUTOVER_DROPS="$(counts_dropped "$DB_COUNTS_AFTER_CANDIDATE" "$DB_COUNTS_AFTER")"
+# Cutover artik gerceklesti: burada durdurmak yerine KANIT birakilir (release.json
+# ve ayni dizindeki dosyalar). Filigran, yeni gelen mesajlarin gizleyebilecegi
+# kaybi da yakalar.
+CUTOVER_LOST="$(messages_lost_since "$MSG_WM_BEFORE" "$(db_messages_upto "${MSG_WM_BEFORE%%|*}")")"
+if [ -n "$CUTOVER_LOST" ]; then
+  printf '%s\n' "$CUTOVER_LOST" > "$RELEASE_DIR/cutover-messages-lost.txt"
+  log "UYARI: cutover sonrasi ONCEDEN VAR OLAN mesaj kayboldu:"
+  printf '%s\n' "$CUTOVER_LOST" | sed 's/^/    /'
+fi
 if [ -n "$CUTOVER_DROPS" ]; then
   printf '%s\n' "$CUTOVER_DROPS" > "$RELEASE_DIR/cutover-data-drop.txt"
   log "UYARI: cutover sonrasi satir sayisi dustu:"

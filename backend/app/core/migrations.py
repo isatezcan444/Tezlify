@@ -1280,6 +1280,23 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
     (services/whatsapp/reconciliation.py) yapar — canlı yol ve onarım işiyle
     AYNI mantık. Sınır (`limit`) yüzünden artan kalırsa onarım işi devam ettirir.
 
+    Köprü BAĞLANTIYA değil KİŞİYE bağlıdır
+    --------------------------------------
+    Erteleme koşulu bir zamanlar `lid_mappings`'i `whatsapp_sessions` ile
+    `ws.gateway_id = lm.session_id` üzerinden birleştiriyordu. Bu yanlıştı:
+    `lid_mappings.session_id` bir GATEWAY BAĞLANTISININ UUID'sidir ve her
+    yeniden bağlanmada yenisi üretilir; `whatsapp_sessions.gateway_id` ise
+    yalnızca O ANKİ bağlantıyı gösterir. Üretimde ölçüldü (2026-10-27):
+    20 bağlantı, her biri ~216 eşleme, toplam 4107 satır — birleştirme
+    yalnızca 4 satır görüyordu (%0,1). Sonuç: her yeniden bağlanmadan
+    sonraki ilk boot'ta köprüsü BİLİNEN her hayalet "köprüsüz" sanılıp
+    mesajlarıyla birlikte SİLİNİYORDU (canlıda 1 sohbet + 9 mesaj gitti) ve
+    onarımın malzemesi yok oldu. Köprü kaydı geçmiş bir bağlantıya ait olsa
+    da aynı kişiyi gösterir; bu yüzden erteleme artık yalnızca `lid_jid`
+    üzerinden bakılır. Yön güvenlidir: bu koşul sadece silmeyi ENGELLER,
+    asla silmeye yol açmaz; kimin birleşeceğine `merge_deferred_lid_ghosts`
+    kişi sahipliği (`contacts.user_id`) üzerinden karar verir.
+
     Idempotenttir; tekrar çalıştırma hiçbir şey yapmaz. Hata durumunda
     migration loglanır ama startup'ı düşürmez (orijinal purge deseniyle aynı
     fail-open davranış — veri temizliği şema bütünlüğüne dokunmaz).
@@ -1287,7 +1304,6 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
     postgres = getattr(getattr(engine, "dialect", None), "name", "") == "postgresql"
     # Gateway bu tabloyu Postgres'te özel şemada, SQLite'ta düz adla açar.
     lid_table = "whatsapp_private.lid_mappings" if postgres else "lid_mappings"
-    sessions_table = "public.whatsapp_sessions" if postgres else "whatsapp_sessions"
     try:
         async with engine.begin() as conn:
             # 1. Ham jid/lid görünen adları nötrle (contact).
@@ -1312,9 +1328,12 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
             #    değilse önce manuel silinir — her iki yol da güvenlidir).
             defer_clause = ""
             if await _lid_bridge_table_available(conn, postgres=postgres):
+                # Yalnızca `lid_jid` — bağlantı kimliği KULLANILMAZ (yukarıdaki
+                # "Köprü BAĞLANTIYA değil KİŞİYE bağlıdır" bölümü). Birleştirme
+                # bu koşulun göremediği hiçbir köprüyü kullanamaz; tersi ise
+                # (görmek ama yine de silmek) geri getirilemez kayıptır.
                 defer_clause = (
                     f" AND NOT EXISTS (SELECT 1 FROM {lid_table} lm "
-                    f"JOIN {sessions_table} ws ON ws.gateway_id = lm.session_id "
                     f"WHERE lm.lid_jid = substr(c.phone_e164, 5) "
                     f"AND lm.phone_jid IS NOT NULL AND lm.phone_jid <> '')"
                 )

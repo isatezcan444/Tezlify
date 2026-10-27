@@ -89,10 +89,6 @@ def _lid_table(postgres: bool) -> str:
     return "whatsapp_private.lid_mappings" if postgres else "lid_mappings"
 
 
-def _sessions_table(postgres: bool) -> str:
-    return "public.whatsapp_sessions" if postgres else "whatsapp_sessions"
-
-
 def _public_table(postgres: bool, name: str) -> str:
     # contacts/conversations her zaman public şemadadır; SQLite testte düz ad.
     return f"public.{name}" if postgres else name
@@ -387,7 +383,7 @@ async def candidate_lid_split_pairs(
     # `user_id` sütunu Uuid olduğu için kayıtlı biçim dash'siz olabilir; operatör
     # ise tireli UUID yazar. İki biçimi de kabul et — yoksa `--user-id` sessizce
     # "hiç aday yok" derdi.
-    where_user = " AND (ws.user_id = :user_id OR ws.user_id = :user_id_hex)" if user_id else ""
+    where_user = " AND (c.user_id = :user_id OR c.user_id = :user_id_hex)" if user_id else ""
     params: Dict[str, Any] = {"lim": limit, "archived": archived}
     if user_id:
         params["user_id"] = str(user_id)
@@ -395,28 +391,35 @@ async def candidate_lid_split_pairs(
     # `MIN(...)`: aynı çift için birden çok kişi/sohbet satırı varsa (veri
     # anomalisi) Python sürümünün `.first()` seçicisiyle aynı biçimde en küçük
     # id seçilir — çift başına tek satır döner.
+    #
+    # Sahip, BAĞLANTIDAN değil KİŞİDEN okunur (`c.user_id`). Önceki sürüm
+    # `whatsapp_sessions`'a `ws.gateway_id = lm.session_id` ile bağlanıyordu;
+    # `lid_mappings.session_id` her gateway bağlantısında yenilenen bir UUID
+    # olduğu için bu bağ yalnızca O ANKİ bağlantının eşlemelerini görüyordu.
+    # Üretimde ölçüldü (2026-10-27): 4107 eşlemenin 4'ü (%0,1). Sonuç: geçmiş
+    # bağlantılarda kaydedilmiş köprüler için bölünme hiç aday olmuyordu —
+    # onarım sessizce "yapılacak iş yok" diyordu. Hayalet kişinin sahibi
+    # `contacts.user_id`'dir ve kiracı yalıtımı oradan gelir.
     rows = (
         await db.execute(
             text(
                 f"""
                 SELECT lm.lid_jid,
                        lm.phone_jid,
-                       ws.user_id,
+                       c.user_id,
                        MIN(c.id) AS lid_contact_id,
                        MIN(cv.id) AS lid_conversation_id
                 FROM {_lid_table(postgres)} lm
-                JOIN {_sessions_table(postgres)} ws ON ws.gateway_id = lm.session_id
                 JOIN {_public_table(postgres, "contacts")} c
-                  ON c.user_id = ws.user_id
-                 AND c.phone_e164 = 'jid:' || lm.lid_jid
+                  ON c.phone_e164 = 'jid:' || lm.lid_jid
                 JOIN {_public_table(postgres, "conversations")} cv
                   ON cv.contact_id = c.id
-                 AND cv.user_id = ws.user_id
+                 AND cv.user_id = c.user_id
                  AND cv.is_archived = :archived
                 WHERE lm.phone_jid IS NOT NULL AND lm.phone_jid <> ''
                   AND lm.lid_jid LIKE '%@lid'
                   {where_user}
-                GROUP BY lm.lid_jid, lm.phone_jid, ws.user_id
+                GROUP BY lm.lid_jid, lm.phone_jid, c.user_id
                 ORDER BY lm.lid_jid
                 LIMIT :lim
                 """
