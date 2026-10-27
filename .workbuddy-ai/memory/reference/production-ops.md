@@ -472,6 +472,30 @@ Rules that follow:
     `Provider history timed out (conv=18192); serving local rows instead of failing` — no exception, and
     `provider_exhausted` still `False` (H-3 intact).
 
+## Candidate isolation — one production DB write is an isolation failure
+
+- The candidate must start on an **isolated schema+data copy**, not on the production database.
+- **There may be MORE than one connection string** in the candidate env. The first fix (2026-10-27)
+  rewrote only the exact variable `DATABASE_URL`; live env also carried `GATEWAY_DATABASE_URL`, so
+  the candidate's backend ran on the clone while its gateway layer was still pointing at production.
+  The guard's own regex (`DATABASE_URL=.*/<db>`) matched that *second* line as a substring and
+  refused the deploy — correct decision, but the wrong diagnosis (it pointed at the already-rewritten
+  first line, not the unrewritten second one).
+- **Rule: rewrite by family, not by exact name.** Any variable whose name ends in `DATABASE_URL` is
+  a connection string. **Rule: verify positively.** Instead of "does any line contain the production
+  name?" (negative), assert "every connection string's path equals `/<candidate_db>`" (positive).
+  A leftover production URL is reported **by variable name**, making diagnosis immediate.
+- The shell's independent second proof must also be **anchored** (`^([A-Za-z_][A-Za-z0-9_]*)?DATABASE_URL=`)
+  and **boundary-checked** (`([?]|$)` on the database name). Without the boundary, `/tezlify_cand_X`
+  is wrongly flagged because `tezlify` appears as a prefix. Without the anchor, `GATEWAY_DATABASE_URL=`
+  is wrongly matched as a substring of the full name.
+- The candidate clone DB is created before the container starts, and is dropped **before** cutover.
+  `candidate-data-drop.txt` must never exist in the release directory; its presence means the clone
+  touched production rows, and that is an **isolation failure** — it stops the deploy unconditionally.
+- `host-release.sh`'s `verify_blob` list is **hardcoded** — it does not cover files changed by your
+  commit. For a change outside that list, hash it yourself to prove the running code is the reviewed
+  code.
+
 ## Verification baselines
 
 - Last run (2026-10-02, after the load-older fix): backend **1440 pass / 4 skip / 0 fail** with
@@ -523,6 +547,14 @@ Rules that follow:
     `test_whatsapp_live.py::_drain_sync_jobs` already had the `try/except`; only this copy did not.
     **Rule:** cleanup goes in `finally`, and a drain helper must never raise. Falsified by replicating the
     old body: `raised=TimeoutError leaked=True`.
+  - **RE-PROVISION THE TEST DB BEFORE EVERY FULL RUN** (2026-10-28). Reusing one
+    `/tmp/tezlify_clean.db` across back-to-back full runs makes
+    `test_campaign_sequence_drip.py::test_campaign_sequence_full_drip_lifecycle` fail with
+    `Campaign #N paused: daily_limit_reached (pool size: 1)` → `assert 0 == 2` on `len(seq_leads)`.
+    Accumulated campaign rows exhaust a **per-day global counter**. Tell that it is pollution and not
+    ordering: **the file fails ALONE too**, and `provision_test_db.py` makes it green in both fixed and
+    random order. Always: `PYTHONPATH=. venv/bin/python scripts/provision_test_db.py` (33 tables, 0 rows)
+    → then pytest. A green run on a dirty DB proves nothing, and a red one accuses the wrong code.
 - Previous run (2026-09-26): backend **1169 pass / 4 skip / 0 fail**; gateway all **8** `npm test` scripts
   pass (`test-system-content-preview.mjs` 14 checks, `test-contact-cache.mjs` 37,
   `test-contact-hydration.mjs` 26); frontend `verify:logic` **45/45** (incl. the two i18n checks),
