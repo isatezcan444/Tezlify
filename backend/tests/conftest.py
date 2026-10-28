@@ -41,10 +41,49 @@ def assert_test_db_is_not_remote(database_url: str) -> None:
     )
 
 
+def assert_test_db_matches_requested_path(database_url: str) -> None:
+    """`TEST_DB_PATH` verildiyse testler GERCEKTEN o dosyaya baglanmali.
+
+    Neden: `scripts/provision_test_db.py` taze bir SQLite dosyasi uretir, ama
+    pytest ayri bir surectir ve `settings.DATABASE_URL` neyi gosteriyorsa ona
+    baglanir. Bu iki deger ayrisirsa (ornegin yalnizca `TEST_DB_PATH`
+    export edilirse) testler sessizce depodaki ESKI `tezlify.db` dosyasina
+    kosar: "temiz DB" iddiasi yanlis olur ve onceki kosumlarin artiklari
+    (ayni telefonlu lead'ler, eski UNIQUE indeksler) rastgele sirada
+    aciga cikip alakasiz testleri dusurur.
+
+    Sessiz yanlisligi gurultulu hataya cevirmek icin burada duruyoruz.
+    """
+    requested = (os.environ.get("TEST_DB_PATH") or "").strip()
+    if not requested:
+        return
+    url = (database_url or "").strip()
+    if not url.startswith("sqlite"):
+        return
+    try:
+        from sqlalchemy.engine import make_url
+
+        db_path = make_url(url).database or ""
+    except Exception:  # noqa: BLE001 - cozulemeyen URL zaten yukarida ele alinir
+        return
+    if not db_path or db_path == ":memory:":
+        return
+    if os.path.abspath(db_path) != os.path.abspath(requested):
+        raise RuntimeError(
+            "Testler, provision edilen dosyaya baglanmiyor: "
+            f"TEST_DB_PATH={requested!r} ama DATABASE_URL={url!r}. "
+            "Provision ile pytest AYNI dosyayi kullanmalidir; ornek:\n"
+            '  DATABASE_URL="sqlite+aiosqlite:////tmp/tezlify_clean.db" \\\n'
+            "  TEST_DB_PATH=/tmp/tezlify_clean.db pytest backend/tests/"
+        )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def run_db_migrations():
     # HERHANGI bir baglanti kurulmadan once: hedef gercekten yerel mi?
     assert_test_db_is_not_remote(settings.DATABASE_URL)
+    # ... ve gercekten PROVISION EDILEN dosya mi?
+    assert_test_db_matches_requested_path(settings.DATABASE_URL)
 
     import asyncio
     from backend.app.core.database import engine
