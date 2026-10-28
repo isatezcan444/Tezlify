@@ -71,6 +71,10 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
   reintroduces order-dependence. Re-check with `-p no:randomly` **and** the file alone.
 - **Falsify before trusting** (`scoped-stash-falsification`). Parallel `Edit` on one file clobbers.
 - Never `docker logs` for the Ops tail — truncating a json-file WEDGES the reader; rotate, never clear.
+- `event_outbox` DEAD_LETTER is purged after **48 h** (`postgres-event-outbox.js::cleanup()`); an operator
+  replay must happen inside that window or the encrypted payload is gone.
+- Initial sync persists only the newest **50/chat** (`_SYNC_PER_CHAT_LIMIT`); older history lives only in
+  gateway memory (A6) ⇒ a restart makes it unreachable unless the on-demand PDO answers.
 
 ## Skills
 
