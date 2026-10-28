@@ -285,6 +285,7 @@ async def get_messages(
     oldest_msg_from_me: Optional[bool] = None,
     oldest_msg_ts_ms: Optional[int] = None,
     timeout_ms: Optional[int] = None,
+    request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {"limit": limit}
     if before is not None:
@@ -297,6 +298,11 @@ async def get_messages(
         params["oldest_msg_from_me"] = "true" if oldest_msg_from_me else "false"
     if oldest_msg_ts_ms is not None:
         params["oldest_msg_timestamp_ms"] = int(oldest_msg_ts_ms)
+    # Korelasyon kimliği: gateway loglarındaki PDO/chunk satırlarını bu
+    # backend isteğiyle eşleştirir. Gateway bu parametreyi bilmiyorsa yok
+    # sayar — geriye dönük uyumlu.
+    if request_id:
+        params["request_id"] = str(request_id)[:64]
     if timeout_ms is not None:
         params["timeout_ms"] = int(timeout_ms)
         http_timeout = max(4.0, (timeout_ms / 1000.0) + 2.0)

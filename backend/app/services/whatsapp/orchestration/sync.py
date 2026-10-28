@@ -2779,6 +2779,12 @@ class WhatsAppSyncOrchestrator:
             return []
 
         _on_demand_provider_budget_spend(owner, conv.id)
+        # Faz 3.6 teşhisi: bu tur için tek bir korelasyon kimliği üret ve
+        # gateway'e ilet. Gateway loglarındaki `Older history PDO requested` /
+        # `... timed out` / `History chunk received` satırları bu kimlikle
+        # eşleşir; böylece "istek gitti mi, chunk geldi mi, eşleşti mi"
+        # sorusu tek kimlikle yanıtlanır. Kimlik PII içermez.
+        history_request_id = f"hist-{uuid.uuid4().hex[:12]}"
         try:
             if gateway_op_or_mark_relink is not None and session_row is not None:
                 data = await gateway_op_or_mark_relink(
@@ -2794,6 +2800,7 @@ class WhatsAppSyncOrchestrator:
                         oldest_msg_from_me=oldest_msg_from_me,
                         oldest_msg_ts_ms=before_ts_ms,
                         timeout_ms=provider_timeout_ms,
+                        request_id=history_request_id,
                     ),
                 )
             else:
@@ -2807,9 +2814,13 @@ class WhatsAppSyncOrchestrator:
                     oldest_msg_from_me=oldest_msg_from_me,
                     oldest_msg_ts_ms=before_ts_ms,
                     timeout_ms=provider_timeout_ms,
+                    request_id=history_request_id,
                 )
         except Exception as exc:
-            logger.warning("On-demand hydrasyon basarisiz (conv=%s): %s", conv.id, exc)
+            logger.warning(
+                "On-demand hydrasyon basarisiz (request_id=%s conv=%s): %s",
+                history_request_id, conv.id, exc,
+            )
             if sid_str:
                 try:
                     from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
@@ -2833,6 +2844,12 @@ class WhatsAppSyncOrchestrator:
         if not isinstance(gw_msgs, list):
             raise RuntimeError("Gateway returned an invalid messages payload.")
         provider_status = data.get("provider_status", "NOT_REQUESTED")
+        # Tek satır özet: aynı `request_id` gateway tarafındaki PDO/chunk
+        # satırlarında da görünür, böylece uçtan uca izlenebilir.
+        logger.info(
+            "On-demand history round-trip (request_id=%s conv=%s provider=%s messages=%d)",
+            history_request_id, conv.id, provider_status, len(gw_msgs),
+        )
 
         # Record durable provider evidence if a real provider round-trip occurred.
         #
