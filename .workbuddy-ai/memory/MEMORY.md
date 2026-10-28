@@ -24,6 +24,15 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
   REFUSES, exit 1 — verified). A gateway recreate costs its in-memory store (A6). **The script that runs is
   always the OLD one** — run the target commit's copy (`git show <sha>:scripts/deploy/host-release.sh >
   /tmp/hr.sh`). Destructive added SQL exits **3** before any container starts (`migration_guard.py`).
+- **A refusing guard is not a blocker — build the ref it asks for.** `--no-gateway` compares
+  `deployed..TARGET`; while `main` carries gateway changes, backend-only is impossible. Do **not** weaken
+  it: cut `release/backend-only-*` = main's tree with `whatsapp-gateway/` reverted to the deployed commit.
+  Then `git diff --quiet <deployed> <ref> -- whatsapp-gateway/ docker-compose*.yml` exits 0 on its own
+  terms. Preflight: `python scripts/deploy/backend_only_release.py --base <deployed> --target <ref>`
+  (also catches a ref that forgot main's backend = silent regression, and an empty release).
+  **Check the CONTRACT before deploying backend-only**: does the *deployed* gateway support every param the
+  new backend sends? `perChatLimit` was there; had it not been, the sweep would have seen 50 msgs/chat and
+  silently persisted almost nothing. Unknown params are ignored, so a new one fails silently, not loudly.
 - **Never run pytest on the dev DB** (some tests assert global row counts); `conftest` REFUSES a
   non-localhost `DATABASE_URL`. **`TEST_DB_PATH` alone is not enough** — `settings.DATABASE_URL` is what pytest
   connects to, so export BOTH or the suite silently runs on the stale repo `tezlify.db` (cost: 3 phantom
