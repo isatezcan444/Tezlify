@@ -10,10 +10,17 @@ hale gelir. On-demand PDO bunu kurtarabilirdi, ama PDO her sohbet için cevap
 vermiyor (Faz 3.6 ölçümü: 4 sohbetten 1'i 1.8 sn'de döndü, 3'ü 8 sn'de
 zaman aşımına düştü). Yani "bellek kaybı" fiilen "kalıcı veri kaybı" olabilir.
 
-Canlı ölçüm (2026-10-28, üretim, salt okunur):
-    gateway RAM'inde 9098 mesaj
-    bunların 7080'i DB'de YOK (16 sohbet)
-    DB'de toplam 1747 mesaj
+Canlı ölçüm (2026-10-28, üretim, salt okunur; KİMLİK üzerinden, sayaçla değil):
+    gateway RAM'inde 9122 mesaj (9122'sinin de geçerli kimliği var, 0 kopya)
+    bunların 7336'sı DB'de YOK (40 sohbet)
+    DB'de toplam 1786 mesaj — hepsi RAM'de ve DOĞRU sohbetin altında (DB ⊆ RAM)
+
+DİKKAT — bu sayı bir kez yanlış raporlandı: ilk ölçüm gateway'e
+`perChatLimit=50` ile sorulduğu için sohbet başına yalnızca son 50 mesajı
+görüyordu ve "7080 / 16 sohbet" gibi eksik bir sonuç verdi. Bu bir veri
+değişimi değil, ÖLÇÜM DERİNLİĞİ hatasıydı. Doğru ölçüm `perChatLimit=2000`
+(gateway'in kendi tavanı) ve kimlik kümesi karşılaştırmasıdır:
+`scripts/diagnostics/audit_memory_gap.py`.
 
 ÇÖZÜM
 -----

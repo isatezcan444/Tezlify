@@ -193,11 +193,17 @@ class Settings(BaseSettings):
     # NEDEN VAR: ilk senkron sohbet başına yalnızca en yeni 50 mesajı DB'ye
     # yazar (`_SYNC_PER_CHAT_LIMIT`). Daha eski her mesaj YALNIZCA gateway
     # RAM'inde durur ve gateway yeniden oluşturulduğunda kaybolur. Canlı
-    # ölçüm (2026-10-28): RAM'de 9098 mesaj, 7080'i DB'de YOK.
+    # ölçüm (2026-10-28, kimlik üzerinden): RAM'de 9122 mesaj, 7336'sı
+    # DB'de YOK / 40 sohbet. (İlk ölçüm `perChatLimit=50` ile yapıldığı için
+    # "7080 / 16 sohbet" diye EKSİK raporlanmıştı — ölçüm derinliği hatası.)
     #
     # Bu iş WhatsApp'a HİÇBİR ŞEY sormaz (PDO yok): yalnızca gateway'in zaten
-    # elinde tuttuğu kayıtları mevcut ingest yolundan DB'ye yazar. Bu yüzden
-    # varsayılan AÇIK; davranış `--no-gateway` backend deploy'u ile düzelir.
+    # elinde tuttuğu kayıtları mevcut ingest yolundan DB'ye yazar.
+    #
+    # DİKKAT — varsayılan AÇIK. Backend deploy edildiği anda süpürme açılıştan
+    # ~90 sn sonra KENDİLİĞİNDEN başlar. Kontrollü ilk tur için deploy'u
+    # `WHATSAPP_MEMORY_PERSIST_ENABLED=false` ile yapın (bkz. docs/audits
+    # phase3.7 runbook), `dry_run` ile doğrulayın, sonra açın.
     WHATSAPP_MEMORY_PERSIST_ENABLED: bool = True
     WHATSAPP_MEMORY_PERSIST_INTERVAL_SECONDS: int = 300
     WHATSAPP_MEMORY_PERSIST_INITIAL_DELAY_SECONDS: int = 90

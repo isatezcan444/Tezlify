@@ -396,7 +396,9 @@ async def lifespan(app: FastAPI):
     # NEDEN: ilk senkron sohbet başına yalnızca en yeni 50 mesajı DB'ye yazar
     # (`_SYNC_PER_CHAT_LIMIT`). Daha eski her mesaj yalnızca gateway RAM'inde
     # durur; gateway her yeniden oluşturulduğunda kaybolur ve geri yüklenmez.
-    # Canlı ölçüm (2026-10-28): RAM'de 9098 mesaj, 7080'i DB'de yok.
+    # Canlı ölçüm (2026-10-28, kimlik üzerinden): RAM'de 9122 mesaj,
+    # 7336'sı DB'de yok / 40 sohbet. (İlk ölçüm `perChatLimit=50` ile
+    # yapıldığı için "7080 / 16 sohbet" diye eksik raporlanmıştı.)
     # Bu iş WhatsApp'a soru sormaz — yalnızca gateway'in elindekini yazar.
     memory_persist_task: Optional[asyncio.Task] = None
     if getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", True):
