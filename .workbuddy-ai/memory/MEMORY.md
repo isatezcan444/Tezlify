@@ -25,7 +25,13 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
   always the OLD one** — run the target commit's copy (`git show <sha>:scripts/deploy/host-release.sh >
   /tmp/hr.sh`). Destructive added SQL exits **3** before any container starts (`migration_guard.py`).
 - **Never run pytest on the dev DB** (some tests assert global row counts); `conftest` REFUSES a
-  non-localhost `DATABASE_URL`.
+  non-localhost `DATABASE_URL`. **`TEST_DB_PATH` alone is not enough** — `settings.DATABASE_URL` is what pytest
+  connects to, so export BOTH or the suite silently runs on the stale repo `tezlify.db` (cost: 3 phantom
+  `leads.phone_e164` failures). `assert_test_db_matches_requested_path` now makes the mismatch a RuntimeError.
+- **Deploy ORDER is itself irreversible damage (Phase 3.6):** the gateway's RAM held **7080 messages that exist
+  nowhere else** (per-chat cap 50 + PDO TIMEOUT). Gateway-before-backend = those messages are gone for good (A6).
+  Always: backend persistence first → verify `messages` count / `/health.whatsapp_memory_persistence` → gateway.
+  Any future gateway recreate must be justified against the RAM-only backlog, not just against uptime.
 
 ## Invariants — the one-line tell each (detail in the reference)
 
@@ -35,6 +41,12 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
 - Text-less content gets a `[MARKER]` preview body, never a new `message_type` (A12); **three label tables
   must stay in parity** (gateway / backend / frontend+locales).
 - Every gateway in-memory store is lost on restart and **not rebuilt** (A6).
+- **On-demand PDO failure is per-CHAT, never per-session** (Phase 3.6: same socket, 2 chats returned chunks in
+  1.8/2.2 s while 3 timed out). Diagnose with a control chat in the same probe batch, or you will "prove" a
+  session-wide cause that is false. **"PDO attempted" ≠ "phone returned"** — distinguish `pdo_sent` from
+  `chunk_received`, and never report a timeout as data-recovery success.
+- **If gateway RAM holds exactly what the DB holds, the gap is upstream, not persistence** (conv 38346: RAM == DB
+  == 4 messages ⇒ the phone never delivered the older ones). Check RAM before blaming the sync cap.
 - `GET /sessions/{sid}/contacts` is **not** a store health check (A8) — it reads 0 while hundreds exist.
 - A group known only from its subject has **no** timestamp (A13) — sorts last by design, not a bug.
 - **A LID bridge is keyed to the CONNECTION, never the person** (A14/T) — joining `ws.gateway_id` matched
