@@ -19,6 +19,7 @@ import {
   mergeContactName,
   resolveJidKey,
   rememberLidPair,
+  jidKind,
 } from '../utils/whatsapp-identity.js';
 import {
   normalizePreviewText,
@@ -37,16 +38,59 @@ export function resolveHistoryWaitersForChunk({
   sessionId,
   messagesByChat,
   touchedChatKeys,
+  logger = null,
+  chunkInfo = null,
 }) {
-  if (!pendingHistoryWaiters || typeof pendingHistoryWaiters.entries !== 'function') return;
+  if (!pendingHistoryWaiters || typeof pendingHistoryWaiters.entries !== 'function') {
+    return { resolved: 0, waiting: 0 };
+  }
+  let resolved = 0;
+  let waiting = 0;
   for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
-    if (waiter.sessionId !== sessionId || !touchedChatKeys.has(waiter.key)) continue;
+    if (waiter.sessionId !== sessionId) continue;
+    if (!touchedChatKeys.has(waiter.key)) {
+      // Bu chunk beklemediğimiz bir sohbeti adlandırdı: istek hâlâ beklemede.
+      waiting += 1;
+      continue;
+    }
     const chatMsgs = messagesByChat.get(waiter.key) || [];
     const matching = waiter.before ? chatMsgs.filter((m) => m.id < waiter.before) : chatMsgs;
+    // Teşhis: chunk GELDİ ve waiter ile EŞLEŞTİ. "Chunk geldi ama eşleşmedi"
+    // ile "chunk hiç gelmedi" ayrımı, PDO arızasının en kritik ayrımıdır.
+    if (logger) {
+      logger.info(
+        {
+          request_id: waiter.requestId || null,
+          outcome: 'CHUNK_MATCHED',
+          chat_jid_kind: jidKind(waiter.key),
+          messages: matching.length,
+          chunk_sync_type: chunkInfo?.syncType ?? null,
+          chunk_messages: chunkInfo?.messageCount ?? null,
+          peer_data_request_session_id: chunkInfo?.peerDataRequestSessionId ?? null,
+        },
+        'History chunk matched a pending older-history waiter'
+      );
+    }
     waiter.resolve(matching);
     pendingHistoryWaiters.delete(flightKey);
     inFlightHistoryFetches?.delete?.(flightKey);
+    resolved += 1;
   }
+  if (logger && (resolved || waiting)) {
+    logger.info(
+      {
+        outcome: 'CHUNK_WAITER_SCAN',
+        resolved,
+        still_waiting: waiting,
+        touched_chats: touchedChatKeys.size,
+        chunk_sync_type: chunkInfo?.syncType ?? null,
+        chunk_messages: chunkInfo?.messageCount ?? null,
+        peer_data_request_session_id: chunkInfo?.peerDataRequestSessionId ?? null,
+      },
+      'History chunk waiter scan'
+    );
+  }
+  return { resolved, waiting };
 }
 
 export function bindSocketEvents({
@@ -839,7 +883,7 @@ export function bindSocketEvents({
   });
 
   // --- History sync ---
-  sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings, lidPnMappings }) => {
+  sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings, lidPnMappings, syncType, peerDataRequestSessionId, chunkOrder }) => {
     if (ignoreStaleSocketEvent('messaging-history.set')) return;
     try {
       const applyHistoryLidMapping = (lid, phoneJid) => manager._applyLidMapping(session, lid, phoneJid, { isHistorySync: true });
@@ -1068,6 +1112,21 @@ export function bindSocketEvents({
         storedChats += 1;
         emitEvent({ event: 'conversation_updated', conversation: merged, _internal_only: true });
       }
+      // Teşhis: chunk GERÇEKTEN geldi mi? "PDO gönderildi ama chunk yok" ile
+      // "chunk geldi ama eşleşmedi" arasındaki fark, arızanın yerini belirler.
+      logger.info(
+        {
+          outcome: 'CHUNK_RECEIVED',
+          chunk_sync_type: syncType ?? null,
+          chunk_order: chunkOrder ?? null,
+          peer_data_request_session_id: peerDataRequestSessionId ?? null,
+          messages: (historyMessages || []).length,
+          chats: (historyChats || []).length,
+          is_latest: !!isLatest,
+          progress: progress ?? null,
+        },
+        'History chunk received'
+      );
       // A history chunk belongs only to the chats it names.  Resolving every
       // waiter for the session let chat A's realtime chunk prematurely finish
       // chat B's concurrent request with an empty result.
@@ -1077,6 +1136,12 @@ export function bindSocketEvents({
         sessionId: session.id,
         messagesByChat,
         touchedChatKeys: touchedHistoryKeys,
+        logger,
+        chunkInfo: {
+          syncType: syncType ?? null,
+          messageCount: (historyMessages || []).length,
+          peerDataRequestSessionId: peerDataRequestSessionId ?? null,
+        },
       });
       const cachedMessages = [...messagesByChat.values()].reduce((n, l) => n + l.length, 0);
       emitEvent({

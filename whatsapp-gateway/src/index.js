@@ -578,7 +578,7 @@ app.get('/sessions/:sessionId/messages/bulk', withSession(async (req, res, sessi
 
 // Get messages for a conversation (jid) within one session
 app.get('/sessions/:sessionId/conversations/:jid/messages', withSession(async (req, res, sessionId) => {
-  const { limit, before, fetch_provider, oldest_msg_id, oldest_msg_from_me, oldest_msg_timestamp_ms, timeout_ms } = req.query;
+  const { limit, before, fetch_provider, oldest_msg_id, oldest_msg_from_me, oldest_msg_timestamp_ms, timeout_ms, request_id } = req.query;
   const pageSize = limit ? parseInt(limit, 10) : 50;
   const result = await sessionManager.getMessages(sessionId, req.params.jid, {
     limit: pageSize,
@@ -591,6 +591,9 @@ app.get('/sessions/:sessionId/conversations/:jid/messages', withSession(async (r
     // getMessages keeps its own 15 s default. Callers that already hold local
     // rows pass a short value so the pane is not blocked on a slow phone.
     timeoutMs: timeout_ms ? parseInt(timeout_ms, 10) : undefined,
+    // Çağıranın ürettiği korelasyon kimliği. Loglarda istek/chunk/eşleşme
+    // zincirini tek bir kimlikle birleştirir; yoksa da istek çalışır.
+    requestId: request_id ? String(request_id).slice(0, 64) : undefined,
   });
   const messages = Array.isArray(result) ? result : (result?.messages || []);
   const providerStatus = result?.provider_status || 'NOT_REQUESTED';

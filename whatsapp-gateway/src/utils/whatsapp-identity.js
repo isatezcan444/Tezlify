@@ -18,6 +18,25 @@ export function isLidJid(jid) {
   return typeof jid === 'string' && jid.endsWith('@lid');
 }
 
+/**
+ * JID'in ADRESLEME TÜRÜ — teşhis için, numara sızdırmadan.
+ *
+ * On-demand geçmiş (PDO) arızasında ilk ayrıştırılacak değişken budur:
+ * WhatsApp LID'e geçmiş hesaplarda isteğin hangi adresle cevaplanacağı
+ * türe bağlı olabilir. Loglarda tam JID yerine bu tür yazılır.
+ *
+ * @param {string} jid
+ * @returns {'PN'|'LID'|'GROUP'|'OTHER'}
+ */
+export function jidKind(jid) {
+  const s = String(jid || '');
+  if (!s) return 'OTHER';
+  if (s.includes('@g.us')) return 'GROUP';
+  if (s.includes('@lid')) return 'LID';
+  if (s.includes('@s.whatsapp.net')) return 'PN';
+  return 'OTHER';
+}
+
 export function isStatusBroadcastJid(jid) {
   return jid === 'status@broadcast';
 }

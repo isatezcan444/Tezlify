@@ -36,6 +36,7 @@ import {
   rememberLidPair,
   resolveJidKey,
   lidPairsFromMessageKey,
+  jidKind,
 } from './utils/whatsapp-identity.js';
 
 import {
@@ -98,6 +99,34 @@ import {
   safeWriteEncrypted,
 } from './socket/socket-connector.js';
 import { bindSocketEvents } from './socket/socket-events.js';
+
+// --- PDO teşhis yardımcıları (Faz 3.6) -------------------------------------
+//
+// Bir JID'in kısa, geri döndürülemez etiketi (8 hex). Aynı sohbet için
+// tekrarlanan istekleri loglarda EŞLEŞTİRMEK için gerekli; tam telefon
+// numarasını loglamak ise gereksiz kiracı/PII sızıntısıdır. Tuz SABİT
+// DEĞİLDİR (süreç başına rastgele): süreç yeniden başlarsa etiketler de
+// değişir, yani loglar numaraya karşı sözlük saldırısına açık olmaz.
+const JID_TAG_SALT = crypto.randomBytes(16);
+
+export function jidTag(jid) {
+  return crypto
+    .createHash('sha256')
+    .update(JID_TAG_SALT)
+    .update(String(jid || ''))
+    .digest('hex')
+    .slice(0, 8);
+}
+
+/** PDO isteği için loga yazılacak, PII içermeyen kimlik bloğu. */
+function historyDiag({ requestId, jid, extra } = {}) {
+  return {
+    request_id: requestId || null,
+    jid_kind: jidKind(jid),
+    jid_tag: jid ? jidTag(jid) : null,
+    ...(extra || {}),
+  };
+}
 
 // Baileys/WA ack rank and order.
 //
@@ -452,6 +481,12 @@ export function createSessionManager({
 
   const sessionManager = {
     _listeners: new Set(),
+
+    // Teşhis/ölçüm için okunabilir bekleyen-PDO haritaları. Üretim kodunda
+    // DAVRANIŞ değiştirmez; yalnızca "kaç istek beklemede" sorusunu testten
+    // ve operatör aracından yanıtlanabilir kılar.
+    _pendingHistoryWaiters: pendingHistoryWaiters,
+    _inFlightHistoryFetches: inFlightHistoryFetches,
 
     _emit(event) {
       const gwSid = event && (event.gateway_session_id || event.session_id);
@@ -978,7 +1013,7 @@ export function createSessionManager({
     async requestOlderHistory(
       sessionId,
       jid,
-      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 12000 } = {}
+      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 12000, requestId } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1000,6 +1035,10 @@ export function createSessionManager({
       }
 
       if (!targetId) {
+        logger.info(
+          historyDiag({ requestId, jid: key, extra: { outcome: 'NO_ANCHOR' } }),
+          'Older history request has no anchor'
+        );
         return { messages: [], count: 0, status: 'NO_ANCHOR' };
       }
 
@@ -1011,6 +1050,19 @@ export function createSessionManager({
 
       const sock = session.sock;
       if (!sock || typeof sock.fetchMessageHistory !== 'function' || !isSocketReady(sock)) {
+        logger.info(
+          historyDiag({
+            requestId,
+            jid: key,
+            extra: {
+              outcome: 'SOCKET_UNAVAILABLE',
+              has_sock: Boolean(sock),
+              has_method: typeof sock?.fetchMessageHistory === 'function',
+              ws_ready_state: sock?.ws?.readyState ?? null,
+            },
+          }),
+          'Older history request skipped: socket unusable'
+        );
         return { messages: [], count: 0, status: 'SOCKET_UNAVAILABLE' };
       }
 
@@ -1019,6 +1071,25 @@ export function createSessionManager({
         id: targetId,
         fromMe: Boolean(targetFromMe),
       };
+
+      // İsteğin TAMAMI (gönderim + bekleme) tek bir teşhis satırıyla açılır:
+      // hangi sohbet türü, hangi anchor, ne kadar beklenecek.
+      logger.info(
+        historyDiag({
+          requestId,
+          jid: key,
+          extra: {
+            outcome: 'REQUESTED',
+            anchor_id_suffix: String(targetId).slice(-6),
+            anchor_from_me: Boolean(targetFromMe),
+            anchor_ts_ms: Number(targetTs) || null,
+            count,
+            timeout_ms: timeoutMs,
+            chat_jid_kind: jidKind(key),
+          },
+        }),
+        'Older history PDO requested'
+      );
 
       // The in-flight marker used to be registered AFTER `new Promise(...)`. A
       // SYNCHRONOUS throw from sock.fetchMessageHistory ran the catch (which
@@ -1030,20 +1101,56 @@ export function createSessionManager({
       // makes the catch the last writer, and the map entry is only published
       // for a run that is genuinely still in flight.
       let settled = false;
+      let pdoSent = false;
+      const startedAt = Date.now();
       const fetchPromise = new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingHistoryWaiters.delete(flightKey);
           inFlightHistoryFetches.delete(flightKey);
-          logger.info({ flightKey, targetId }, 'Older history request timed out waiting for provider chunk');
+          // Tek satır: PDO GÖNDERİLDİ ama chunk GELMEDİ. "anchor yok" veya
+          // "socket yok" durumlarından ayrı bir sonuçtur; teşhisin çekirdeği.
+          logger.info(
+            historyDiag({
+              requestId,
+              jid: key,
+              extra: {
+                outcome: 'TIMEOUT',
+                waited_ms: Date.now() - startedAt,
+                timeout_ms: timeoutMs,
+                pdo_sent: Boolean(pdoSent),
+                chunk_received: false,
+                anchor_id_suffix: String(targetId).slice(-6),
+                chat_jid_kind: jidKind(key),
+              },
+            }),
+            'Older history request timed out waiting for provider chunk'
+          );
           settled = true;
           resolve({ messages: [], count: 0, status: 'TIMEOUT' });
         }, timeoutMs);
+
+        let pdoSent = false;
 
         pendingHistoryWaiters.set(flightKey, {
           resolve: (newMsgs) => {
             clearTimeout(timer);
             pendingHistoryWaiters.delete(flightKey);
             inFlightHistoryFetches.delete(flightKey);
+            logger.info(
+              historyDiag({
+                requestId,
+                jid: key,
+                extra: {
+                  outcome: 'RESOLVED',
+                  waited_ms: Date.now() - startedAt,
+                  pdo_sent: Boolean(pdoSent),
+                  chunk_received: true,
+                  messages: Array.isArray(newMsgs) ? newMsgs.length : 0,
+                  chat_jid_kind: jidKind(key),
+                },
+              }),
+              'Older history request resolved by provider chunk'
+            );
             settled = true;
             resolve({ messages: newMsgs, count: newMsgs.length, status: 'OK' });
           },
@@ -1052,19 +1159,33 @@ export function createSessionManager({
           key,
           before,
           sessionId: session.id,
+          // Chunk geldiğinde "hangi isteğe ait" sorusunu yanıtlar.
+          requestId: requestId || null,
         });
 
         try {
           sock
             .fetchMessageHistory(count, oldestMsgKey, Number(targetTs) || Date.now())
             .then((msgId) => {
+              pdoSent = true;
               logger.debug({ flightKey, msgId }, 'Sent HISTORY_SYNC_ON_DEMAND PDO');
             })
             .catch((err) => {
               clearTimeout(timer);
               pendingHistoryWaiters.delete(flightKey);
               inFlightHistoryFetches.delete(flightKey);
-              logger.warn({ flightKey, err: err?.message }, 'Failed to send fetchMessageHistory PDO');
+              logger.warn(
+                historyDiag({
+                  requestId,
+                  jid: key,
+                  extra: {
+                    outcome: 'SEND_FAILED',
+                    pdo_sent: false,
+                    error: err?.message || String(err),
+                  },
+                }),
+                'Failed to send fetchMessageHistory PDO'
+              );
               settled = true;
               resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
             });
@@ -1072,7 +1193,18 @@ export function createSessionManager({
           clearTimeout(timer);
           pendingHistoryWaiters.delete(flightKey);
           inFlightHistoryFetches.delete(flightKey);
-          logger.warn({ flightKey, err: err?.message }, 'Exception in sock.fetchMessageHistory');
+          logger.warn(
+            historyDiag({
+              requestId,
+              jid: key,
+              extra: {
+                outcome: 'SEND_THREW',
+                pdo_sent: false,
+                error: err?.message || String(err),
+              },
+            }),
+            'Exception in sock.fetchMessageHistory'
+          );
           settled = true;
           resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
         }
@@ -1089,7 +1221,7 @@ export function createSessionManager({
     async getMessages(
       sessionId,
       jid,
-      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 4000 } = {}
+      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 4000, requestId } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1124,6 +1256,19 @@ export function createSessionManager({
         const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function' && isSocketReady(session.sock);
         if (!sockUsable) {
           providerStatus = 'SOCKET_UNAVAILABLE';
+          logger.info(
+            historyDiag({
+              requestId,
+              jid: key,
+              extra: {
+                outcome: 'SOCKET_UNAVAILABLE',
+                has_sock: Boolean(session.sock),
+                has_method: typeof session.sock?.fetchMessageHistory === 'function',
+                ws_ready_state: session.sock?.ws?.readyState ?? null,
+              },
+            }),
+            'Older history skipped: socket unusable'
+          );
         } else {
           if (!targetAnchorId) {
             providerStatus = 'NO_ANCHOR';
@@ -1135,6 +1280,7 @@ export function createSessionManager({
               oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
               before,
               timeoutMs: timeoutMs ? Number(timeoutMs) : 15000,
+              requestId,
             });
             providerStatus = histResult?.status || 'OK';
             list = store.messagesByChat.get(key) || [];
