@@ -16,6 +16,7 @@ import express from 'express';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { createSessionManager, logger } from './session-manager.js';
+import { countCachedMessages } from './messages/message-store.js';
 import { createEventBridge } from './events.js';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -248,7 +249,7 @@ app.get('/sessions/:id', (req, res) => {
       chats_synced: Math.max(session.store?.chats ? session.store.chats.size : 0, session.sync.chats_synced || 0),
       contacts_unique: Math.max(session.store?.contacts ? session.store.contacts.size : 0, session.sync.contacts_unique || 0),
       contacts_synced: Math.max(session.store?.contacts ? session.store.contacts.size : 0, session.sync.contacts_synced || 0),
-      messages_cached: Math.max(session.store?.messages ? session.store.messages.size : 0, session.sync.messages_cached || 0),
+      messages_cached: Math.max(countCachedMessages(session.store), session.sync.messages_cached || 0),
     } : { phase: 'idle' },
     created_at: session.created_at,
     updated_at: session.updated_at,

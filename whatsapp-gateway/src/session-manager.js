@@ -80,6 +80,7 @@ import {
   lookupRawMessage,
   messageTimestampMs,
   boundMessagesByChat,
+  countCachedMessages,
 } from './messages/message-store.js';
 
 import { createMediaStore } from './media/media-store.js';
@@ -516,7 +517,7 @@ export function createSessionManager({
           chats_synced: Math.max(s.store?.chats ? s.store.chats.size : 0, s.sync.chats_synced || 0),
           contacts_unique: Math.max(s.store?.contacts ? s.store.contacts.size : 0, s.sync.contacts_unique || 0),
           contacts_synced: Math.max(s.store?.contacts ? s.store.contacts.size : 0, s.sync.contacts_synced || 0),
-          messages_cached: Math.max(s.store?.messages ? s.store.messages.size : 0, s.sync.messages_cached || 0),
+          messages_cached: Math.max(countCachedMessages(s.store), s.sync.messages_cached || 0),
         } : { phase: 'idle' },
         created_at: s.created_at,
         updated_at: s.updated_at,
