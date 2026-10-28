@@ -28,10 +28,19 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
   non-localhost `DATABASE_URL`. **`TEST_DB_PATH` alone is not enough** — `settings.DATABASE_URL` is what pytest
   connects to, so export BOTH or the suite silently runs on the stale repo `tezlify.db` (cost: 3 phantom
   `leads.phone_e164` failures). `assert_test_db_matches_requested_path` now makes the mismatch a RuntimeError.
-- **Deploy ORDER is itself irreversible damage (Phase 3.6):** the gateway's RAM held **7080 messages that exist
-  nowhere else** (per-chat cap 50 + PDO TIMEOUT). Gateway-before-backend = those messages are gone for good (A6).
+- **Deploy ORDER is itself irreversible damage (Phase 3.6):** the gateway's RAM held **7337 messages that exist
+  nowhere else** across 40 chats (Phase 3.6b's corrected number; 3.6's "7080" was measured with
+  `per_chat_limit=50` and therefore only saw each chat's last 50 — never quote a gateway count taken under a
+  truncating cap). Gateway-before-backend = those messages are gone for good (A6).
   Always: backend persistence first → verify `messages` count / `/health.whatsapp_memory_persistence` → gateway.
   Any future gateway recreate must be justified against the RAM-only backlog, not just against uptime.
+- **A bounded turn without a cursor loses the tail silently** (Phase 3.6b). `max_pages * page_size` was 10 000
+  against 9 122 RAM messages; every turn restarted at `offset 0`, so once the total exceeded the cap the tail
+  could *never* be written — no error, `/health` green. Any paged drain needs a resume cursor, and the cursor
+  must not advance on `dry_run`.
+- **A `let` re-declared inside a promise executor shadows the outer one** (Phase 3.6b: `pdoSent`). The timeout
+  log then reports `pdo_sent:false` no matter what actually happened — the diagnosis lies, silently.
+  Distinguish `PDO_NOT_SENT` / `WAITER_MISMATCH` / `NO_CHUNK`; one `TIMEOUT` label conflates two different bugs.
 
 ## Invariants — the one-line tell each (detail in the reference)
 
