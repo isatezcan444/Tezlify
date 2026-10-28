@@ -186,6 +186,19 @@ async def _load_conversation_index(
     return conv_by_jid, conv_by_id
 
 
+def _wa_id_of(msg: Dict[str, Any]) -> str:
+    """Mesajın normalize edilmiş WhatsApp kimliği; yoksa boş string.
+
+    `None` ve yalnızca boşluktan oluşan değerler kimlik SAYILMAZ: ikisi de
+    `wa_message_id IS NOT NULL` tekillik indeksini atlar, yani yazılırlarsa
+    her turda yeni bir kopya üretirler.
+    """
+    raw = msg.get("wa_message_id")
+    if raw is None:
+        return ""
+    return str(raw).strip()
+
+
 async def _prefetch_existing_ids(
     db: AsyncSession, conv_ids: List[int]
 ) -> Dict[int, Set[str]]:
@@ -230,6 +243,7 @@ async def drain_gateway_memory_once(
         "inserted": 0,
         "conversations": 0,
         "skipped_unmapped": 0,
+        "skipped_no_id": 0,
         "dry_run": bool(dry_run),
         "total_reported": None,
     }
@@ -279,6 +293,15 @@ async def drain_gateway_memory_once(
             if cid is None:
                 stats["skipped_unmapped"] += 1
                 continue
+            if not _wa_id_of(gm):
+                # Kimliksiz kayıt YAZILMAZ. Tekillik indeksi
+                # `(conversation_id, wa_message_id) WHERE wa_message_id IS NOT
+                # NULL` olduğu için NULL kimlik hiçbir zaman çakışmaz: yazılsaydı
+                # her turda bir kopya daha üretilirdi (idempotency kırılırdı).
+                # Kayıt gateway belleğinde kalır; canlı akışta gerçek kimlikle
+                # gelirse o zaman yazılır.
+                stats["skipped_no_id"] += 1
+                continue
             pending.setdefault(cid, []).append(gm)
 
         if pending:
@@ -290,25 +313,43 @@ async def drain_gateway_memory_once(
                     continue
                 have = existing.setdefault(cid, set())
                 for gm in gm_list:
-                    wa = gm.get("wa_message_id")
-                    if wa and str(wa) in have:
+                    wa = _wa_id_of(gm)
+                    if wa in have:
                         continue
                     row = build_message_from_gateway(user_id, conv, gm)
                     if row is None:
                         continue
-                    if wa:
-                        have.add(str(wa))
+                    have.add(wa)
                     rows.append(row)
             if rows:
                 touched.update({r.conversation_id for r in rows})
                 if dry_run:
                     stats["inserted"] += len(rows)
                 else:
-                    inserted = await _insert_messages_resilient(db, rows)
-                    stats["inserted"] += len(inserted)
-            if not dry_run:
+                    try:
+                        inserted = await _insert_messages_resilient(db, rows)
+                        stats["inserted"] += len(inserted)
+                    except Exception as exc:  # noqa: BLE001 - tur düşse de durum yazılır
+                        # Sayfa başına TEK INSERT: yarım sayfa kalmaz. Oturumu
+                        # geri alıyoruz ki çağıran aynı oturumla sonraki hattı
+                        # deneyebilsin (aksi halde "failed transaction" zehri
+                        # bütün tura yayılırdı).
+                        stats["error"] = str(exc)
+                        logger.warning(
+                            "Memory persistence insert failed (gateway=%s offset=%s): %s",
+                            gateway_id, offset, exc,
+                        )
+                        try:
+                            await db.rollback()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        break
+            if not dry_run and "error" not in stats:
                 # Sayfa başına commit: tek dev transaction yerine küçük yazmalar.
                 await db.commit()
+
+        if "error" in stats:
+            break
 
         offset += int(page_size)
         if offset >= total:
@@ -327,6 +368,15 @@ async def run_memory_persistence_once(
     dry_run: bool = False,
 ) -> List[Dict[str, Any]]:
     """Bağlı her hat için bir kez çalışır. Hata fırlatmaz (durum yazar)."""
+    # Kill-switch BURADA da kontrol edilir, yalnızca lifespan'de değil.
+    # Aksi halde "kapalı" denilen bir özellik, elle/CLI ile çağrılan bir turda
+    # yazmaya devam ederdi — ve bu, kapatma kararını anlamsız kılardı.
+    if not getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", True):
+        _STATE["enabled"] = False
+        logger.info("[memory-persist] kapalı (kill-switch); tur atlandı.")
+        return []
+
+    _STATE["enabled"] = True
     factory = session_factory or AsyncSessionLocal
     page_size = int(page_size or getattr(settings, "WHATSAPP_MEMORY_PERSIST_PAGE_SIZE", 500))
     max_pages = int(max_pages or getattr(settings, "WHATSAPP_MEMORY_PERSIST_MAX_PAGES", 20))
@@ -344,7 +394,13 @@ async def run_memory_persistence_once(
     async with factory() as db:
         sessions = (
             await db.execute(
-                select(WhatsAppSession).where(WhatsAppSession.status == "CONNECTED")
+                select(WhatsAppSession).where(
+                    # "Açıkça izin verilen" = bağlı VE etkin hat. Devre dışı
+                    # bırakılmış bir hattın geçmişini geri doldurmak, kullanıcı
+                    # o hattı kapattıktan sonra veri yazmak demek olurdu.
+                    WhatsAppSession.status == "CONNECTED",
+                    WhatsAppSession.is_active.is_(True),
+                )
             )
         ).scalars().all()
 
@@ -368,6 +424,12 @@ async def run_memory_persistence_once(
                 )
                 result["gateway_id"] = str(gateway_id)
                 results.append(result)
+                # Sayfa içinde yakalanan hata buraya `error` olarak döner;
+                # toplam sayaca da yansımalı, aksi halde /health "sorun yok"
+                # derken tur aslında yarım kalmış olurdu.
+                if result.get("error"):
+                    _STATE["errors_total"] = int(_STATE.get("errors_total") or 0) + 1
+                    _STATE["last_error"] = str(result["error"])
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - bir hat diğerini durdurmaz
