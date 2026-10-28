@@ -444,7 +444,9 @@ async def test_loop_survives_a_failing_run():
         status = mp.memory_persistence_status()
         assert status["enabled"] is True
         assert int(status["errors_total"]) >= 1
-        assert "db down" in str(status["last_error"])
+        # `/health` yalnızca istisna TÜRÜNÜ yayınlar, ham metni değil (PII).
+        assert "RuntimeError" in str(status["last_error"])
+        assert "db down" not in str(status["last_error"])
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

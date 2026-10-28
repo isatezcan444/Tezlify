@@ -198,6 +198,30 @@ async def _load_conversation_index(
     return conv_by_jid, conv_by_id
 
 
+def _safe_error(exc: BaseException) -> str:
+    """İstisnayı PII'siz bir etikete indirger.
+
+    NEDEN: `str(IntegrityError)` / `str(OperationalError)` SQL ifadesini **ve
+    bağlı parametreleri** taşır — yani mesaj gövdesini, telefon numarasını,
+    JID'i. Bu metin `last_error` üzerinden `/health`'te yayınlanıyor ve o uç
+    kimlik doğrulaması istemiyor. Aynı metin `exc_info=True` ile sunucu
+    loglarına da düşerdi.
+
+    Bu yüzden yalnızca istisna TÜRÜ ve varsa SQLSTATE yayınlanır. Ayrıştırma
+    gerektiğinde aynı hata izole bir ortamda yeniden üretilir — üretim
+    verisini loglara taşımak pahasına değil.
+    """
+    name = type(exc).__name__
+    orig = getattr(exc, "orig", None)
+    code = (
+        getattr(orig, "pgcode", None)
+        or getattr(orig, "sqlstate", None)
+        or getattr(exc, "pgcode", None)
+        or getattr(exc, "sqlstate", None)
+    )
+    return f"{name}({code})" if code else name
+
+
 def _wa_id_of(msg: Dict[str, Any]) -> str:
     """Mesajın normalize edilmiş WhatsApp kimliği; yoksa boş string.
 
@@ -294,10 +318,10 @@ async def drain_gateway_memory_once(
                 per_chat_limit=int(per_chat_limit),
             )
         except Exception as exc:  # noqa: BLE001 - tur düşerse bir sonraki tur dener
-            stats["error"] = str(exc)
+            stats["error"] = _safe_error(exc)
             logger.warning(
                 "Memory persistence page failed (gateway=%s offset=%s): %s",
-                gateway_id, offset, exc,
+                gateway_id, offset, _safe_error(exc),
             )
             break
 
@@ -360,10 +384,10 @@ async def drain_gateway_memory_once(
                         # geri alıyoruz ki çağıran aynı oturumla sonraki hattı
                         # deneyebilsin (aksi halde "failed transaction" zehri
                         # bütün tura yayılırdı).
-                        stats["error"] = str(exc)
+                        stats["error"] = _safe_error(exc)
                         logger.warning(
                             "Memory persistence insert failed (gateway=%s offset=%s): %s",
-                            gateway_id, offset, exc,
+                            gateway_id, offset, _safe_error(exc),
                         )
                         try:
                             await db.rollback()
@@ -474,10 +498,10 @@ async def run_memory_persistence_once(
                 raise
             except Exception as exc:  # noqa: BLE001 - bir hat diğerini durdurmaz
                 _STATE["errors_total"] = int(_STATE.get("errors_total") or 0) + 1
-                _STATE["last_error"] = str(exc)
+                _STATE["last_error"] = _safe_error(exc)
                 logger.warning(
-                    "Memory persistence failed for gateway=%s: %s", gateway_id, exc,
-                    exc_info=True,
+                    "Memory persistence failed for gateway=%s: %s",
+                    gateway_id, _safe_error(exc),
                 )
                 try:
                     await db.rollback()
@@ -526,6 +550,6 @@ async def memory_persistence_loop(
             raise
         except Exception as exc:  # noqa: BLE001 - döngü ölmez
             _STATE["errors_total"] = int(_STATE.get("errors_total") or 0) + 1
-            _STATE["last_error"] = str(exc)
-            logger.warning("[memory-persist] tur düştü: %s", exc, exc_info=True)
+            _STATE["last_error"] = _safe_error(exc)
+            logger.warning("[memory-persist] tur düştü: %s", _safe_error(exc))
         await asyncio.sleep(max(30.0, float(interval_seconds)))

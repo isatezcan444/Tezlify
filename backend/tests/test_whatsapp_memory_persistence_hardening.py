@@ -422,9 +422,55 @@ async def test_db_outage_never_touches_gateway_memory():
     assert await count_messages(conv_id) == 0
     assert seen == ["list_all_messages"], f"beklenmeyen gateway çağrısı: {seen}"
     assert mp.memory_persistence_status()["errors_total"] >= 1
-    assert "db down" in str(mp.memory_persistence_status()["last_error"])
+    # `/health` PII tasimaz: yalnizca istisna TURU yayinlanir, ham metin degil.
+    # (Ham SQLAlchemy metni SQL'i ve bagli parametreleri — mesaj govdesi,
+    # telefon — tasir; bu uc kimlik dogrulamasi istemez.)
+    assert "OperationalError" in str(mp.memory_persistence_status()["last_error"])
+    assert "db down" not in str(mp.memory_persistence_status()["last_error"])
     # Hat hâlâ bağlı ve mesajlar hâlâ RAM'de (silme yolu yok).
     assert results == [] or all(r.get("inserted", 0) == 0 for r in results)
+
+
+# ---------------------------------------------------------------------------
+# §4.9 — /health PII/UUID sızdırmaz
+# ---------------------------------------------------------------------------
+def test_safe_error_strips_sql_and_bound_parameters():
+    """`str(exc)` SQL'i ve BAĞLI PARAMETRELERİ taşır — /health'e girmemeli."""
+    from sqlalchemy.exc import IntegrityError
+
+    leaky = IntegrityError(
+        "INSERT INTO messages (body, phone) VALUES (%(body)s, %(phone)s)",
+        {"body": "gizli mesaj govdesi", "phone": "+905551112233"},
+        Exception("duplicate key"),
+    )
+    label = mp._safe_error(leaky)
+    assert label == "IntegrityError"
+    assert "gizli mesaj" not in label
+    assert "90555" not in label
+    assert "INSERT" not in label
+
+
+def test_safe_error_keeps_the_sqlstate_when_available():
+    class _Orig(Exception):
+        pgcode = "23505"
+
+    class _Err(Exception):
+        orig = _Orig("dup")
+
+    assert mp._safe_error(_Err("x")) == "_Err(23505)"
+
+
+def test_health_status_never_contains_cursor_keys():
+    """İmleçler gateway UUID'si ile anahtarlanır; /health'e sızmamalı."""
+    mp.reset_memory_persistence_state()
+    mp._STATE.setdefault("cursors", {})["1bd78836-c084-4cbf-b333-9386d44b7bd7"] = 500
+    status = mp.memory_persistence_status()
+    assert "cursors" not in status
+    assert status["cursor_count"] == 1
+    assert status["max_cursor_offset"] == 500
+    # UUID hiçbir alanda görünmemeli.
+    assert "1bd78836" not in str(status)
+    mp.reset_memory_persistence_state()
 
 
 # ---------------------------------------------------------------------------
