@@ -32,6 +32,20 @@ import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rem
 import { safeWriteEncrypted, setCompanionActive } from './socket-connector.js';
 import { sanitizeAvatarUrl } from '../domain/bounded-cache.js';
 
+/**
+ * Bu oturumda kaç history chunk'ı geldiğini sayar.
+ *
+ * `requestOlderHistory` timeout anında bu sayacın bekleme penceresindeki
+ * artışına bakar: artış yoksa chunk hiç gelmemiştir (`NO_CHUNK`), artış varsa
+ * chunk gelmiş ama bekleyen istekle eşleşmemiştir (`WAITER_MISMATCH`).
+ * İkisi tamamen farklı arızalardır; aynı "TIMEOUT" etiketi altında kaybolmamalı.
+ */
+export function noteHistoryChunk(session) {
+  if (!session) return 0;
+  session._historyChunkSeq = (Number(session._historyChunkSeq) || 0) + 1;
+  return session._historyChunkSeq;
+}
+
 export function resolveHistoryWaitersForChunk({
   pendingHistoryWaiters,
   inFlightHistoryFetches,
@@ -1114,6 +1128,11 @@ export function bindSocketEvents({
       }
       // Teşhis: chunk GERÇEKTEN geldi mi? "PDO gönderildi ama chunk yok" ile
       // "chunk geldi ama eşleşmedi" arasındaki fark, arızanın yerini belirler.
+      // Sayaç oturum üzerinde tutulur: `requestOlderHistory` timeout anında
+      // bu değerin bekleme penceresindeki artışına bakarak NO_CHUNK ile
+      // WAITER_MISMATCH'i ayırır. Chunk'ın hangi sohbete ait olduğundan
+      // bağımsızdır — "eşleşmedi" hükmü tam olarak bunu gerektirir.
+      noteHistoryChunk(session);
       logger.info(
         {
           outcome: 'CHUNK_RECEIVED',

@@ -1102,11 +1102,22 @@ export function createSessionManager({
       // for a run that is genuinely still in flight.
       let settled = false;
       let pdoSent = false;
+      // Bu oturumda şu ana kadar kaç history chunk'ı geldi? Timeout anında
+      // "hiç chunk gelmedi" (NO_CHUNK) ile "chunk geldi ama waiter eşleşmedi"
+      // (WAITER_MISMATCH) ayrımını ancak bu sayaç yapabilir — ikisi tamamen
+      // farklı arızalardır ve aynı "TIMEOUT" etiketi altında kaybolmamalı.
+      const chunkSeqAtStart = Number(session._historyChunkSeq) || 0;
       const startedAt = Date.now();
       const fetchPromise = new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingHistoryWaiters.delete(flightKey);
           inFlightHistoryFetches.delete(flightKey);
+          const chunksDuringWait = (Number(session._historyChunkSeq) || 0) - chunkSeqAtStart;
+          const outcome = !pdoSent
+            ? 'PDO_NOT_SENT'
+            : chunksDuringWait > 0
+              ? 'WAITER_MISMATCH'
+              : 'NO_CHUNK';
           // Tek satır: PDO GÖNDERİLDİ ama chunk GELMEDİ. "anchor yok" veya
           // "socket yok" durumlarından ayrı bir sonuçtur; teşhisin çekirdeği.
           logger.info(
@@ -1115,10 +1126,12 @@ export function createSessionManager({
               jid: key,
               extra: {
                 outcome: 'TIMEOUT',
+                failure_class: outcome,
                 waited_ms: Date.now() - startedAt,
                 timeout_ms: timeoutMs,
                 pdo_sent: Boolean(pdoSent),
                 chunk_received: false,
+                chunks_during_wait: chunksDuringWait,
                 anchor_id_suffix: String(targetId).slice(-6),
                 chat_jid_kind: jidKind(key),
               },
@@ -1126,10 +1139,8 @@ export function createSessionManager({
             'Older history request timed out waiting for provider chunk'
           );
           settled = true;
-          resolve({ messages: [], count: 0, status: 'TIMEOUT' });
+          resolve({ messages: [], count: 0, status: 'TIMEOUT', failure_class: outcome });
         }, timeoutMs);
-
-        let pdoSent = false;
 
         pendingHistoryWaiters.set(flightKey, {
           resolve: (newMsgs) => {

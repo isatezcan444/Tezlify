@@ -11,8 +11,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSessionManager } from '../src/session-manager.js';
-import { resolveHistoryWaitersForChunk } from '../src/socket/socket-events.js';
+import { resolveHistoryWaitersForChunk, noteHistoryChunk } from '../src/socket/socket-events.js';
 import { jidKind } from '../src/utils/whatsapp-identity.js';
+import { logger as gwLogger } from '../src/utils/baileys-logger.js';
 
 console.log('[test-history-diagnostics] starting tests...');
 
@@ -83,7 +84,99 @@ try {
   const timedOut = await pending;
   assert.equal(timedOut.status, 'TIMEOUT');
   assert.equal(timedOut.count, 0);
-  console.log('  ok: PDO gönderildi, waiter request_id taşıdı, TIMEOUT döndü');
+  // Sınıflandırma: PDO gitti, hiç chunk gelmedi → NO_CHUNK.
+  assert.equal(timedOut.failure_class, 'NO_CHUNK');
+  console.log('  ok: PDO gönderildi, waiter request_id taşıdı, TIMEOUT/NO_CHUNK döndü');
+
+  // --- 4b. TIMEOUT logu PDO'nun gerçekten gittiğini söylemeli -------------
+  // REGRESYON: `pdoSent` bir zamanlar promise executor'ının içinde tekrar
+  // `let` ile tanımlanmıştı ve dıştaki değişkeni GÖLGELİYORDU. Sonuç: PDO
+  // gitmiş olsa bile timeout logu `pdo_sent: false` yazıyordu — yani
+  // teşhisin çekirdeği sessizce yalan söylüyordu.
+  const captureLogs = async (fn) => {
+    const capture = [];
+    const saved = gwLogger.info;
+    gwLogger.info = (payload, msg) => {
+      capture.push({ payload, msg });
+    };
+    try {
+      const value = await fn();
+      return { value, capture };
+    } finally {
+      gwLogger.info = saved;
+    }
+  };
+
+  {
+    const { capture } = await captureLogs(() =>
+      sm.requestOlderHistory(sid, chatJid, {
+        count: 10,
+        timeoutMs: 60,
+        requestId: 'req-pdo-sent-flag',
+      })
+    );
+    const timeoutLog = capture.find(
+      (l) => l.payload?.outcome === 'TIMEOUT' && l.payload?.request_id === 'req-pdo-sent-flag'
+    );
+    assert.ok(timeoutLog, 'TIMEOUT logu yazılmalı');
+    assert.equal(
+      timeoutLog.payload.pdo_sent,
+      true,
+      'PDO gönderildiyse log pdo_sent:true demeli (gölgeleme regresyonu)'
+    );
+    assert.equal(timeoutLog.payload.failure_class, 'NO_CHUNK');
+    assert.equal(timeoutLog.payload.chunks_during_wait, 0);
+  }
+  console.log('  ok: TIMEOUT logu pdo_sent:true + failure_class:NO_CHUNK taşıyor');
+
+  // --- 4c. WAITER_MISMATCH: chunk geldi ama BAŞKA sohbet için -------------
+  {
+    const { value: res, capture } = await captureLogs(async () => {
+      const p = sm.requestOlderHistory(sid, chatJid, {
+        count: 10,
+        timeoutMs: 80,
+        requestId: 'req-waiter-mismatch',
+      });
+      // Bekleme penceresinde bir chunk gelir (başka bir sohbeti adlandırır).
+      noteHistoryChunk(session);
+      return p;
+    });
+    assert.equal(res.status, 'TIMEOUT');
+    assert.equal(
+      res.failure_class,
+      'WAITER_MISMATCH',
+      'chunk geldi ama eşleşmedi → WAITER_MISMATCH'
+    );
+    const log = capture.find(
+      (l) => l.payload?.request_id === 'req-waiter-mismatch' && l.payload?.outcome === 'TIMEOUT'
+    );
+    assert.ok(log);
+    assert.equal(log.payload.chunks_during_wait, 1);
+    assert.equal(log.payload.chunk_received, false);
+  }
+  console.log('  ok: chunk geldi/eşleşmedi → WAITER_MISMATCH (NO_CHUNK değil)');
+
+  // --- 4d. PDO_NOT_SENT: gönderim hiç tamamlanmadı ------------------------
+  {
+    const prevSock = session.sock;
+    session.sock = {
+      // Söz asla çözülmez: `.then` çalışmaz, `pdoSent` false kalır.
+      fetchMessageHistory: () => new Promise(() => {}),
+      ev: { on: () => {}, emit: () => {} },
+    };
+    try {
+      const res = await sm.requestOlderHistory(sid, chatJid, {
+        count: 10,
+        timeoutMs: 60,
+        requestId: 'req-pdo-not-sent',
+      });
+      assert.equal(res.status, 'TIMEOUT');
+      assert.equal(res.failure_class, 'PDO_NOT_SENT');
+    } finally {
+      session.sock = prevSock;
+    }
+  }
+  console.log('  ok: gönderim tamamlanmadı → PDO_NOT_SENT');
 
   // --- 5. Chunk GELİR ve waiter ile EŞLEŞİR ------------------------------
   const logs = [];
