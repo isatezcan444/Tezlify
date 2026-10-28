@@ -188,5 +188,26 @@ class Settings(BaseSettings):
     WHATSAPP_IDENTITY_SWEEP_INITIAL_DELAY_SECONDS: int = 60
     WHATSAPP_IDENTITY_SWEEP_LIMIT: int = 200
 
+    # Gateway belleğini kalıcılaştıran süpürme (Faz 3.6).
+    #
+    # NEDEN VAR: ilk senkron sohbet başına yalnızca en yeni 50 mesajı DB'ye
+    # yazar (`_SYNC_PER_CHAT_LIMIT`). Daha eski her mesaj YALNIZCA gateway
+    # RAM'inde durur ve gateway yeniden oluşturulduğunda kaybolur. Canlı
+    # ölçüm (2026-10-28): RAM'de 9098 mesaj, 7080'i DB'de YOK.
+    #
+    # Bu iş WhatsApp'a HİÇBİR ŞEY sormaz (PDO yok): yalnızca gateway'in zaten
+    # elinde tuttuğu kayıtları mevcut ingest yolundan DB'ye yazar. Bu yüzden
+    # varsayılan AÇIK; davranış `--no-gateway` backend deploy'u ile düzelir.
+    WHATSAPP_MEMORY_PERSIST_ENABLED: bool = True
+    WHATSAPP_MEMORY_PERSIST_INTERVAL_SECONDS: int = 300
+    WHATSAPP_MEMORY_PERSIST_INITIAL_DELAY_SECONDS: int = 90
+    # Tek turda okunacak azami sayfa ve sayfa boyu → tur başına üst sınır
+    # page_size * max_pages mesaj. Sınırsız bellek/transaction oluşmasın.
+    WHATSAPP_MEMORY_PERSIST_PAGE_SIZE: int = 500
+    WHATSAPP_MEMORY_PERSIST_MAX_PAGES: int = 20
+    # Gateway'in sohbet başına döndüreceği azami mesaj. `_SYNC_PER_CHAT_LIMIT`
+    # (50) bilerek AŞILIR: bu iş tam olarak o tavanın dışında kalanları yazar.
+    WHATSAPP_MEMORY_PERSIST_PER_CHAT_LIMIT: int = 2000
+
 
 settings = Settings()

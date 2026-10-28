@@ -391,6 +391,47 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("[SWEEP] LID kimlik süpürmesi kapalı (kill-switch).")
 
+    # Gateway belleğini kalıcılaştıran süpürme (Faz 3.6).
+    #
+    # NEDEN: ilk senkron sohbet başına yalnızca en yeni 50 mesajı DB'ye yazar
+    # (`_SYNC_PER_CHAT_LIMIT`). Daha eski her mesaj yalnızca gateway RAM'inde
+    # durur; gateway her yeniden oluşturulduğunda kaybolur ve geri yüklenmez.
+    # Canlı ölçüm (2026-10-28): RAM'de 9098 mesaj, 7080'i DB'de yok.
+    # Bu iş WhatsApp'a soru sormaz — yalnızca gateway'in elindekini yazar.
+    memory_persist_task: Optional[asyncio.Task] = None
+    if getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", True):
+        try:
+            from backend.app.services.whatsapp.memory_persistence import (
+                memory_persistence_loop,
+            )
+
+            memory_persist_task = asyncio.create_task(
+                memory_persistence_loop(
+                    interval_seconds=float(
+                        getattr(settings, "WHATSAPP_MEMORY_PERSIST_INTERVAL_SECONDS", 300)
+                    ),
+                    initial_delay_seconds=float(
+                        getattr(
+                            settings,
+                            "WHATSAPP_MEMORY_PERSIST_INITIAL_DELAY_SECONDS",
+                            90,
+                        )
+                    ),
+                )
+            )
+            logger.info(
+                "[MEMORY-PERSIST] Gateway bellek kalıcılaştırma başladı "
+                "(aralık=%ss, ilk tur=%ss, sayfa=%s, azami sayfa=%s).",
+                getattr(settings, "WHATSAPP_MEMORY_PERSIST_INTERVAL_SECONDS", 300),
+                getattr(settings, "WHATSAPP_MEMORY_PERSIST_INITIAL_DELAY_SECONDS", 90),
+                getattr(settings, "WHATSAPP_MEMORY_PERSIST_PAGE_SIZE", 500),
+                getattr(settings, "WHATSAPP_MEMORY_PERSIST_MAX_PAGES", 20),
+            )
+        except Exception as exc:  # noqa: BLE001 - açılışı engellememeli
+            logger.warning("[MEMORY-PERSIST] başlatılamadı: %s", exc)
+    else:
+        logger.info("[MEMORY-PERSIST] kapalı (kill-switch).")
+
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
     TaskWorker.start()
@@ -424,6 +465,14 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Scheduler task kapanis hatasi: {e}")
         # Cleanup
+        if memory_persist_task is not None:
+            memory_persist_task.cancel()
+            try:
+                await memory_persist_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # noqa: BLE001 - kapanışı engellemez
+                logger.warning(f"Memory persist loop kapanis hatasi: {e}")
         if sweep_task is not None:
             sweep_task.cancel()
             try:
@@ -815,6 +864,10 @@ async def health_check():
         },
         # Bekleyen bölünmüş sohbet işini kabuk komudu olmadan görünür kılar.
         "whatsapp_identity_sweep": merge_sweep_status(),
+        # Gateway RAM'ini DB'ye yazan süpürmenin son turu. `last_inserted`
+        # düzenli olarak 0 ise bellek ile DB uzlaşmış demektir; sürekli
+        # büyüyen bir sayı ise gateway'de biriken geçmiş hâlâ taşınıyor.
+        "whatsapp_memory_persistence": _memory_persistence_status(),
         # Denetim kaydedicisinin KENDİ sağlığı. Tablo boş olabilir (sağlıklı
         # durum: değişiklik yok), ama `failed` sıfırdan büyükse kayıt
         # yazılamıyor demektir — ve o zaman tablonun boşluğu "olay olmadı"
@@ -822,6 +875,22 @@ async def health_check():
         # bu yüzden geçmişin kaynağı DEĞİL, yalnızca "şu an bozuk mu" sinyalidir.
         "whatsapp_data_audit": _data_audit_stats(),
     }
+
+
+def _memory_persistence_status() -> Dict[str, Any]:
+    """Gateway bellek kalıcılaştırma süpürmesinin PII içermeyen durumu.
+
+    Import bilerek fonksiyon içinde: `/health` her istekte çalışır ve bu
+    modülün ağır orchestration import'ları açılış anında zaten yüklenmiş olur.
+    """
+    try:
+        from backend.app.services.whatsapp.memory_persistence import (
+            memory_persistence_status,
+        )
+
+        return memory_persistence_status()
+    except Exception as exc:  # noqa: BLE001 - health asla probla düşmemeli
+        return {"available": False, "error": str(exc)[:200]}
 
 
 def _data_audit_stats() -> Dict[str, Any]:
