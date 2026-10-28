@@ -113,40 +113,26 @@ def gw_message(
     return msg
 
 
-def paged(messages: List[Dict[str, Any]], page_size: int) -> List[Dict[str, Any]]:
-    pages = []
-    total = len(messages)
-    offset = 0
-    while offset < total or (total == 0 and offset == 0):
-        pages.append(
-            {
-                "messages": messages[offset:offset + page_size],
-                "total": total,
-                "offset": offset,
-                "limit": page_size,
-            }
-        )
-        offset += page_size
-        if offset >= total:
-            break
-    return pages
-
-
-def fake_gateway(messages: List[Dict[str, Any]], page_size: int, *, fail_on_page: Optional[int] = None):
+def fake_gateway(messages: List[Dict[str, Any]], page_size: int):
     """`gw.list_all_messages` yerine geçen sahte sayfalayıcı.
 
-    `fail_on_page` verilirse o sayfa `OperationalError` atar (kısmi DB hatası
-    senaryosu için değil, sağlayıcı tarafı hatası için).
+    İstenen `offset`'e SAYGI DUYAR — gerçek API gibi. Çağrı SIRASINA göre
+    sayfa döndürseydi, imleçten (`start_offset`) başlayan bir tur yanlış
+    dilimi alırdı ve imleç testi kendi kendini doğrulamış olurdu.
     """
-    pages = paged(messages, page_size)
-    calls = {"n": 0}
+    calls = {"n": 0, "offsets": []}
 
     async def _fake(_gateway_id, limit=1000, offset=0, since=None, per_chat_limit=None, jids=None):
-        idx = calls["n"]
         calls["n"] += 1
-        if idx >= len(pages):
-            return {"messages": [], "total": len(messages), "offset": offset, "limit": limit}
-        return pages[idx]
+        start = max(0, int(offset or 0))
+        calls["offsets"].append(start)
+        size = int(limit or page_size)
+        return {
+            "messages": messages[start:start + size],
+            "total": len(messages),
+            "offset": start,
+            "limit": size,
+        }
 
     _fake.calls = calls  # type: ignore[attr-defined]
     return _fake
@@ -160,6 +146,7 @@ async def drain(
     max_pages: int = 20,
     session_db_id: Optional[int] = None,
     dry_run: bool = False,
+    start_offset: int = 0,
 ) -> Dict[str, Any]:
     async with AsyncSessionLocal() as db:
         with patch.object(mp.gw, "list_all_messages", side_effect=fake_gateway(messages, page_size)):
@@ -171,6 +158,7 @@ async def drain(
                 page_size=page_size,
                 max_pages=max_pages,
                 dry_run=dry_run,
+                start_offset=start_offset,
             )
 
 
@@ -465,3 +453,95 @@ async def test_reconnect_rerun_does_not_duplicate():
 
     assert second["inserted"] == 2
     assert await count_messages(conv_id) == 7
+
+
+# ---------------------------------------------------------------------------
+# §3.2 — Tur tavanı toplamın altındaysa listenin KUYRUĞU erişilebilir kalmalı
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_tail_is_reachable_when_max_pages_is_below_total():
+    """Tavan yetmediğinde imleç kuyruğa ulaştırmalı.
+
+    Tavan `max_pages * page_size`. İmleç olmadan her tur offset 0'dan başlar;
+    ilk N sayfa zaten DB'de olduğu için 0 satır eklenir ve offset hiç ilerlemez
+    ⇒ listenin kuyruğu HİÇBİR turda yazılmaz. Sessiz veri kaybı.
+
+    Ölçüm (2026-10-28, üretim): RAM 9122 mesaj, varsayılan tavan 10000 —
+    pay yalnızca 878 mesajdı. Yani sınır teorik değil, yakındı.
+    """
+    gw_id = f"gw-{_uuid.uuid4().hex}"
+    sid = await make_line(gw_id)
+    jid = jid_of("300015")
+    conv_id = await make_conversation(jid, sid)
+
+    base = datetime(2026, 7, 8, 9, 0, tzinfo=timezone.utc)
+    msgs = [gw_message(jid, f"T{i:03d}", base + timedelta(minutes=i)) for i in range(12)]
+
+    # page_size=5, max_pages=2 ⇒ tur başına en fazla 10 mesaj.
+    first = await drain(gw_id, msgs, page_size=5, max_pages=2, session_db_id=sid)
+    assert first["inserted"] == 10, "ilk tur tavanı doldurmalı"
+    assert first["next_offset"] == 10, "tur sonuna ulaşmadı → imleç kaldığı yeri göstermeli"
+
+    second = await drain(
+        gw_id, msgs, page_size=5, max_pages=2, session_db_id=sid,
+        start_offset=first["next_offset"],
+    )
+    assert second["inserted"] == 2, "kuyruk ikinci turda yazılmalı"
+    assert second["next_offset"] == 0, "tur sonuna ulaşıldı → imleç sıfırlanmalı"
+    assert await count_messages(conv_id) == 12
+
+
+@pytest.mark.asyncio
+async def test_run_once_advances_cursor_across_turns():
+    """`run_memory_persistence_once` imleci turlar arasında taşımalı."""
+    mp.reset_memory_persistence_state()
+    gw_id = f"gw-{_uuid.uuid4().hex}"
+    sid = await make_line(gw_id)
+    jid = jid_of("300016")
+    conv_id = await make_conversation(jid, sid)
+
+    base = datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc)
+    msgs = [gw_message(jid, f"U{i:03d}", base + timedelta(minutes=i)) for i in range(12)]
+
+    def mine(results):
+        return [r for r in results if r.get("gateway_id") == gw_id]
+
+    with patch.object(mp.gw, "list_all_messages", side_effect=fake_gateway(msgs, 5)):
+        first = mine(await mp.run_memory_persistence_once(page_size=5, max_pages=2))
+        second = mine(await mp.run_memory_persistence_once(page_size=5, max_pages=2))
+
+    assert first and first[0]["inserted"] == 10
+    assert second and second[0]["inserted"] == 2, "ikinci tur kuyruğu yazmalı"
+    assert await count_messages(conv_id) == 12
+    # Tur sonuna ulaşıldı: imleç sıfırlandı ve /health'e UUID sızmıyor.
+    status = mp.memory_persistence_status()
+    assert status["max_cursor_offset"] == 0
+    assert "cursors" not in status
+
+
+@pytest.mark.asyncio
+async def test_dry_run_does_not_advance_the_cursor():
+    """`dry_run` sayım turudur: imleci ilerletirse gerçek tur atlanır."""
+    mp.reset_memory_persistence_state()
+    gw_id = f"gw-{_uuid.uuid4().hex}"
+    sid = await make_line(gw_id)
+    jid = jid_of("300017")
+    conv_id = await make_conversation(jid, sid)
+
+    base = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
+    msgs = [gw_message(jid, f"V{i:03d}", base + timedelta(minutes=i)) for i in range(12)]
+
+    def mine(results):
+        return [r for r in results if r.get("gateway_id") == gw_id]
+
+    with patch.object(mp.gw, "list_all_messages", side_effect=fake_gateway(msgs, 5)):
+        dry = mine(await mp.run_memory_persistence_once(page_size=5, max_pages=2, dry_run=True))
+
+    assert dry and dry[0]["inserted"] == 10, "dry_run saymalı"
+    assert await count_messages(conv_id) == 0, "dry_run yazmamalı"
+
+    with patch.object(mp.gw, "list_all_messages", side_effect=fake_gateway(msgs, 5)):
+        real = mine(await mp.run_memory_persistence_once(page_size=5, max_pages=2))
+
+    assert real and real[0]["inserted"] == 10, "gerçek tur yine BAŞTAN başlamalı"
+    assert await count_messages(conv_id) == 10

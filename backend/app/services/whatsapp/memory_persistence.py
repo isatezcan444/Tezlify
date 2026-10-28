@@ -80,6 +80,10 @@ _STATE: Dict[str, Any] = {
     "errors_total": 0,
     "last_error": None,
     "dry_run_last": None,
+    # gateway_id -> sonraki turun başlayacağı offset. Tur başına tavan
+    # toplam mesaj sayısının altında kaldığında listenin kuyruğunun
+    # erişilemez olmasını engeller (bkz. `drain_gateway_memory_once`).
+    "cursors": {},
 }
 
 
@@ -100,6 +104,7 @@ def reset_memory_persistence_state() -> None:
             "errors_total": 0,
             "last_error": None,
             "dry_run_last": None,
+            "cursors": {},
         }
     )
 
@@ -109,8 +114,15 @@ def memory_persistence_status() -> Dict[str, Any]:
 
     Dürüstlük sınırı: bu sayaçlar SÜREÇ belleğidir, restart'ta sıfırlanır.
     Bu yüzden "tüm zamanların metriği" değil, "son tur ne yaptı" sinyalidir.
+
+    `cursors` sözlüğü gateway UUID'si ile anahtarlanır; oturum kimliğini
+    `/health`'e sızdırmamak için yalnızca toplu özeti yayınlanır.
     """
-    return dict(_STATE)
+    snapshot = dict(_STATE)
+    cursors = snapshot.pop("cursors", None) or {}
+    snapshot["cursor_count"] = len(cursors)
+    snapshot["max_cursor_offset"] = max(cursors.values()) if cursors else 0
+    return snapshot
 
 
 async def _load_conversation_index(
@@ -229,13 +241,22 @@ async def drain_gateway_memory_once(
     max_pages: int = 20,
     per_chat_limit: int = 2000,
     dry_run: bool = False,
+    start_offset: int = 0,
 ) -> Dict[str, Any]:
     """Gateway belleğindeki mesajları sınırlı sayfalarla DB'ye yazar.
 
     WhatsApp'a soru SORMAZ (`fetch_provider` kullanılmaz); yalnızca gateway'in
     elinde olan kayıtları mevcut ingest yolundan geçirir.
 
-    Dönen sözlük: pages / scanned / inserted / conversations / dry_run.
+    `start_offset` bir ÖNCEKİ turun bıraktığı yerdir. Bu olmadan, tur başına
+    tavan (`max_pages * page_size`) toplam mesaj sayısının altında kaldığında
+    her tur offset 0'dan başlar ve listenin KUYRUĞU hiçbir turda erişilemez
+    olurdu: ilk N sayfa zaten DB'de olduğu için 0 satır eklenir, offset hiç
+    ilerlemez. Ölçüm (2026-10-28): RAM 9122 mesaj, tavan 10000 — pay yalnızca
+    878 mesajdı. İmleç bunu yapısal olarak kapatır.
+
+    Dönen sözlük: pages / scanned / inserted / conversations / dry_run /
+    next_offset (0 = tur sonuna ulaşıldı).
     """
     stats: Dict[str, Any] = {
         "pages": 0,
@@ -246,6 +267,7 @@ async def drain_gateway_memory_once(
         "skipped_no_id": 0,
         "dry_run": bool(dry_run),
         "total_reported": None,
+        "next_offset": 0,
     }
     if not user_id or not gateway_id:
         return stats
@@ -259,7 +281,9 @@ async def drain_gateway_memory_once(
         )
         return stats
 
-    offset = 0
+    offset = max(0, int(start_offset or 0))
+    total = 0
+    reached_end = False
     touched: Set[int] = set()
     for _ in range(max(1, int(max_pages))):
         try:
@@ -281,6 +305,8 @@ async def drain_gateway_memory_once(
         total = int(page.get("total") or 0) if isinstance(page, dict) else 0
         stats["total_reported"] = total
         if not msgs:
+            # Gateway'de bu offset'ten sonra mesaj yok: liste bitti.
+            reached_end = True
             break
         stats["pages"] += 1
         stats["scanned"] += len(msgs)
@@ -353,9 +379,15 @@ async def drain_gateway_memory_once(
 
         offset += int(page_size)
         if offset >= total:
+            reached_end = True
             break
 
     stats["conversations"] = len(touched)
+    # Tur sonuna ulaşıldıysa imleç sıfırlanır (bir sonraki tur baştan tarar,
+    # hepsi DB'de olduğu için 0 satır ekler). Ulaşılamadıysa kaldığı yerden
+    # devam edilir; hata durumunda da aynı sayfa bir sonraki turda yeniden
+    # denenir, çünkü `offset` o sayfada ilerlememiştir.
+    stats["next_offset"] = 0 if reached_end else offset
     return stats
 
 
@@ -412,6 +444,8 @@ async def run_memory_persistence_once(
                 _STATE["skipped_no_session"] = int(_STATE.get("skipped_no_session") or 0) + 1
                 continue
             try:
+                cursors = _STATE.setdefault("cursors", {})
+                start_offset = int(cursors.get(str(gateway_id)) or 0)
                 result = await drain_gateway_memory_once(
                     db,
                     user_id=str(owner),
@@ -421,9 +455,15 @@ async def run_memory_persistence_once(
                     max_pages=max_pages,
                     per_chat_limit=per_chat_limit,
                     dry_run=dry_run,
+                    start_offset=start_offset,
                 )
                 result["gateway_id"] = str(gateway_id)
                 results.append(result)
+                # İmleç yalnızca gerçek bir turda ilerletilir: `dry_run`
+                # sayım turudur, sonrasında gerçek tur yine baştan başlamalı.
+                # Hata varsa `next_offset` zaten kırılan sayfayı gösterir.
+                if not dry_run:
+                    cursors[str(gateway_id)] = int(result.get("next_offset") or 0)
                 # Sayfa içinde yakalanan hata buraya `error` olarak döner;
                 # toplam sayaca da yansımalı, aksi halde /health "sorun yok"
                 # derken tur aslında yarım kalmış olurdu.
