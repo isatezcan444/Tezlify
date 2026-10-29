@@ -25,6 +25,21 @@ cagirir ve cikis kodunu okur. Boylece kural test edilebilir hale gelir.
                       "belki acik" sayilir; emin olunamayan bir degerle
                       otomatik yazma baslatmak kabul edilmez.
 
+## 3.8.5 — allowlist DARALTILDI
+
+Uygulama tarafinda (`config.py`) yalnizca `true` ve `1` acar. Bu betik ayni
+kumeyi "enable" olarak tanir; `yes` / `on` / `y` / `t` artik enable DEGILDIR.
+
+Bu betik onlari `flag_legacy_truthy_not_enabling` ile AYRICA reddeder. Iki
+tarafin davranisi bilerek farkli yonde fail-closed'dir:
+
+  * uygulama: deger cozulemezse servis AYAKTA kalir, supurme KAPALI kalir,
+  * kapi    : deger belirsizse DEPLOY BASLAMAZ.
+
+Yani `yes` yazan bir operatorun isi yarim kalmaz: supurme acilmaz (uygulama),
+ve neden acilmadigi sessiz gecmez (kapi). "Kapali oldugu icin sorun yok"
+demek, bir sonraki allowlist genisletmesinde sessizce veri yazmaya donusurdu.
+
 `--require-explicit-false` adacik icin: orada "yokluk" YETMEZ, cunku adacik
 canli env'i devralir ve o env'de flag bulunmayabilir. Adacigin kapali oldugu
 ACIKCA yazili olmalidir.
@@ -43,12 +58,48 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 FLAG = "WHATSAPP_MEMORY_PERSIST_ENABLED"
 
-_TRUE = {"1", "true", "yes", "on", "y", "t"}
-_FALSE = {"0", "false", "no", "off", "n", "f"}
+# 3.8.5: yetki veren TEK kume. `yes`/`on`/`y`/`t` buradan CIKARILDI.
+_ENABLE = {"1", "true"}
+# Eski surumlerde "acik" sayilan yazimlar. Artik acmazlar; ama "taninmayan"
+# da degiller — operatorun niyeti belli, degeri ise yetki vermiyor.
+_LEGACY_TRUTHY = {"yes", "on", "y", "t"}
+_DISABLE = {"0", "false", "no", "off", "n", "f"}
+
+ENABLE = "enable"
+DISABLE = "disable"
+LEGACY = "legacy"
+UNKNOWN = "unknown"
 
 EXIT_ALLOWED = 0
 EXIT_DENIED = 1
 EXIT_USAGE = 2
+
+
+def _normalize(raw: object) -> str:
+    return str(raw).strip().strip('"').strip("'").strip().lower()
+
+
+def classify(raw: object) -> str:
+    """Degeri dort siniftan birine koyar: enable / disable / legacy / unknown.
+
+    `legacy` ayrimi teshis icindir: `yes` yazan operator "acik" demek
+    istemistir, ama bu surumde o yazim yetki vermez. Ikisini ayni kefeye
+    koymak, "neden acilmadi" sorusunu cevapsiz birakirdi.
+    """
+    if isinstance(raw, bool):
+        return ENABLE if raw else DISABLE
+    if raw is None:
+        return UNKNOWN
+    text = _normalize(raw)
+    if not text:
+        return UNKNOWN
+    if text in _ENABLE:
+        return ENABLE
+    if text in _DISABLE:
+        return DISABLE
+    if text in _LEGACY_TRUTHY:
+        return LEGACY
+    return UNKNOWN
 
 
 def parse_flag(raw: object) -> Optional[bool]:
@@ -56,18 +107,13 @@ def parse_flag(raw: object) -> Optional[bool]:
 
     `None` "bilinmiyor" demektir ve cagiran taraf onu RED olarak yorumlar.
     Bos string de bilinmiyor sayilir: `KEY=` yazan bir operator muhtemelen
-    "kapali" demek istemistir ama bunu soylememistir.
+    "kapali" demek istemistir ama bunu soylememistir. `yes`/`on`/`y`/`t` de
+    `None` doner: 3.8.5'ten itibaren bunlar ACMAZ.
     """
-    if isinstance(raw, bool):
-        return raw
-    if raw is None:
-        return None
-    text = str(raw).strip().strip('"').strip("'").strip().lower()
-    if not text:
-        return None
-    if text in _TRUE:
+    kind = classify(raw)
+    if kind == ENABLE:
         return True
-    if text in _FALSE:
+    if kind == DISABLE:
         return False
     return None
 
@@ -85,16 +131,20 @@ def evaluate(
             return False, "flag_absent_but_explicit_false_required"
         return True, "flag_absent_defaults_off"
 
-    parsed = parse_flag(env.get(FLAG))
-    if parsed is None:
-        # Cozulemeyen deger: "kapali" diye yorumlamak, yazmayi baslatma
-        # riskini tasir. Bu yuzden reddedilir.
-        return False, "flag_unparseable"
-    if parsed is True:
+    kind = classify(env.get(FLAG))
+    if kind == ENABLE:
         if allow_enabled:
             return True, "flag_true_explicitly_allowed"
         return False, "flag_true_not_allowed"
-    return True, "flag_explicitly_false"
+    if kind == DISABLE:
+        return True, "flag_explicitly_false"
+    if kind == LEGACY:
+        # Uygulama bu degeri KAPALI sayar; kapi ise deploy'u durdurur. Ikisi de
+        # fail-closed, ama teshis tek: "bu yazim yetki vermiyor".
+        return False, "flag_legacy_truthy_not_enabling"
+    # Cozulemeyen deger: "kapali" diye yorumlamak, yazmayi baslatma
+    # riskini tasir. Bu yuzden reddedilir.
+    return False, "flag_unparseable"
 
 
 def read_env_file(path: str) -> Dict[str, str]:

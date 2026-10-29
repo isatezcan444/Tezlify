@@ -253,10 +253,16 @@ class TestScriptContract:
         assert "ALLOW_MIGRATIONS" not in block
 
     def test_cleanup_runs_on_both_error_paths(self, script):
-        # `die` -> exit: ERR tuzagi tetiklenmez, bu yuzden die icinde de var.
-        die_block = script[script.index("die() {"):]
+        # `die` -> exit: ERR tuzagi tetiklenmez, bu yuzden temizlik `die_code`
+        # icinde de var (3.8.5'te `die` cikis kodunu cagirana birakan
+        # `die_code`a devrediyor; temizlik tek yerde kalmali).
+        die_block = script[script.index("die_code() {"):]
         die_block = die_block[: die_block.index("\n}")]
         assert "candidate_db_drop" in die_block
+        # `die` temizligi KENDI yapmiyor: devretmezse temizlik sessizce kaybolur.
+        die_line = script[script.index("die() {"):]
+        die_line = die_line[: die_line.index("\n")]
+        assert "die_code 1" in die_line, "die, die_code'a devretmeli"
         on_error_block = script[script.index("on_error() {"):]
         on_error_block = on_error_block[: on_error_block.index("\n}")]
         assert "candidate_db_drop" in on_error_block

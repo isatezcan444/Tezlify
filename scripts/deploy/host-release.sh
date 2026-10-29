@@ -24,7 +24,14 @@
 #      OTOMATIK geri alir (onceki imaj etiketleri + onceki frontend dizini)
 #
 # KULLANIM (sunucuda, /opt/tezlify icinde):
+#   bash scripts/deploy/run_release.sh <sha> [secenekler]      <- ONERILEN
 #   bash scripts/deploy/host-release.sh <sha> [secenekler]
+#
+# `run_release.sh` hedef commit'in BU dosyasini cikarir, blob kimligini
+# dogrular ve onu calistirir. Dogrudan `host-release.sh` cagirmak da olur,
+# ama o zaman calisan dosya hedef commit'in dosyasi DEGILSE betik kendini
+# reddeder (cikis kodu 9) — cunku eski betik yeni guvenlik kapilarini
+# icermez ve sessizce atlar. Bkz. asagidaki "BETIK SURUM MUHAFIZI".
 #
 #   --frontend-tar PATH   frontend/dist tarball'i (icerigi frontend_candidate'e
 #                         yazilir; onceki dizin kopyasi saklanir)
@@ -148,11 +155,17 @@ log() { printf '[release %s] %s\n' "$TS" "$*"; }
 # `die` bir `exit` yapar; `exit` ERR tuzagini TETIKLEMEZ. Bu yuzden izole DB
 # temizligi burada da yapilir — aksi halde `die` ile biten her hata yolunda
 # gercek satirlar tasiyan bir kopya veritabaninda kalirdi.
-die() {
+#
+# `die_code` ayni temizligi yapar ama CIKIS KODUNU cagirana birakir: surum
+# uyusmazligi (9) ile "herhangi bir hata" (1) ayni kodla donerse operator
+# teshis edemez, otomasyon ise ikisini ayirt edemez.
+die_code() {
+  local code="$1"; shift
   candidate_db_drop "${CANDIDATE_DB:-}"
   printf '[release %s] HATA: %s\n' "$TS" "$*" >&2
-  exit 1
+  exit "$code"
 }
+die() { die_code 1 "$@"; }
 run() {
   if [ "$DRY_RUN" = "1" ]; then
     printf '[dry-run] %s\n' "$*"
@@ -480,6 +493,61 @@ TARGET_FULL="$(git rev-parse "$SHA^{commit}")"
 # karsilastirma tabani. (Onceden yalnizca --no-gateway dalinda okunuyordu.)
 PREV_DEPLOYED="$(cat "$PROJECT_DIR/.deployed-commit" 2>/dev/null | tr -d '[:space:]' || true)"
 
+# ---------------------------------------------------------------------------
+# 0a. BETIK SURUM MUHAFIZI — calisan dosya HEDEF commit'in dosyasi mi?
+# ---------------------------------------------------------------------------
+# Asama 3.8.4'un en onemli bulgusu bir celiskiydi: kalicilastirma kill-switch
+# muhafizi HEDEF release'te var, ama deploy'u calistiran betik ESKI
+# checkout'tan geliyor olabilir. Olculen hal:
+#
+#     yayindaki commit b5715fe : bu dosyada persistence_flag_guard.py -> 0
+#     hedef   commit 3d3fc79   : ayni dosyada ayni referans         -> 6
+#
+# Yani `bash scripts/deploy/host-release.sh <yeni-sha>` yazildiginda ve
+# `/opt/tezlify` hala eski commit'teyken ESKI betik kosar: adaciga
+# `-e WHATSAPP_MEMORY_PERSIST_ENABLED=false` zorlamasi da, cutover sonrasi
+# `/health` etkin-deger kontrolu de HIC CALISMAZ. Deploy "basarili" gorunur,
+# guvenlik kapisi ise hic var olmamis gibi davranir.
+#
+# Cozum kimliktir: calisan dosyanin blob kimligi, hedef commit'teki
+# `scripts/deploy/host-release.sh` blob'uyla AYNI olmali. Bu kontrol iki
+# yonlu calisir — eski betik + yeni hedef de, yeni betik + eski hedef de
+# reddedilir. Ayrica bash'in artimli okuma riskini kaldirir: `git reset
+# --hard` dosyayi degistirseydi, calisan betik okudugu yerden BASKA bir
+# dosyayi okumaya devam ederdi; blob esitligi bunu imkansiz kilar (baytlar
+# ayni, dolayisiyla okunan konum ayni anlama gelir).
+HOST_RELEASE_REL="scripts/deploy/host-release.sh"
+SELF_FILE="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+[ -f "$SELF_FILE" ] || die_code 9 "calisan betik dosyasi bulunamadi: $SELF_FILE"
+SELF_BLOB="$(git hash-object -- "$SELF_FILE" 2>/dev/null || true)"
+TARGET_SCRIPT_BLOB="$(git rev-parse --verify "$TARGET_FULL:$HOST_RELEASE_REL" 2>/dev/null || true)"
+if [ -z "$TARGET_SCRIPT_BLOB" ]; then
+  die_code 9 "hedef commit'te $HOST_RELEASE_REL yok; bu surum dagitilamaz"
+fi
+if [ -z "$SELF_BLOB" ]; then
+  die_code 9 "calisan betigin blob kimligi hesaplanamadi; surum KANITLANAMAZ"
+fi
+# `run_release.sh`'in biraktigi iki pin: dosya hash'i ve kaynak commit.
+if [ -n "${HOST_RELEASE_EXPECTED_BLOB:-}" ] && [ "$SELF_BLOB" != "$HOST_RELEASE_EXPECTED_BLOB" ]; then
+  die_code 9 "calisan betik pinlenen blob degil (self=${SELF_BLOB:0:12} pin=${HOST_RELEASE_EXPECTED_BLOB:0:12})"
+fi
+if [ -n "${HOST_RELEASE_SOURCE_COMMIT:-}" ]; then
+  PIN_SOURCE="$(git rev-parse --verify "${HOST_RELEASE_SOURCE_COMMIT}^{commit}" 2>/dev/null || true)"
+  if [ "$PIN_SOURCE" != "$TARGET_FULL" ]; then
+    die_code 9 "betik baska bir commit icin cikarilmis (kaynak=${PIN_SOURCE:0:12} hedef=${TARGET_FULL:0:12})"
+  fi
+fi
+if [ "$SELF_BLOB" != "$TARGET_SCRIPT_BLOB" ]; then
+  die_code 9 "calisan betik hedef commit'in betigi DEGIL (self=${SELF_BLOB:0:12} hedef=${TARGET_SCRIPT_BLOB:0:12}); deploy baslatilmadi. Cozum: bash scripts/deploy/run_release.sh $TARGET_FULL ..."
+fi
+# Blob esitligi "calisan = hedef" der, ama "hedef guvenlik kapilarini tasiyor"
+# demez: ESKI bir commit hedef gosterilirse ikisi de tutar. Bu yuzden kapilarin
+# kablolamasi da aranir — hedef bu muhafizlari tasimiyorsa deploy edilmez.
+for marker in persistence_flag_guard.py --require-explicit-false persist_flag_effective; do
+  grep -q -- "$marker" "$SELF_FILE" || die_code 9 "calisan betikte guvenlik kontrolu eksik: $marker (hedef bu muhafizi tasimiyor)"
+done
+log "betik surum muhafizi GECTI: self=${SELF_BLOB:0:12} = hedef commit ${TARGET_FULL:0:12}"
+
 # --no-gateway MUHAFIZI
 #
 # "Gateway'e dokunmadim" iddiasini insan hafizasina birakmak, bir gun gateway
@@ -566,16 +634,22 @@ fi
 #
 # Bu muhafiz ATLANMAZ: bulunamazsa deploy REDDEDILIR. Bir guvenlik kapisini
 # "bulunamadi" diye gecmek, kapinin olmamasindan daha kotudur.
+#
+# CALISMA AGACI YEDEGI KALDIRILDI (3.8.5): onceki surum, dosya hedef commit'te
+# yoksa calisma agacindaki kopyayi "UYARI" ile kullanıyordu. O kopya denetlenen
+# kod DEGILDIR — yayindaki eski bir dosya ya da yarim kalmis bir duzenleme
+# olabilir. Artik hedef commit'te yoksa deploy baslamaz.
 PERSIST_GUARD_PY="/tmp/tezlify-persist-flag-guard-$TS.py"
-if git show "$TARGET_FULL:scripts/deploy/persistence_flag_guard.py" > "$PERSIST_GUARD_PY" 2>/dev/null \
-    && [ -s "$PERSIST_GUARD_PY" ]; then
-  :
-elif [ -f "$PROJECT_DIR/scripts/deploy/persistence_flag_guard.py" ]; then
-  PERSIST_GUARD_PY="$PROJECT_DIR/scripts/deploy/persistence_flag_guard.py"
-  log "UYARI: persistence_flag_guard.py hedef commit'te yok; calisma agacindaki kopya kullaniliyor"
-else
-  PERSIST_GUARD_PY=""
-  die "persistence_flag_guard.py bulunamadi; kalicilastirma kill-switch'i KANITLANAMAZ (deploy yapilmadi)"
+PERSIST_GUARD_BLOB="$(git rev-parse --verify "$TARGET_FULL:scripts/deploy/persistence_flag_guard.py" 2>/dev/null || true)"
+if [ -z "$PERSIST_GUARD_BLOB" ]; then
+  die_code 9 "persistence_flag_guard.py HEDEF COMMIT'te yok; kill-switch KANITLANAMAZ (deploy yapilmadi)"
+fi
+git show "$TARGET_FULL:scripts/deploy/persistence_flag_guard.py" > "$PERSIST_GUARD_PY" 2>/dev/null \
+  || die_code 9 "persistence_flag_guard.py hedef commit'ten cikarilamadi (deploy yapilmadi)"
+[ -s "$PERSIST_GUARD_PY" ] \
+  || die_code 9 "cikarilan persistence_flag_guard.py bos (deploy yapilmadi)"
+if [ "$(git hash-object -- "$PERSIST_GUARD_PY" 2>/dev/null || true)" != "$PERSIST_GUARD_BLOB" ]; then
+  die_code 9 "cikarilan kill-switch muhafizi hedefteki blob ile ayni degil (deploy yapilmadi)"
 fi
 
 if [ -z "$GUARD_PY" ]; then
@@ -888,7 +962,11 @@ if [ -f "$ENV_PROD_FILE" ]; then
     die "uretim .env.production kalicilastirmayi KAPATMIYOR; cutover YAPILMADI"
   fi
 else
-  log "UYARI: .env.production yok; flag yoklugu 'kapali' sayilir (kod varsayilani false)"
+  # 3.8.5: burada eskiden yalnizca UYARI vardi ve deploy devam ediyordu. Ama
+  # backend'in env'i tam olarak bu dosyadan geliyor (`env_file:`); dosya yoksa
+  # compose zaten kalkmaz. "Dosya yok" durumunu "kontrol edildi" saymak,
+  # olmayan bir kaniti kanit yerine koymak olurdu.
+  die "uretim .env.production yok; kalicilastirma kill-switch'i KANITLANAMAZ (cutover YAPILMADI)"
 fi
 
 log "cutover: compose up -d --force-recreate ${CUTOVER_SERVICES[*]}"
@@ -1060,6 +1138,7 @@ cat > "$RELEASE_DIR/release.json" <<JSON
   "live_gateway_image": "$LIVE_GATEWAY_IMAGE",
   "previous_backend_image": "$PREV_BACKEND_IMAGE",
   "gateway_touched": $GATEWAY_TOUCHED_JSON,
+  "deploy_script": {"path": "$HOST_RELEASE_REL", "blob": "$SELF_BLOB", "commit": "$TARGET_FULL"},
   "rollback_tags": {"backend": "tezlify-backend:pre-$TS", "gateway": "tezlify-gateway:pre-$TS"},
   "frontend": $FRONTEND_JSON,
   "migrations": {

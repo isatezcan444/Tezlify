@@ -39,7 +39,8 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
-from typing import Iterable, List, Sequence
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence
 
 # `host-release.sh` muhafizinin kapsami — birebir ayni olmali.
 GATEWAY_PREFIX = "whatsapp-gateway/"
@@ -110,18 +111,82 @@ def evaluate(
     return problems
 
 
-def release_command(target: str, *, health_timeout: int = 180) -> str:
-    """Operatorun calistiracagi komut. Betik bunu CALISTIRMAZ."""
+# Hedef commit'in TASIMASI ZORUNLU guvenlik betikleri (3.8.5).
+#
+# `--no-gateway` muhafizi yalnizca "gateway degismedi" der. Bu liste ise
+# "dagitilan surum, deploy'u guvenli kilan araclari ICERIYOR mu" sorusunu
+# cevaplar. Eksikse deploy edilmez — cunku eksik bir surum, muhafizin
+# calismadigi bir surumdur.
+SECURITY_SCRIPTS = (
+    "scripts/deploy/host-release.sh",
+    "scripts/deploy/persistence_flag_guard.py",
+    "scripts/deploy/script_version_guard.py",
+    "scripts/deploy/run_release.sh",
+)
+
+# `host-release.sh` icinde ARANAN kablolama isaretleri. Tek kaynak
+# `script_version_guard.REQUIRED_MARKERS`; kopyalamak iki listenin zamanla
+# ayrismasi demek olurdu (bu depoda tam olarak bu hata bir kez yasandi).
+EXTRA_MARKERS = ("script_version_guard.py",)
+
+
+def _load_version_guard():
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "script_version_guard.py"
+    spec = importlib.util.spec_from_file_location("deploy_script_version_guard", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - bozuk kurulum
+        raise GitError("script_version_guard.py yuklenemedi")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def script_contract_problems(
+    *,
+    missing_paths: Sequence[str],
+    missing_markers: Sequence[str],
+) -> List[str]:
+    """Hedef surumun guvenlik sozlesmesini degerlendirir. Bos liste = uygun."""
+    problems: List[str] = []
+    for p in missing_paths:
+        problems.append(
+            f"hedef commit'te {p} yok — deploy guvenlik araclari eksik"
+        )
+    if missing_markers:
+        problems.append(
+            "hedef host-release.sh su kontrolleri icermiyor: "
+            + ", ".join(missing_markers)
+        )
+    return problems
+
+
+def release_command(
+    target: str, *, health_timeout: int = 180, self_blob: str | None = None
+) -> str:
+    """Operatorun calistiracagi komut. Betik bunu CALISTIRMAZ.
+
+    3.8.5: komut artik `run_release.sh` uzerinden gider. Dogrudan
+    `host-release.sh` cagirmak da mumkun, ama o zaman `/opt/tezlify` eski
+    commit'teyse ESKI betik kosar ve yeni guvenlik kapilarini atlar. Baslatici
+    hedef commit'in betigini cikarir, blob'unu dogrular ve onu calistirir;
+    `--expected-self-blob` ise baslaticinin KENDISINI pinler.
+    """
+    pin = f" --expected-self-blob {self_blob}" if self_blob else ""
     return (
-        f"bash scripts/deploy/host-release.sh {target} --no-gateway "
+        f"bash scripts/deploy/run_release.sh{pin} {target} --no-gateway "
         f"--health-timeout {health_timeout}"
     )
 
 
-def _git(*args: str) -> str:
+def _git(*args: str, repo: Optional[str] = None) -> str:
+    cmd = ["git"]
+    if repo:
+        cmd += ["-C", repo]
+    cmd += list(args)
     try:
         res = subprocess.run(
-            ["git", *args],
+            cmd,
             check=True,
             capture_output=True,
             text=True,
@@ -135,13 +200,32 @@ def _git(*args: str) -> str:
     return res.stdout
 
 
-def _changed(base: str, target: str, pathspec: Sequence[str]) -> List[str]:
-    out = _git("diff", "--name-only", base, target, "--", *pathspec)
+def _try_git(*args: str, repo: Optional[str] = None) -> Optional[str]:
+    """Basarisizsa `None` — "commit'te yok" bir ihlaldir, cokme degil."""
+    try:
+        return _git(*args, repo=repo).strip()
+    except GitError:
+        return None
+
+
+def blob_at(repo: Optional[str], commit: str, path: str) -> Optional[str]:
+    """`<commit>:<path>` blob kimligi; dosya o commit'te yoksa `None`."""
+    return _try_git("rev-parse", "--verify", f"{commit}:{path}", repo=repo)
+
+
+def file_text_at(repo: Optional[str], commit: str, path: str) -> Optional[str]:
+    return _try_git("show", f"{commit}:{path}", repo=repo)
+
+
+def _changed(
+    base: str, target: str, pathspec: Sequence[str], repo: Optional[str] = None
+) -> List[str]:
+    out = _git("diff", "--name-only", base, target, "--", *pathspec, repo=repo)
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def _rev(ref: str) -> str:
-    return _git("rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+def _rev(ref: str, repo: Optional[str] = None) -> str:
+    return _git("rev-parse", "--verify", f"{ref}^{{commit}}", repo=repo).strip()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -156,24 +240,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="release ref'in backend agacinin kaynagi (varsayilan: origin/main)",
     )
     ap.add_argument("--health-timeout", type=int, default=180)
+    ap.add_argument("--repo", default=".", help="git deposu (varsayilan: .)")
     args = ap.parse_args(argv)
 
     try:
-        base = _rev(args.base)
-        target = _rev(args.target)
-        backend_from = _rev(args.backend_from)
+        base = _rev(args.base, repo=args.repo)
+        target = _rev(args.target, repo=args.repo)
+        backend_from = _rev(args.backend_from, repo=args.repo)
     except GitError as exc:
         print(f"HATA: {exc}", file=sys.stderr)
         return 2
 
-    gateway_changes = _changed(base, target, [GATEWAY_PREFIX, *COMPOSE_FILES])
-    backend_vs_main = _changed(target, backend_from, [BACKEND_PREFIX])
-    backend_vs_base = _changed(base, target, [BACKEND_PREFIX])
+    gateway_changes = _changed(base, target, [GATEWAY_PREFIX, *COMPOSE_FILES], repo=args.repo)
+    backend_vs_main = _changed(target, backend_from, [BACKEND_PREFIX], repo=args.repo)
+    backend_vs_base = _changed(base, target, [BACKEND_PREFIX], repo=args.repo)
 
     problems = evaluate(
         gateway_changes=gateway_changes,
         backend_vs_main=backend_vs_main,
         backend_vs_base=backend_vs_base,
+    )
+
+    # --- Surum guvenlik sozlesmesi (3.8.5) ---------------------------------
+    try:
+        guard = _load_version_guard()
+    except GitError as exc:
+        print(f"HATA: {exc}", file=sys.stderr)
+        return 2
+    required_markers = tuple(guard.REQUIRED_MARKERS) + EXTRA_MARKERS
+    blobs = {p: blob_at(args.repo, target, p) for p in SECURITY_SCRIPTS}
+    missing_paths = [p for p, b in blobs.items() if not b]
+    host_text = file_text_at(args.repo, target, SECURITY_SCRIPTS[0])
+    missing_markers = (
+        guard.missing_markers(host_text, required_markers) if host_text else ()
+    )
+    problems += script_contract_problems(
+        missing_paths=missing_paths, missing_markers=missing_markers
     )
 
     print(f"base            : {base[:12]} ({args.base})")
@@ -182,6 +284,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"gateway/compose : {len(gateway_changes)} dosya degismis (0 olmali)")
     print(f"backend vs main : {len(backend_vs_main)} dosya farkli (0 olmali)")
     print(f"backend vs base : {len(backend_vs_base)} dosya degismis (>0 olmali)")
+    print(f"host-release.sh : {(blobs[SECURITY_SCRIPTS[0]] or '-')[:12]} (hedefteki blob)")
+    print(f"run_release.sh  : {(blobs['scripts/deploy/run_release.sh'] or '-')[:12]} (hedefteki blob)")
     print("")
 
     if problems:
@@ -192,7 +296,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print("SONUC: GUVENLI — bu ref `--no-gateway` muhafizindan gececek.")
     print("Calistirilacak komut (bu betik CALISTIRMAZ):")
-    print(f"  {release_command(args.target, health_timeout=args.health_timeout)}")
+    print(
+        "  "
+        + release_command(
+            args.target,
+            health_timeout=args.health_timeout,
+            self_blob=blobs["scripts/deploy/run_release.sh"],
+        )
+    )
     return 0
 
 

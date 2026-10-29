@@ -12,7 +12,9 @@ Sozlesme artik su:
   * flag YOK        -> KAPALI
   * flag cozulemez  -> KAPALI (servis ayakta kalir, yazma baslamaz)
   * flag `false`    -> KAPALI
-  * flag `true`     -> ACIK (tek yol)
+  * flag `true`     -> ACIK
+  * flag `1`        -> ACIK
+  * `yes`/`on`/`y`/`t` -> KAPALI (3.8.5: allowlist daraltildi, uyari birakir)
 
 Bu dosya o sozlesmeyi ve `/health` uzerinden ETKIN degerin gorunur oldugunu
 pinler.
@@ -45,7 +47,7 @@ def test_default_is_off(monkeypatch):
     assert _settings().WHATSAPP_MEMORY_PERSIST_ENABLED is False
 
 
-@pytest.mark.parametrize("raw", ["true", "TRUE", "1", "yes", "on", " true "])
+@pytest.mark.parametrize("raw", ["true", "TRUE", "True", "1", " true ", "1 "])
 def test_explicit_true_enables(monkeypatch, raw):
     monkeypatch.delenv(FLAG, raising=False)
     assert _settings(**{FLAG: raw}).WHATSAPP_MEMORY_PERSIST_ENABLED is True
@@ -57,7 +59,31 @@ def test_explicit_false_or_empty_disables(monkeypatch, raw):
     assert _settings(**{FLAG: raw}).WHATSAPP_MEMORY_PERSIST_ENABLED is False
 
 
-@pytest.mark.parametrize("raw", ["truely", "evet", "2", "enable", "acik"])
+# ---------------------------------------------------------------------------
+# 3.8.5 — allowlist DARALTILDI: yalnizca `true` ve `1` acar
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("raw", ["yes", "on", "y", "t", "YES", "On", "Y", "T"])
+def test_legacy_truthy_spellings_do_not_enable(monkeypatch, raw, caplog):
+    """`yes`/`on`/`y`/`t` artik ACMAZ.
+
+    Bu bayrak uretimde mesaj YAZMA yetkisi veriyor. "evet gibi gorunen" bir
+    yazimin yetki vermesi, bir yazim hatasinin sessizce veri yazmaya
+    donusmesi demektir. Tek acik yol `true` veya `1`.
+
+    Uyari birakilmasi da sozlesmenin parcasi: deger cozulemedigi icin degil,
+    *reddedildigi* icin kapali — ve bunu operator log'da gormeli.
+    """
+    monkeypatch.delenv(FLAG, raising=False)
+    with caplog.at_level("WARNING"):
+        value = _settings(**{FLAG: raw}).WHATSAPP_MEMORY_PERSIST_ENABLED
+    assert value is False
+    # Uyari metni sabittir: "cozulemedi" diyerek reddedildigi log'da gorunmeli.
+    # Gevsek bir "herhangi bir kayit var mi" kontrolu, baska bir uyariyla da
+    # gecebilecegi icin yetersizdir.
+    assert f"{FLAG} çözülemedi" in caplog.text, "reddedilen deger sessiz gecmemeli"
+
+
+@pytest.mark.parametrize("raw", ["banana", "truely", "evet", "2", "enable", "acik"])
 def test_unparseable_falls_back_to_off(monkeypatch, raw):
     """Cozulemeyen deger uygulamayi DUSURMEZ; yalnizca supurmeyi kapatir.
 
@@ -67,6 +93,15 @@ def test_unparseable_falls_back_to_off(monkeypatch, raw):
     """
     monkeypatch.delenv(FLAG, raising=False)
     assert _settings(**{FLAG: raw}).WHATSAPP_MEMORY_PERSIST_ENABLED is False
+
+
+def test_only_true_and_one_are_accepted(monkeypatch):
+    """Kabul kriterinin dogrudan ifadesi: `true`/`1` disinda HICBIR deger acmaz."""
+    monkeypatch.delenv(FLAG, raising=False)
+    for raw in ["yes", "on", "y", "t", "banana", "truely", "2", "truee", "1 ", "TRUE"]:
+        expected = raw.strip().lower() in {"true", "1"}
+        got = _settings(**{FLAG: raw}).WHATSAPP_MEMORY_PERSIST_ENABLED
+        assert got is expected, f"{raw!r} icin beklenen {expected}, gelen {got}"
 
 
 # ---------------------------------------------------------------------------

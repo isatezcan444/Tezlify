@@ -41,7 +41,8 @@ FLAG = tool.FLAG
 # ---------------------------------------------------------------------------
 # parse_flag — yazim cesitliligi
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("raw", ["true", "TRUE", "True", "1", "yes", "on", "y", "t", " true "])
+# 3.8.5: yetki veren kume DARALTILDI. `yes`/`on`/`y`/`t` artik acmaz.
+@pytest.mark.parametrize("raw", ["true", "TRUE", "True", "1", " true ", "1 "])
 def test_parse_true_variants(raw):
     assert tool.parse_flag(raw) is True
 
@@ -49,6 +50,25 @@ def test_parse_true_variants(raw):
 @pytest.mark.parametrize("raw", ["false", "FALSE", "False", "0", "no", "off", "n", "f", "false "])
 def test_parse_false_variants(raw):
     assert tool.parse_flag(raw) is False
+
+
+@pytest.mark.parametrize("raw", ["yes", "YES", "on", "y", "t", "On", "Y", "T"])
+def test_legacy_truthy_spellings_do_not_enable(raw):
+    """`yes`/`on`/`y`/`t` 3.8.5'ten itibaren ACMAZ — `None` doner.
+
+    Gerekce: bu bayrak uretimde mesaj yazma yetkisi veriyor. "evet gibi
+    gorunen" bir yazimin yetki vermesi, bir yazim hatasinin sessizce veri
+    yazmaya donusmesi demektir. Tek acik yol `true` veya `1`.
+    """
+    assert tool.parse_flag(raw) is not True
+    assert tool.classify(raw) == tool.LEGACY
+
+
+def test_classify_distinguishes_the_four_classes():
+    assert tool.classify("1") == tool.ENABLE
+    assert tool.classify("false") == tool.DISABLE
+    assert tool.classify("yes") == tool.LEGACY
+    assert tool.classify("banana") == tool.UNKNOWN
 
 
 def test_parse_strips_quotes():
@@ -62,7 +82,9 @@ def test_parse_bool_passthrough():
     assert tool.parse_flag(False) is False
 
 
-@pytest.mark.parametrize("raw", ["truely", "evet", "2", "", "   ", "enable", "yep", None])
+@pytest.mark.parametrize(
+    "raw", ["truely", "evet", "2", "", "   ", "enable", "yep", "banana", "ture", None]
+)
 def test_parse_unparseable_is_none(raw):
     """Cozulemeyen deger `None` donmeli — `False` degil.
 
@@ -127,6 +149,36 @@ def test_unparseable_is_denied_even_with_opt_in():
 
 def test_empty_value_is_denied():
     allowed, _ = tool.evaluate({FLAG: ""})
+    assert allowed is False
+
+
+@pytest.mark.parametrize("raw", ["yes", "on", "y", "t"])
+def test_legacy_truthy_is_denied_with_distinct_reason(raw):
+    """Uygulama bu degeri KAPALI sayar; kapi ise deploy'u durdurur.
+
+    Ikisi de fail-closed ama teshis tektir: "bu yazim yetki vermiyor".
+    `flag_unparseable` ile ayni kefeye koymak, `yes` yazan operatorun
+    "neden acilmadi" sorusunu cevapsiz birakirdi.
+    """
+    allowed, reason = tool.evaluate({FLAG: raw})
+    assert allowed is False
+    assert reason == "flag_legacy_truthy_not_enabling"
+
+
+@pytest.mark.parametrize("raw", ["yes", "on", "y", "t"])
+def test_legacy_truthy_is_denied_even_with_opt_in(raw):
+    """`--allow-enabled` yalnizca `true`/`1` icindir, eski yazimlar icin degil."""
+    allowed, _ = tool.evaluate({FLAG: raw}, allow_enabled=True)
+    assert allowed is False
+
+
+@pytest.mark.parametrize(
+    "raw", ["yes", "on", "y", "t", "banana", "truely", "2", "enable", ""]
+)
+def test_nothing_but_true_and_one_enables(raw):
+    """Kabul kriteri: `true` ve `1` disinda HICBIR deger ozelligi acmamali."""
+    assert tool.parse_flag(raw) is not True
+    allowed, _ = tool.evaluate({FLAG: raw}, allow_enabled=True)
     assert allowed is False
 
 
@@ -241,14 +293,23 @@ def test_host_release_gate_runs_before_candidate_start():
 
 
 def test_host_release_refuses_when_guard_is_missing():
-    """Muhafiz yoksa 'atla' degil, 'deploy etme' demeli."""
+    """Muhafiz yoksa 'atla' degil, 'deploy etme' demeli.
+
+    3.8.5: calisma agacindaki kopyaya dusen yedek yol KALDIRILDI — o kopya
+    denetlenen kod degil. Ret artik sifir olmayan bir kodla (9) yapiliyor.
+    """
     src = _host_src()
-    assert "persistence_flag_guard.py bulunamadi" in src
-    marker = src.index("persistence_flag_guard.py bulunamadi")
-    # Ayni satirda `die` olmali: uyari verip devam eden bir dal kabul edilmez.
+    assert "persistence_flag_guard.py HEDEF COMMIT'te yok" in src
+    marker = src.index("persistence_flag_guard.py HEDEF COMMIT'te yok")
     line_start = src.rfind("\n", 0, marker) + 1
     line_end = src.find("\n", marker)
-    assert "die" in src[line_start:line_end]
+    line = src[line_start:line_end]
+    assert "die_code 9" in line
+    # Yedek yol geri gelmemeli: kill-switch muhafizi icin calisma agaci kopyasi yok.
+    assert (
+        "persistence_flag_guard.py hedef commit'te yok; calisma agacindaki kopya kullaniliyor"
+        not in src
+    )
 
 
 def test_host_release_checks_effective_value_after_cutover():
@@ -264,3 +325,26 @@ def test_host_release_checks_production_env_before_cutover():
     env_check = src.index('--env-file "$ENV_PROD_FILE"')
     cutover = src.index('log "cutover: compose up -d --force-recreate')
     assert env_check < cutover, "uretim env kontrolu cutover'dan once kosmali"
+
+
+def test_host_release_pre_cutover_gate_cannot_be_skipped():
+    """Kapi 'varsa kontrol et' degil, 'kontrol edemiyorsan dur' olmali.
+
+    3.8.5: `.env.production` yoksa eskiden yalnizca UYARI vardi. Dosya yoksa
+    compose zaten kalkmaz; "kontrol edildi" saymak olmayan bir kaniti kanit
+    yerine koymak olurdu.
+    """
+    src = _host_src()
+    marker = src.index("uretim .env.production yok;")
+    line_start = src.rfind("\n", 0, marker) + 1
+    line_end = src.find("\n", marker)
+    assert "die" in src[line_start:line_end]
+
+
+def test_host_release_pre_and_post_gates_both_call_the_guard():
+    """Deploy oncesi ve sonrasi kontrol AYNI karar betigini cagirmali."""
+    src = _host_src()
+    # 1) adacik (acikca false) + 2) cutover oncesi (.env.production) = iki cagri
+    assert src.count('python3 "$PERSIST_GUARD_PY"') >= 2
+    # 3) cutover sonrasi ETKIN deger — ayri yol (/health), atlanamaz.
+    assert '"$EFFECTIVE_PERSIST" != "false"' in src

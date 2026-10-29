@@ -222,27 +222,34 @@ class Settings(BaseSettings):
     @field_validator("WHATSAPP_MEMORY_PERSIST_ENABLED", mode="before")
     @classmethod
     def _memory_persist_fail_closed(cls, value: object) -> bool:
-        """Yalnızca AÇIKÇA tanınan bir "true" değeri süpürmeyi açar.
+        """Yalnızca AÇIKÇA `true` veya `1` süpürmeyi açar; her şey kapalıdır.
 
         Pydantic'in kendi bool çözümlemesi `truely` / `evet` / `2` gibi
         değerlerde `ValidationError` fırlatır ve bu, uygulamanın TAMAMININ
         açılmaması demektir. İstenen bu değil: istenen, *süpürmenin*
         başlamaması. Bu yüzden çözülemeyen her değer `False`a düşürülür ve
         tek satır uyarı bırakılır — servis ayakta kalır, yazma başlamaz.
+
+        Allowlist 3.8.5'te DARALTILDI: `yes` / `on` / `y` / `t` artık AÇMAZ.
+        Gerekçe, bu bayrağın üretimde mesaj yazma yetkisi olması: "evet gibi
+        görünen" bir yazımın yetki vermesi, bir yazım hatasının sessizce veri
+        yazmaya dönüşmesi demektir. Tek açık yol `true` veya `1`; kalan her
+        değer (yokluk, boşluk, `yes`, `on`, `y`, `t`, `banana`, yazım hatası)
+        KAPALIdır ve tanınmayanlar uyarı bırakır.
         """
         if isinstance(value, bool):
             return value
         if value is None:
             return False
         text = str(value).strip().strip('"').strip("'").strip().lower()
-        if text in {"1", "true", "yes", "on", "y", "t"}:
+        if text in {"1", "true"}:
             return True
         if text in {"0", "false", "no", "off", "n", "f", ""}:
             return False
 
         logging.getLogger(__name__).warning(
             "WHATSAPP_MEMORY_PERSIST_ENABLED çözülemedi; güvenli tarafta "
-            "KAPALI kabul edildi (fail-closed)."
+            "KAPALI kabul edildi (fail-closed). Yalnızca `true` veya `1` açar."
         )
         return False
 
