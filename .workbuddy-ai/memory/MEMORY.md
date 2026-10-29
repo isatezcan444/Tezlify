@@ -22,8 +22,12 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
   `.deployed-commit` is the authority. **Push is not deploy.** It force-recreates backend+gateway even with
   `--skip-build` ⇒ use **`--no-gateway`** unless `whatsapp-gateway/` or a compose file changed (the flag
   REFUSES, exit 1 — verified). A gateway recreate costs its in-memory store (A6). **The script that runs is
-  always the OLD one** — run the target commit's copy (`git show <sha>:scripts/deploy/host-release.sh >
-  /tmp/hr.sh`). Destructive added SQL exits **3** before any container starts (`migration_guard.py`).
+  always the OLD one** — enforced since 3.8.5: `host-release.sh` compares its own `git hash-object` to
+  `<target>:scripts/deploy/host-release.sh` and **exits 9** if they differ, so run the target's copy via
+  `bash scripts/deploy/run_release.sh --expected-self-blob <blob> <ref> --no-gateway` (it extracts the
+  target's script + `script_version_guard.py`, verifies both blobs, pins itself). Measured: the deployed
+  `b5715fe` script has **0** kill-switch references and accepts the new ref with exit 0 — the hole was real.
+  Destructive added SQL exits **3** before any container starts (`migration_guard.py`).
 - **A refusing guard is not a blocker — build the ref it asks for.** `--no-gateway` compares
   `deployed..TARGET`; while `main` carries gateway changes, backend-only is impossible. Do **not** weaken
   it: cut `release/backend-only-*` = main's tree with `whatsapp-gateway/` reverted to the deployed commit.
@@ -33,6 +37,10 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
   **Check the CONTRACT before deploying backend-only**: does the *deployed* gateway support every param the
   new backend sends? `perChatLimit` was there; had it not been, the sweep would have seen 50 msgs/chat and
   silently persisted almost nothing. Unknown params are ignored, so a new one fails silently, not loudly.
+- **The persistence kill-switch opens ONLY on `true`/`1`** (3.8.5). `yes`/`on`/`y`/`t` are OFF in the app
+  (with a warning) and a hard RED in `persistence_flag_guard.py` (`flag_legacy_truthy_not_enabling`);
+  absence/empty/`banana`/typos are off and the gate denies. Both real env sources carry no such key today,
+  so the narrow list costs nothing operationally.
 - **Never run pytest on the dev DB** (some tests assert global row counts); `conftest` REFUSES a
   non-localhost `DATABASE_URL`. **`TEST_DB_PATH` alone is not enough** — `settings.DATABASE_URL` is what pytest
   connects to, so export BOTH or the suite silently runs on the stale repo `tezlify.db` (cost: 3 phantom
