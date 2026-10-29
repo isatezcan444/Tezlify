@@ -396,6 +396,19 @@ def test_host_release_requires_security_markers_in_itself():
     assert 'grep -q -- "$marker" "$SELF_FILE"' in src
 
 
+def test_bash_marker_loop_matches_python_required_markers():
+    """bash dongusu ile python listesi AYNI olmali.
+
+    Bash python sabitini import edemez, yani liste iki yerde durur. Iki
+    kopyanin zamanla ayrismasi bu depoda bir kez yasandi (uc etiket tablosu);
+    bu pin onu imkansiz kilar.
+    """
+    src = _host_src()
+    line = next(l for l in src.splitlines() if l.strip().startswith("for marker in"))
+    tokens = tuple(line.split("for marker in", 1)[1].split(";")[0].split())
+    assert tokens == tool.REQUIRED_MARKERS
+
+
 def test_host_release_records_script_identity_in_release_json():
     src = _host_src()
     assert '"deploy_script": {"path": "$HOST_RELEASE_REL", "blob": "$SELF_BLOB"' in src

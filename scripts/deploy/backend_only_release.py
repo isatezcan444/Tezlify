@@ -127,7 +127,11 @@ SECURITY_SCRIPTS = (
 # `host-release.sh` icinde ARANAN kablolama isaretleri. Tek kaynak
 # `script_version_guard.REQUIRED_MARKERS`; kopyalamak iki listenin zamanla
 # ayrismasi demek olurdu (bu depoda tam olarak bu hata bir kez yasandi).
-EXTRA_MARKERS = ("script_version_guard.py",)
+#
+# Buraya EKLENEN iki isaret betigin KENDI surum muhafizina aittir: hedef
+# `host-release.sh` bu kontrolu tasimiyorsa (3.8.4 ve oncesi), blob esitligi
+# tek basina yeterli kanit degildir.
+EXTRA_MARKERS = ("TARGET_SCRIPT_BLOB", "HOST_RELEASE_EXPECTED_BLOB")
 
 
 def _load_version_guard():
