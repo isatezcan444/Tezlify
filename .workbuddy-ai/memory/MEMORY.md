@@ -1,132 +1,98 @@
 # Tezlify — project index
 
-Index only. Detail is deliberately elsewhere — read the reference before acting.
+Index only. Every claim below has a measurement behind it; detail lives in `reference/`.
 
 | Where | What |
 | --- | --- |
-| `reference/whatsapp-subsystem-invariants.md` | Invariants **A–T** (the `A11`-style refs point here) |
-| `reference/production-ops.md` | Topology, deploy state, release mechanics, test baselines |
+| `reference/whatsapp-subsystem-invariants.md` | Invariants **A–T** (all `A11`-style refs point here) |
+| `reference/production-ops.md` | Topology, deploy state, release mechanics, 3.8.x narratives |
 | `reference/cross-cutting-rules.md` | Defect patterns **X1–X4** |
-| `YYYY-MM-DD.md` | Deploy narratives, timings, falsification evidence |
+| `YYYY-MM-DD.md` | Per-session narratives, timings, falsification evidence |
 
 ## Irreversible damage — read before acting
 
-- **Deleting a line is irreversible data loss, never a "disconnect".** `DELETE /sessions/{id}` cascades
-  (`all, delete-orphan`) to that line's conversations + messages, drops the `whatsapp_sessions` row and
-  deletes the gateway auth dir. Every conversation belongs to one line ⇒ deleting the only connected line
-  wipes the whole WhatsApp dataset.
-- **No backup covers WhatsApp conversations/messages** (`archive_mode=off`, no slots, no PITR; older dumps
-  are schema-only). Before promising a rollback, restore into a scratch DB and **count rows** — dump size
-  proves nothing.
-- **Deploy only via `scripts/deploy/host-release.sh`; never hand-reset `/opt/tezlify`.** Checkout is clean;
-  `.deployed-commit` is the authority. **Push is not deploy.** It force-recreates backend+gateway even with
-  `--skip-build` ⇒ use **`--no-gateway`** unless `whatsapp-gateway/` or a compose file changed (the flag
-  REFUSES, exit 1 — verified). A gateway recreate costs its in-memory store (A6). **The script that runs is
-  always the OLD one** — enforced since 3.8.5: `host-release.sh` compares its own `git hash-object` to
-  `<target>:scripts/deploy/host-release.sh` and **exits 9** if they differ, so run the target's copy via
-  `bash scripts/deploy/run_release.sh --expected-self-blob <blob> <ref> --no-gateway` (it extracts the
-  target's script + `script_version_guard.py`, verifies both blobs, pins itself). Measured: the deployed
-  `b5715fe` script has **0** kill-switch references and accepts the new ref with exit 0 — the hole was real.
-  Destructive added SQL exits **3** before any container starts (`migration_guard.py`).
-- **A refusing guard is not a blocker — build the ref it asks for.** `--no-gateway` compares
-  `deployed..TARGET`; while `main` carries gateway changes, backend-only is impossible. Do **not** weaken
-  it: cut `release/backend-only-*` = main's tree with `whatsapp-gateway/` reverted to the deployed commit.
-  Then `git diff --quiet <deployed> <ref> -- whatsapp-gateway/ docker-compose*.yml` exits 0 on its own
-  terms. Preflight: `python scripts/deploy/backend_only_release.py --base <deployed> --target <ref>`
-  (also catches a ref that forgot main's backend = silent regression, and an empty release).
-  **Check the CONTRACT before deploying backend-only**: does the *deployed* gateway support every param the
-  new backend sends? `perChatLimit` was there; had it not been, the sweep would have seen 50 msgs/chat and
-  silently persisted almost nothing. Unknown params are ignored, so a new one fails silently, not loudly.
-- **The persistence kill-switch opens ONLY on `true`/`1`** (3.8.5). `yes`/`on`/`y`/`t` are OFF in the app
-  (with a warning) and a hard RED in `persistence_flag_guard.py` (`flag_legacy_truthy_not_enabling`);
-  absence/empty/`banana`/typos are off and the gate denies. Both real env sources carry no such key today,
-  so the narrow list costs nothing operationally.
-- **Never run pytest on the dev DB** (some tests assert global row counts); `conftest` REFUSES a
-  non-localhost `DATABASE_URL`. **`TEST_DB_PATH` alone is not enough** — `settings.DATABASE_URL` is what pytest
-  connects to, so export BOTH or the suite silently runs on the stale repo `tezlify.db` (cost: 3 phantom
-  `leads.phone_e164` failures). `assert_test_db_matches_requested_path` now makes the mismatch a RuntimeError.
-- **Deploy ORDER is itself irreversible damage (Phase 3.6):** the gateway's RAM held **7337 messages that exist
-  nowhere else** across 40 chats (Phase 3.6b's corrected number; 3.6's "7080" was measured with
-  `per_chat_limit=50` and therefore only saw each chat's last 50 — never quote a gateway count taken under a
-  truncating cap). Gateway-before-backend = those messages are gone for good (A6).
-  Always: backend persistence first → verify `messages` count / `/health.whatsapp_memory_persistence` → gateway.
-  Any future gateway recreate must be justified against the RAM-only backlog, not just against uptime.
-- **A bounded turn without a cursor loses the tail silently** (Phase 3.6b). `max_pages * page_size` was 10 000
-  against 9 122 RAM messages; every turn restarted at `offset 0`, so once the total exceeded the cap the tail
-  could *never* be written — no error, `/health` green. Any paged drain needs a resume cursor, and the cursor
-  must not advance on `dry_run`.
-- **A deploy runs startup migrations that DELETE rows — "no migration files" does not mean "no schema/data
-  change"** (Phase 3.8.6, measured in production). The 3.8.5→3.8.6 release had **0** `*.sql`/alembic files and
-  `start.py` has no alembic call, yet `backend/app/core/migrations.py` runs on every boot and
-  `purge_raw_jid_identity_data` deleted **1 ghost LID contact + 1 conversation + 9 messages**
-  (`126|2077|1538` → `125|2068|1537`) during cutover. `migrations.py` was **byte-identical** to the deployed
-  base, so this was pre-existing behaviour, not new code — it only fired because no boot had occurred since the
-  ghost row appeared. **Before any deploy, read the candidate's own `migration-summary.txt`/`candidate.log` and
-  grep `migrations.py` for `delete(`**; the release script prints `ONCEDEN VAR OLAN mesaj kayboldu` as a
-  **warning and still exits 0** — a warning is not a gate. Deleted rows survive only in gateway RAM as
-  `CLASS_unmapped_jid`, where persistence **skips** them (no conversation) ⇒ a gateway recreate makes the loss
-  permanent. Rollback does not restore data: an image rollback is not a data rollback.
-- **A `let` re-declared inside a promise executor shadows the outer one** (Phase 3.6b: `pdoSent`). The timeout
-  log then reports `pdo_sent:false` no matter what actually happened — the diagnosis lies, silently.
-  Distinguish `PDO_NOT_SENT` / `WAITER_MISMATCH` / `NO_CHUNK`; one `TIMEOUT` label conflates two different bugs.
+- **Deleting a line is data loss, never a "disconnect".** `DELETE /sessions/{id}` cascades to that line's
+  conversations + messages and drops the gateway auth dir. Every conversation belongs to one line ⇒ deleting
+  the only connected line wipes everything.
+- **No backup covers WhatsApp conversations/messages** (`archive_mode=off`, no slots, no PITR). To promise a
+  rollback, restore into a scratch DB and **count rows** — dump size proves nothing.
+- **Deploy only via `scripts/deploy/host-release.sh`; never hand-reset `/opt/tezlify`.** `.deployed-commit` is
+  the authority. **Push is not deploy.** It force-recreates backend+gateway even with `--skip-build` ⇒ use
+  **`--no-gateway`** (REFUSES, exit 1, if gateway/compose changed). A gateway recreate costs its RAM store (A6).
+  **The script that runs is always the OLD one** — since 3.8.5 `host-release.sh` compares its own
+  `git hash-object` to `<target>:…/host-release.sh` and **exits 9** on mismatch. Run the target's copy:
+  `bash scripts/deploy/run_release.sh --expected-self-blob <blob> <ref> --no-gateway`. Measured: deployed
+  `b5715fe` had **0** kill-switch references and accepted a new ref at exit 0 — the hole was real.
+- **A refusing guard is not a blocker — build the ref it asks for.** `--no-gateway` compares `deployed..TARGET`;
+  while `main` carries gateway changes, backend-only is impossible. Never weaken it: cut
+  `release/backend-only-*` = main's tree with `whatsapp-gateway/` reverted to the deployed commit. Preflight:
+  `python scripts/deploy/backend_only_release.py --base <deployed> --target <ref>`. **Check the CONTRACT**: does
+  the *deployed* gateway support every param the new backend sends? Unknown params are ignored ⇒ silent failure.
+- **A deploy runs startup migrations that DELETE rows — "no migration files" ≠ "no data change"** (3.8.6,
+  measured). The 3.8.5→3.8.6 release had **0** `*.sql`/alembic files, yet `backend/app/core/migrations.py` runs
+  on every boot and deleted **1 ghost LID contact + 1 conversation + 9 messages** (`126|2077|1538` →
+  `125|2068|1537`). `migrations.py` was **byte-identical** to the base ⇒ pre-existing behaviour; it fired only
+  because no boot had occurred since the ghost row appeared. **Before any deploy, read the candidate's
+  `migration-summary.txt`/`candidate.log` and grep `migrations.py` for `delete(`** — the script prints
+  `ONCEDEN VAR OLAN mesaj kayboldu` as a **warning and still exits 0**; a warning is not a gate. Deleted rows
+  survive only in gateway RAM as `CLASS_unmapped_jid`, where persistence **skips** them ⇒ a gateway recreate
+  makes the loss permanent. An image rollback is not a data rollback.
+- **The persistence kill-switch opens ONLY on `true`/`1`** (3.8.5). `yes`/`on`/`y`/`t` are OFF in the app and a
+  hard RED in `persistence_flag_guard.py`; absence/empty/typos are off and denied.
+- **"No LID bridge" is not proof of a ghost — startup must never delete on it** (3.8.7). The old
+  `purge_raw_jid_identity_data` deleted every `contacts.phone_e164 LIKE 'jid:%@lid'` with no `lid_mappings` row,
+  **with no tenant filter**, and **failed OPEN**: if the bridge table was unreadable, `defer_clause` became
+  empty and *every* ghost was deleted. Now it deletes nothing — it writes `whatsapp_identity_quarantine`
+  (`bridge_known_deferred` / `bridge_unknown_has_messages` / `bridge_unknown_empty`) and returns
+  `deleted_* == 0` as a tested contract. The ledger is one row per `contact_id`, idempotent, carries `user_id`,
+  and **never overwrites an operator's `RELEASED`**. Release/delete is an explicit operator decision.
+- **Never run pytest on the dev DB**; `conftest` REFUSES a non-localhost `DATABASE_URL`. **`TEST_DB_PATH` alone
+  is not enough** — `settings.DATABASE_URL` is what pytest connects to, so export BOTH.
+- **Deploy ORDER is itself irreversible damage (3.6):** gateway RAM held **7337 messages that exist nowhere
+  else** (3.6b's corrected number; 3.6's "7080" came from `per_chat_limit=50` — never quote a gateway count
+  taken under a truncating cap). Gateway-before-backend = gone for good (A6). Always: backend persistence →
+  verify `messages` / `/health.whatsapp_memory_persistence` → gateway.
+- **A bounded turn without a cursor loses the tail silently** (3.6b): 10 000 cap against 9 122 RAM messages,
+  every turn restarting at `offset 0` ⇒ the tail could *never* be written, no error, `/health` green.
 
-## Invariants — the one-line tell each (detail in the reference)
+## Invariants — the highest-value tells (full list: A–T in the reference)
 
-- Chat-list order = the **absolute** last message, never the last *received* one (A4); coerce the uint64.
-- An **empty preview must never gate `last_message_at`** (A11) — independent decisions; the tell is the
-  asymmetry.
-- Text-less content gets a `[MARKER]` preview body, never a new `message_type` (A12); **three label tables
-  must stay in parity** (gateway / backend / frontend+locales).
-- Every gateway in-memory store is lost on restart and **not rebuilt** (A6).
-- **On-demand PDO failure is per-CHAT, never per-session** (Phase 3.6: same socket, 2 chats returned chunks in
-  1.8/2.2 s while 3 timed out). Diagnose with a control chat in the same probe batch, or you will "prove" a
-  session-wide cause that is false. **"PDO attempted" ≠ "phone returned"** — distinguish `pdo_sent` from
-  `chunk_received`, and never report a timeout as data-recovery success.
-- **If gateway RAM holds exactly what the DB holds, the gap is upstream, not persistence** (conv 38346: RAM == DB
-  == 4 messages ⇒ the phone never delivered the older ones). Check RAM before blaming the sync cap.
-- `GET /sessions/{sid}/contacts` is **not** a store health check (A8) — it reads 0 while hundreds exist.
-- A group known only from its subject has **no** timestamp (A13) — sorts last by design, not a bug.
-- **A LID bridge is keyed to the CONNECTION, never the person** (A14/T) — joining `ws.gateway_id` matched
-  **4 of 4107**; defer on `lid_jid` alone, take ownership from `contacts.user_id`, never guess.
-- `whatsapp_sessions` has exactly **one** writer (`promote_ephemeral_pairing`); a refusal is **409**, not 502.
-- Gateway owns the unread count **including decreases** (never `Math.max`, B). Message uniqueness
-  `(conversation_id, wa_message_id) WHERE NOT NULL` (D).
-- **Archive "unknown" must never be written as `false`** (K) — omit the key; only app-state carries it.
-- The first-load gate opens ONLY on the durable `initial_sync_completed_at` stamp, never `sync.phase ==
-  'ready'` (O).
-- **A guard keyed on "the page has rows" is DEAD for a page empty BY CONSTRUCTION** (P) — ask what the
-  *caller* holds. P's fix was REVERTED (`5c1c76d`), live at `e8a86ee`.
-- A preview is a summary string, never a message row (S); a missing row is `UNSYNCED` (R); a `LIMIT`
-  applied before filtering scans a prefix (Q). Delete-sync / identity / unread → M, N, Q.
+- Chat-list order = the **absolute** last message, never the last *received* (A4); coerce the uint64.
+- An **empty preview must never gate `last_message_at`** (A11) — the tell is the asymmetry.
+- Text-less content gets a `[MARKER]` preview body, never a new `message_type` (A12); **three label tables must
+  stay in parity** (gateway / backend / frontend+locales).
+- **A LID bridge is keyed to the CONNECTION, never the person** (A14/T) — joining `ws.gateway_id` matched **4 of
+  4107**; defer on `lid_jid` alone, take ownership from `contacts.user_id`, never guess.
+- **On-demand PDO failure is per-CHAT, never per-session** (3.6). **"PDO attempted" ≠ "phone returned"** —
+  distinguish `pdo_sent` from `chunk_received`. **If RAM holds exactly what the DB holds, the gap is upstream.**
+- **A guard keyed on "the page has rows" is DEAD for a page empty BY CONSTRUCTION** (P) — ask what the *caller*
+  holds. P's fix was REVERTED (`5c1c76d`), live at `e8a86ee`.
+- A preview is a summary string, never a message row (S); a missing row is `UNSYNCED` (R); a `LIMIT` applied
+  before filtering scans a prefix (Q). `GET /sessions/{sid}/contacts` is **not** a store health check (A8).
 
 ## Cross-cutting
 
-- Identity: `resolve_contact_identity` owns names; REST/WS fields match (never `lead_phone`); sort by
-  activity only.
+- Identity: `resolve_contact_identity` owns names; REST/WS fields match (never `lead_phone`); sort by activity only.
 - **An exported-but-never-called guard is a dead guard** — grep the call site before trusting it.
-- **A parity check between two mirrors cannot detect something missing from both** — derive the required
-  set from the **consumer** (`t('...')` call sites).
-- **Two writers on one unique key: the loser must ADOPT.** If only one has the try/except, that other
-  writer is the bug.
+- **A parity check between two mirrors cannot detect something missing from both** — derive the required set from
+  the **consumer**.
+- **Two writers on one unique key: the loser must ADOPT.** If only one has the try/except, that writer is the bug.
 - **A process-global cache/flag must be keyed by the RESOURCE**, not a coarse family label.
-- X1–X4 → `reference/cross-cutting-rules.md`.
 
 ## Ops quick hits — full detail in `production-ops.md`
 
-- PostgreSQL via `docker exec tezlify-db psql -U tezlify -d tezlify`; the repo-root `tezlify.db` is stale.
-  The gateway container has no `curl` (probe with `node`); run API probes **from the production host**.
+- PostgreSQL via `docker exec tezlify-db psql -U tezlify -d tezlify`; the repo-root `tezlify.db` is stale. The
+  gateway container has no `curl` (probe with `node`); run API probes **from the production host**.
 - **`db` is in NO compose file** ⇒ never `up -d --remove-orphans` (it would delete the database).
-- **`pytest-randomly` is installed** — a new module-global cache, or a cleanup helper that can raise,
-  reintroduces order-dependence. Re-check with `-p no:randomly` **and** the file alone.
-- **Falsify before trusting** (`scoped-stash-falsification`). Parallel `Edit` on one file clobbers.
+- **`pytest-randomly` is installed** — a new module-global cache, or a cleanup helper that can raise, reintroduces
+  order-dependence. Re-check with `-p no:randomly` **and** the file alone.
 - Never `docker logs` for the Ops tail — truncating a json-file WEDGES the reader; rotate, never clear.
-- `event_outbox` DEAD_LETTER is purged after **48 h** (`postgres-event-outbox.js::cleanup()`); an operator
-  replay must happen inside that window or the encrypted payload is gone.
-- Initial sync persists only the newest **50/chat** (`_SYNC_PER_CHAT_LIMIT`); older history lives only in
-  gateway memory (A6) ⇒ a restart makes it unreachable unless the on-demand PDO answers.
+- Initial sync persists only the newest **50/chat** (`_SYNC_PER_CHAT_LIMIT`); older history lives only in gateway
+  memory (A6) ⇒ a restart makes it unreachable unless the on-demand PDO answers.
+- Host `grep "a\|b"` returns empty in this shell (alternation artifact) — use the Grep tool or single patterns.
 
 ## Skills
 
-Reusable procedures live as skills — **each skill's own `description` is the authority**, never a copy
-here. Load the matching one before improvising: deploy/release, falsification, frontend verification,
-latency parity, schema migrations, dead guards, tenant isolation, test harnesses.
+Each skill's own `description` is the authority, never a copy here. Load the matching one before improvising:
+deploy/release, falsification, frontend verification, latency parity, schema migrations, dead guards, tenant
+isolation, test harnesses.
