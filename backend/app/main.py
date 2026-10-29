@@ -401,7 +401,9 @@ async def lifespan(app: FastAPI):
     # yapıldığı için "7080 / 16 sohbet" diye eksik raporlanmıştı.)
     # Bu iş WhatsApp'a soru sormaz — yalnızca gateway'in elindekini yazar.
     memory_persist_task: Optional[asyncio.Task] = None
-    if getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", True):
+    # Varsayılan `False` (Faz 3.8.1): flag taşınmayan bir ortamda süpürme
+    # KENDİLİĞİNDEN başlamamalıdır. Açmak açık bir `true` gerektirir.
+    if getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", False):
         try:
             from backend.app.services.whatsapp.memory_persistence import (
                 memory_persistence_loop,
@@ -432,7 +434,10 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001 - açılışı engellememeli
             logger.warning("[MEMORY-PERSIST] başlatılamadı: %s", exc)
     else:
-        logger.info("[MEMORY-PERSIST] kapalı (kill-switch).")
+        logger.info(
+            "[MEMORY-PERSIST] kapalı (flag yok veya false; fail-closed). "
+            "Açmak için WHATSAPP_MEMORY_PERSIST_ENABLED=true gerekir."
+        )
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()

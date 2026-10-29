@@ -1,3 +1,4 @@
+import logging
 from typing import List, Optional, Union
 
 from pydantic import Field, field_validator
@@ -200,11 +201,14 @@ class Settings(BaseSettings):
     # Bu iş WhatsApp'a HİÇBİR ŞEY sormaz (PDO yok): yalnızca gateway'in zaten
     # elinde tuttuğu kayıtları mevcut ingest yolundan DB'ye yazar.
     #
-    # DİKKAT — varsayılan AÇIK. Backend deploy edildiği anda süpürme açılıştan
-    # ~90 sn sonra KENDİLİĞİNDEN başlar. Kontrollü ilk tur için deploy'u
-    # `WHATSAPP_MEMORY_PERSIST_ENABLED=false` ile yapın (bkz. docs/audits
-    # phase3.7 runbook), `dry_run` ile doğrulayın, sonra açın.
-    WHATSAPP_MEMORY_PERSIST_ENABLED: bool = True
+    # DİKKAT — varsayılan KAPALI (Faz 3.8.1'de AÇIK'tan çevrildi).
+    #
+    # NEDEN ÇEVRİLDİ: varsayılan açıkken, flag'i hiç taşımayan bir ortamda
+    # (aday container canlı container'ın env'ini devralır ve `.env.production`
+    # bu anahtarı içermiyordu) backend açılıştan ~90 sn sonra süpürmeyi
+    # KENDİLİĞİNDEN başlatıyordu. "Yokluk" bir güvenlik kararı değildir; bu
+    # yüzden yokluk artık "kapalı" demektir. Açmak AÇIK bir `true` gerektirir.
+    WHATSAPP_MEMORY_PERSIST_ENABLED: bool = False
     WHATSAPP_MEMORY_PERSIST_INTERVAL_SECONDS: int = 300
     WHATSAPP_MEMORY_PERSIST_INITIAL_DELAY_SECONDS: int = 90
     # Tek turda okunacak azami sayfa ve sayfa boyu → tur başına üst sınır
@@ -214,6 +218,33 @@ class Settings(BaseSettings):
     # Gateway'in sohbet başına döndüreceği azami mesaj. `_SYNC_PER_CHAT_LIMIT`
     # (50) bilerek AŞILIR: bu iş tam olarak o tavanın dışında kalanları yazar.
     WHATSAPP_MEMORY_PERSIST_PER_CHAT_LIMIT: int = 2000
+
+    @field_validator("WHATSAPP_MEMORY_PERSIST_ENABLED", mode="before")
+    @classmethod
+    def _memory_persist_fail_closed(cls, value: object) -> bool:
+        """Yalnızca AÇIKÇA tanınan bir "true" değeri süpürmeyi açar.
+
+        Pydantic'in kendi bool çözümlemesi `truely` / `evet` / `2` gibi
+        değerlerde `ValidationError` fırlatır ve bu, uygulamanın TAMAMININ
+        açılmaması demektir. İstenen bu değil: istenen, *süpürmenin*
+        başlamaması. Bu yüzden çözülemeyen her değer `False`a düşürülür ve
+        tek satır uyarı bırakılır — servis ayakta kalır, yazma başlamaz.
+        """
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().strip('"').strip("'").strip().lower()
+        if text in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if text in {"0", "false", "no", "off", "n", "f", ""}:
+            return False
+
+        logging.getLogger(__name__).warning(
+            "WHATSAPP_MEMORY_PERSIST_ENABLED çözülemedi; güvenli tarafta "
+            "KAPALI kabul edildi (fail-closed)."
+        )
+        return False
 
 
 settings = Settings()

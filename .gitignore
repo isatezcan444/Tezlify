@@ -55,3 +55,7 @@ monitoring/*.json
 logs/
 runtime/
 uploads/
+
+# Phase artefact snapshots (identity-hashed, reproducible; ~400 KB each).
+# Evidence that must be durable belongs in docs/audits/, not here.
+.workbuddy-ai/artifacts/

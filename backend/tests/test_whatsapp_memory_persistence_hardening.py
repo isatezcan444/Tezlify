@@ -39,6 +39,19 @@ def jid_of(tag: str) -> str:
     return f"9055{tag}@s.whatsapp.net"
 
 
+@pytest.fixture(autouse=True)
+def _enable_memory_persistence(monkeypatch):
+    """Süpürme artık VARSAYILAN OLARAK KAPALI (Faz 3.8.1, fail-closed).
+
+    Bu dosya süpürmenin DAVRANIŞINI test eder, bu yüzden flag'i açıkça açar.
+    Varsayılanın kapalı olduğu ayrı bir testle (`test_flag_absent_means_off`)
+    pinlenir; burada varsayılana güvenilmez.
+    """
+    monkeypatch.setattr(
+        settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", True, raising=False
+    )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_state():
     async def _wipe():

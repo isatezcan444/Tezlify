@@ -10,17 +10,28 @@ hale gelir. On-demand PDO bunu kurtarabilirdi, ama PDO her sohbet için cevap
 vermiyor (Faz 3.6 ölçümü: 4 sohbetten 1'i 1.8 sn'de döndü, 3'ü 8 sn'de
 zaman aşımına düştü). Yani "bellek kaybı" fiilen "kalıcı veri kaybı" olabilir.
 
-Canlı ölçüm (2026-10-28, üretim, salt okunur; KİMLİK üzerinden, sayaçla değil):
-    gateway RAM'inde 9122 mesaj (9122'sinin de geçerli kimliği var, 0 kopya)
-    bunların 7336'sı DB'de YOK (40 sohbet)
-    DB'de toplam 1786 mesaj — hepsi RAM'de ve DOĞRU sohbetin altında (DB ⊆ RAM)
+Canlı ölçüm (2026-10-29, üretim, salt okunur; KİMLİK üzerinden, sayaçla değil):
+    gateway RAM'inde 9130 mesaj (hepsinin geçerli kimliği var, 0 kopya)
+    bunların 7243'ü DB'de YOK (40 sohbet)
+    DB'de toplam 1887 mesaj — hepsi RAM'de ve DOĞRU sohbetin altında (DB ⊆ RAM)
+
+BU SAYI ZAMANLA KÜÇÜLÜR VE KÜÇÜLMESİ İYİ HABER DEĞİLDİR. Gateway, sohbet
+başına 2000 mesajı aştığında EN ESKİLERİ sessizce atar
+(`socket-events.js` — canlı upsert ve history sync). Atılan mesaj DB'de yoksa
+kalıcı olarak kaybolur; dolayısıyla "RAM-only fark azaldı" tek başına ilerleme
+kanıtı değildir. 2026-10-29'da 7336 → 7243 düşüşünün baskın nedeni buydu:
+`conv 38291` 2000'de sabitken 28 gelen mesaj aldı, yani 28 eski mesaj atıldı.
+Doğru doğrulama `scripts/diagnostics/audit_memory_gap.py --snapshot/--compare`
+ile KİMLİK karşılaştırmasıdır; sayı karşılaştırması değildir.
 
 DİKKAT — bu sayı bir kez yanlış raporlandı: ilk ölçüm gateway'e
 `perChatLimit=50` ile sorulduğu için sohbet başına yalnızca son 50 mesajı
 görüyordu ve "7080 / 16 sohbet" gibi eksik bir sonuç verdi. Bu bir veri
-değişimi değil, ÖLÇÜM DERİNLİĞİ hatasıydı. Doğru ölçüm `perChatLimit=2000`
-(gateway'in kendi tavanı) ve kimlik kümesi karşılaştırmasıdır:
-`scripts/diagnostics/audit_memory_gap.py`.
+değişimi değil, ÖLÇÜM DERİNLİĞİ hatasıydı. Doğru ölçüm, kimlik kümesi
+karşılaştırmasıdır: `scripts/diagnostics/audit_memory_gap.py`. (Not:
+`perChatLimit`i 2000'in üzerine çıkarmak sonucu DEĞİŞTİRMEZ — gateway'in
+`listAllMessages`'ı sohbet başına ayrıca sınırlamaz; 2000 tavanı depoya
+yazılırken uygulanır. 2026-10-29'da 2000 ve 100000 ile aynı sonuç alındı.)
 
 ÇÖZÜM
 -----
@@ -129,6 +140,14 @@ def memory_persistence_status() -> Dict[str, Any]:
     cursors = snapshot.pop("cursors", None) or {}
     snapshot["cursor_count"] = len(cursors)
     snapshot["max_cursor_offset"] = max(cursors.values()) if cursors else 0
+    # Etkin yapılandırma değeri. Deploy doğrulaması `_STATE["enabled"]`e
+    # GÜVENEMEZ: o alan yalnızca bir tur koştuktan sonra dolar ve `None`
+    # "hiç koşmadı" ile "kapalı" arasında ayrım yapmaz. Çalışan container'ın
+    # gerçekten hangi değerle açıldığını gösteren tek alan budur.
+    snapshot["config_enabled"] = bool(
+        getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", False)
+    )
+    snapshot["task_running"] = bool(_STATE.get("enabled"))
     return snapshot
 
 
@@ -434,7 +453,7 @@ async def run_memory_persistence_once(
     # Kill-switch BURADA da kontrol edilir, yalnızca lifespan'de değil.
     # Aksi halde "kapalı" denilen bir özellik, elle/CLI ile çağrılan bir turda
     # yazmaya devam ederdi — ve bu, kapatma kararını anlamsız kılardı.
-    if not getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", True):
+    if not getattr(settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", False):
         _STATE["enabled"] = False
         logger.info("[memory-persist] kapalı (kill-switch); tur atlandı.")
         return []

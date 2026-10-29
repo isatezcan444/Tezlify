@@ -219,3 +219,192 @@ def test_tool_contains_no_write_statements():
         "execute(text(\"DROP",
     ]:
         assert forbidden not in src, f"betik yaziyor olabilir: {forbidden}"
+
+
+# ---------------------------------------------------------------------------
+# Faz 3.8.1 — adlandirilmis siniflar
+# ---------------------------------------------------------------------------
+def test_named_classes_are_aliases_of_the_same_counts():
+    """Yeni adlar YENI bir hesap degil: ayni sayilarin okunur adi."""
+    out = run([msg(PN, "W1")], db_by_conv={})
+    assert out["IDENTITY_MATCH"] == out["CLASS_present_correct_conv"]
+    assert out["RAM_ONLY"] == out["CLASS_genuinely_missing"]
+    assert out["CHAT_MISMATCH"] == out["CLASS_present_other_conv"]
+    assert out["TENANT_MISMATCH"] == out["CLASS_present_other_tenant"]
+    assert out["DUPLICATE_IDENTITY"] == out["ram_duplicate_id_rows"]
+    assert out["UNRESOLVED_IDENTITY"] == (
+        out["CLASS_unmapped_jid"] + out["ram_rows_without_id"]
+    )
+
+
+def test_unresolved_splits_unmapped_from_idless():
+    """Iki farkli 'eslenemedi' nedeni ayri raporlanmali."""
+    out = run([msg("999999@lid", "W1"), msg(PN, None)], jid_map={PN: 1})
+    assert out["UNRESOLVED_UNMAPPED_JID"] == 1
+    assert out["UNRESOLVED_ROWS_WITHOUT_ID"] == 1
+    assert out["UNRESOLVED_IDENTITY"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Faz 3.8.1 — kimlik token'lari
+# ---------------------------------------------------------------------------
+def test_identity_token_is_stable_and_not_the_raw_id():
+    a = tool.identity_token("WAMID-ABC")
+    b = tool.identity_token("WAMID-ABC")
+    assert a == b, "ayni kimlik iki snapshot'ta ayni token'i uretmeli"
+    assert "WAMID-ABC" not in a, "ham kimlik diske yazilmamali"
+    assert len(a) == 32
+
+
+def test_identity_token_separates_different_ids():
+    assert tool.identity_token("A") != tool.identity_token("B")
+
+
+# ---------------------------------------------------------------------------
+# Faz 3.8.1 — snapshot karsilastirmasi
+# ---------------------------------------------------------------------------
+def snap(ram=None, db=None, missing=0, **extra):
+    payload = {
+        "schema": 2,
+        "ram": ram or {},
+        "db": db or {},
+        "CLASS_genuinely_missing": missing,
+    }
+    payload.update(extra)
+    return payload
+
+
+def test_compare_inconclusive_when_snapshot_has_no_identities():
+    """Sayi tasiyan eski snapshot: 'eksik azaldi' BASARI SAYILMAZ."""
+    verdict = tool.compare_snapshots({"CLASS_genuinely_missing": 7336}, {"CLASS_genuinely_missing": 0})
+    assert verdict["verdict"] == "INCONCLUSIVE"
+    assert verdict["reason"] == "snapshot_kimlik_kumesi_yok"
+    assert tool.exit_code_for(verdict) == 4
+
+
+def test_compare_aggregate_opt_in_keeps_legacy_behaviour():
+    """Bilincli istisna: eski davranis hala mumkun, ama ADI konarak."""
+    verdict = tool.compare_snapshots(
+        {"CLASS_genuinely_missing": 10}, {"CLASS_genuinely_missing": 5}, allow_aggregate=True
+    )
+    assert verdict["verdict"] == "OK"
+    assert verdict["reason"] == "aggregate_only_explicitly_allowed"
+
+
+def test_compare_ok_when_identity_present_and_nothing_lost():
+    verdict = tool.compare_snapshots(
+        snap(ram={"1": ["aaa", "bbb"]}, db={"1": ["aaa"]}, missing=1),
+        snap(ram={"1": ["aaa", "bbb"]}, db={"1": ["aaa", "bbb"]}, missing=0),
+    )
+    assert verdict["verdict"] == "OK", verdict
+    assert tool.exit_code_for(verdict) == 0
+
+
+def test_compare_flags_possible_eviction():
+    """Onceki RAM'de olup simdi NE RAM'de NE DB'de olan kimlik = kayip."""
+    verdict = tool.compare_snapshots(
+        snap(ram={"1": ["aaa", "bbb"]}, db={"1": []}, missing=2),
+        snap(ram={"1": ["bbb", "ccc"]}, db={"1": []}, missing=1),
+    )
+    assert verdict["verdict"] == "VIOLATION"
+    assert verdict["possible_eviction"]["count"] == 1
+    assert verdict["possible_eviction"]["by_conversation"][0]["conv"] == "1"
+    assert tool.exit_code_for(verdict) == 3
+
+
+def test_compare_does_not_call_persistence_an_eviction():
+    """RAM'den cikip DB'ye GIREN kimlik kayip degildir."""
+    verdict = tool.compare_snapshots(
+        snap(ram={"1": ["aaa"]}, db={"1": []}, missing=1),
+        snap(ram={"1": []}, db={"1": ["aaa"]}, missing=0),
+    )
+    assert verdict["verdict"] == "OK", verdict
+    assert verdict["possible_eviction"] == {}
+
+
+def test_idless_rows_do_not_cause_false_eviction():
+    """Kimliksiz satirin token'i bos string'dir; kimlik sayilmamali.
+
+    Sayilsaydi, iki farkli kimliksiz satir "ayni kimlik" gibi gorunur ve
+    biri kayboldugunda sahte bir POSSIBLE_EVICTION uretirdi.
+    """
+    verdict = tool.compare_snapshots(
+        snap(ram={"__noid__": [""], "1": ["aaa"]}),
+        snap(ram={"1": ["aaa"]}),
+    )
+    assert verdict["verdict"] == "OK", verdict
+
+
+def test_compare_flags_db_identity_loss():
+    verdict = tool.compare_snapshots(
+        snap(ram={"1": ["aaa"]}, db={"1": ["aaa", "zzz"]}),
+        snap(ram={"1": ["aaa"]}, db={"1": ["aaa"]}),
+    )
+    assert verdict["verdict"] == "VIOLATION"
+    assert verdict["db_identities_lost"] == 1
+
+
+def test_compare_still_flags_tenant_leak_with_identity():
+    verdict = tool.compare_snapshots(
+        snap(ram={"1": ["aaa"]}),
+        snap(ram={"1": ["aaa"]}, CLASS_present_other_tenant=1),
+    )
+    assert verdict["verdict"] == "VIOLATION"
+    assert any("baska tenant" in p for p in verdict["problems"])
+
+
+def test_compare_still_flags_duplicate_identity():
+    verdict = tool.compare_snapshots(
+        snap(ram={"1": ["aaa"]}),
+        snap(ram={"1": ["aaa"]}, ram_duplicate_id_rows=2),
+    )
+    assert verdict["verdict"] == "VIOLATION"
+    assert any("birden fazla" in p for p in verdict["problems"])
+
+
+def test_compare_flags_increase_even_with_identity():
+    verdict = tool.compare_snapshots(
+        snap(ram={"1": ["aaa"]}, missing=1),
+        snap(ram={"1": ["aaa", "bbb"]}, missing=2),
+    )
+    assert verdict["verdict"] == "VIOLATION"
+    assert any("ARTTI" in p for p in verdict["problems"])
+
+
+def test_legacy_compare_still_returns_a_list():
+    """Eski cagiranlar kirilmasin: `compare` hala ihlal LISTESI dondurur."""
+    assert tool.compare({"CLASS_genuinely_missing": 7337}, {"CLASS_genuinely_missing": 0}) == []
+    problems = tool.compare({"CLASS_genuinely_missing": 1}, {"CLASS_genuinely_missing": 2})
+    assert isinstance(problems, list) and "ARTTI" in problems[0]
+
+
+# ---------------------------------------------------------------------------
+# Faz 3.8.1 — snapshot dosyasi PII tasimaz
+# ---------------------------------------------------------------------------
+def test_write_snapshot_to_stdout_is_valid_json(capsys):
+    """`--snapshot -`: stdout yalnizca JSON olmali (yoksa `> s.json` bozulur)."""
+    import json
+
+    identity = {"ram": {"1": [tool.identity_token("X")]}, "db": {}}
+    tool.write_snapshot("-", {"captured_at": "t", "session_id": 1}, identity)
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["schema"] == tool.SNAPSHOT_SCHEMA
+    assert payload["ram"]["1"] == identity["ram"]["1"]
+
+
+def test_write_snapshot_stores_hashes_not_raw_ids(tmp_path):
+    import json
+
+    identity = {
+        "ram": {"1": [tool.identity_token("RAW-WAMID-1")]},
+        "db": {"1": [tool.identity_token("RAW-WAMID-2")]},
+    }
+    result = {"captured_at": "2026-10-29T00:00:00Z", "session_id": 201, "RAM_ONLY": 1}
+    out = tmp_path / "snap.json"
+    tool.write_snapshot(str(out), result, identity)
+    text = out.read_text(encoding="utf-8")
+    assert "RAW-WAMID" not in text, "ham mesaj kimligi diske yazilmamali"
+    payload = json.loads(text)
+    assert payload["schema"] == tool.SNAPSHOT_SCHEMA
+    assert payload["ram"]["1"] == identity["ram"]["1"]

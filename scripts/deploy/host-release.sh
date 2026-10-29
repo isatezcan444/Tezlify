@@ -320,6 +320,19 @@ wait_healthy() {
   return 1
 }
 
+# Calisan backend'in ETKIN kalicilastirma ayari ("true" / "false" / "unknown").
+#
+# Neden `/health` ve neden container: `.env.production` "ne yazildi" sorusunu
+# cevaplar; bu ise "ne ile acildi" sorusunu. Ikisi farkli olabilir — compose
+# `environment:` blogu env_file'i ezebilir, ya da deger cozulemeyip
+# fail-closed'a dusmus olabilir. Karar ayakta olan surece dayanmalidir.
+persist_flag_effective() {
+  docker exec "tezlify-$BACKEND_SERVICE" \
+    curl -fsS --max-time 5 "http://127.0.0.1:8000/health" 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(str(d.get("whatsapp_memory_persistence",{}).get("config_enabled")).lower())' 2>/dev/null \
+    || echo "unknown"
+}
+
 # ---------------------------------------------------------------------------
 # Veri butunlugu probu — SALT OKUNUR
 # ---------------------------------------------------------------------------
@@ -545,6 +558,26 @@ else
   WATERMARK_PY=""
 fi
 
+# Kalicilastirma kill-switch muhafizi. Asama 3.8'de olculen hata: adacik
+# container'i CANLI container'in env'ini devraliyor, `.env.production`yu
+# degil; flag orada yoksa ve kodun varsayilani `True` ise adacik izole DB
+# uzerinde dahi otomatik supurmeyi baslatiyordu. Karar mantigi tek bir saf
+# fonksiyonda (`persistence_flag_guard.py`) durur ki test edilebilsin.
+#
+# Bu muhafiz ATLANMAZ: bulunamazsa deploy REDDEDILIR. Bir guvenlik kapisini
+# "bulunamadi" diye gecmek, kapinin olmamasindan daha kotudur.
+PERSIST_GUARD_PY="/tmp/tezlify-persist-flag-guard-$TS.py"
+if git show "$TARGET_FULL:scripts/deploy/persistence_flag_guard.py" > "$PERSIST_GUARD_PY" 2>/dev/null \
+    && [ -s "$PERSIST_GUARD_PY" ]; then
+  :
+elif [ -f "$PROJECT_DIR/scripts/deploy/persistence_flag_guard.py" ]; then
+  PERSIST_GUARD_PY="$PROJECT_DIR/scripts/deploy/persistence_flag_guard.py"
+  log "UYARI: persistence_flag_guard.py hedef commit'te yok; calisma agacindaki kopya kullaniliyor"
+else
+  PERSIST_GUARD_PY=""
+  die "persistence_flag_guard.py bulunamadi; kalicilastirma kill-switch'i KANITLANAMAZ (deploy yapilmadi)"
+fi
+
 if [ -z "$GUARD_PY" ]; then
   MIGRATION_GUARD_RESULT="skipped_no_guard"  log "UYARI: migration muhafizi ATLANDI — migration_guard.py bulunamadi"
 elif [ -z "$PREV_DEPLOYED" ]; then
@@ -708,10 +741,32 @@ CAND_DB_BEFORE="$(db_counts_for "$CANDIDATE_DB")"
 printf '%s\n' "$CAND_DB_BEFORE" > "$RELEASE_DIR/candidate-db-counts-before.txt"
 log "adacik IZOLE DB: $CANDIDATE_DB — uretim '$DB_NAME'e DOKUNULMUYOR (kopya sayimi=${CAND_DB_BEFORE})"
 
+# --- Kalicilastirma kill-switch: adacikta ACIKCA kapali ---------------------
+# Adacigin env'i CANLI container'dan kopyalandigi icin flag orada YOKTUR.
+# Varsayilana guvenmek yetmez: adacik, izole DB uzerinde bile olsa, kendi
+# kendine mesaj yazmaya baslamamalidir. Bu yuzden deger ACIKCA yazilir,
+# sonra yazildigi DOGRULANIR (yazmak ile yazildigini sanmak ayni sey degil).
+cp "$CANDIDATE_ENV_FILE" "${CANDIDATE_ENV_FILE}.bak"
+grep -v '^WHATSAPP_MEMORY_PERSIST_ENABLED=' "${CANDIDATE_ENV_FILE}.bak" \
+  > "$CANDIDATE_ENV_FILE" || true
+if [ ! -s "$CANDIDATE_ENV_FILE" ]; then
+  # Filtre dosyayi bosalttiysa adacigi env'siz baslatmak, flag'i duzeltmekten
+  # daha kotu bir ariza olurdu. Sessizce devam etme.
+  rm -f "${CANDIDATE_ENV_FILE}.bak"
+  die "adacik env dosyasi filtreleme sonrasi BOSALDI; adacik BASLATILMADI"
+fi
+printf 'WHATSAPP_MEMORY_PERSIST_ENABLED=false\n' >> "$CANDIDATE_ENV_FILE"
+rm -f "${CANDIDATE_ENV_FILE}.bak"
+if ! python3 "$PERSIST_GUARD_PY" --env-file "$CANDIDATE_ENV_FILE" --require-explicit-false; then
+  die "adacik env'inde kalicilastirma ACIKCA kapali degil; adacik BASLATILMADI"
+fi
+log "adacik kalicilastirma kill-switch: ACIKCA kapali (dogrulandi)"
+
 docker run -d --name "$CANDIDATE_NAME" \
   --network "$NETWORK" \
   --env-file "$CANDIDATE_ENV_FILE" \
   -e PORT=8001 \
+  -e WHATSAPP_MEMORY_PERSIST_ENABLED=false \
   -e GATEWAY_ENCRYPTION_KEY= \
   -e SKIP_JOB_RECOVERY=true \
   -e WHATSAPP_GATEWAY_URL="http://gateway:8787" \
@@ -822,6 +877,20 @@ DEPLOY_FLAG="/opt/tezlify/runtime/deploy_in_progress"
 mkdir -p /opt/tezlify/runtime
 touch "$DEPLOY_FLAG"
 
+# --- CUTOVER ONCESI: uretim env'inde kalicilastirma KAPALI mi? --------------
+# Bu kontrol cutover'dan ONCE kosar: amac, yanlis bir flag ile uretime gecip
+# 90 saniye sonra kendiliginden mesaj yazmaya baslamak degil, hic gecmemek.
+# Backend'in env'i `env_file: .env.production`dan gelir; flag orada yoksa
+# "yokluk = kapali" (kod varsayilani false) kabul edilir.
+ENV_PROD_FILE="$PROJECT_DIR/.env.production"
+if [ -f "$ENV_PROD_FILE" ]; then
+  if ! python3 "$PERSIST_GUARD_PY" --env-file "$ENV_PROD_FILE"; then
+    die "uretim .env.production kalicilastirmayi KAPATMIYOR; cutover YAPILMADI"
+  fi
+else
+  log "UYARI: .env.production yok; flag yoklugu 'kapali' sayilir (kod varsayilani false)"
+fi
+
 log "cutover: compose up -d --force-recreate ${CUTOVER_SERVICES[*]}"
 docker compose -f "$COMPOSE_FILE" up -d --force-recreate "${CUTOVER_SERVICES[@]}"
 if ! wait_healthy tezlify-backend 8000 180; then
@@ -830,6 +899,16 @@ if ! wait_healthy tezlify-backend 8000 180; then
 fi
 rm -f "$DEPLOY_FLAG"
 log "yeni backend saglikli"
+
+# --- CUTOVER SONRASI: CALISAN container'in ETKIN degeri ---------------------
+# Savunma derinligi: cutover oncesi kontrol `.env.production`ya bakti, ama
+# gercek deger compose `environment:` blogundan da gelebilir. Burada ayakta
+# olan surec sorgulanir; "unknown" da BASARISIZLIK sayilir (fail-closed).
+EFFECTIVE_PERSIST="$(persist_flag_effective)"
+if [ "$EFFECTIVE_PERSIST" != "false" ]; then
+  die "cutover sonrasi ETKIN kalicilastirma degeri '$EFFECTIVE_PERSIST' (false bekleniyordu); mesaj yazma riski"
+fi
+log "cutover dogrulandi: kalicilastirma ETKIN olarak kapali (/health)"
 
 # Cutover'in gercekten YENI imaji calistirdigini kanitla: imaj kimligi
 # kayittaki ile ayni degilse "deploy oldu" demek yanlis olur.
