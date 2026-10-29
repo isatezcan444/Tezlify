@@ -33,31 +33,6 @@ export function boundMessagesByChat(store, currentKey) {
   }
 }
 
-/**
- * Total messages currently held in the in-memory `messagesByChat` map.
- *
- * `session.sync.messages_cached` is a per-chunk counter, and `connection.open`
- * replaces `session.sync` with an object that has NO `messages_cached` key.
- * The map, however, survives a socket reconnect (it lives on the session, not
- * the socket), so after a reconnect the real cache is non-empty while
- * `sync.messages_cached` is `undefined`. The serializer's fallback used to read
- * `store.messages` — a property `createSessionStore` never defines — so the
- * fallback was a permanent no-op and the health endpoint reported
- * `messages_cached: 0` with thousands of messages actually cached.
- *
- * Reading the map is the only way to make that metric truthful. It is O(chats)
- * (bounded by `MESSAGES_BY_CHAT_MAX_CHATS`), so it is safe to call per request.
- */
-export function countCachedMessages(store) {
-  const byChat = store?.messagesByChat;
-  if (!byChat || typeof byChat.values !== 'function') return 0;
-  let total = 0;
-  for (const list of byChat.values()) {
-    if (Array.isArray(list)) total += list.length;
-  }
-  return total;
-}
-
 const CONTACTS_MUTATORS = new Set(['set', 'delete', 'clear']);
 
 function instrumentContacts(map, onChange) {
