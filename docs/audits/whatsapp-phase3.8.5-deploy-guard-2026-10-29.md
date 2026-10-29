@@ -267,7 +267,7 @@ Push **yalnızca** yeni ref için yapıldı: `PUSH_EXIT=0`, `origin` üzerinde
 
 ---
 
-## 9. Üretim değişmezliği (§7) — başlangıç 16:34:56Z / bitiş 16:53:03Z
+## 9. Üretim değişmezliği (§7) — başlangıç 16:34:56Z / bitiş 16:53:03Z ve 17:00:03Z
 
 | Container | ID | StartedAt | RestartCount |
 |---|---|---|---|
@@ -279,13 +279,13 @@ Push **yalnızca** yeni ref için yapıldı: `PUSH_EXIT=0`, `origin` üzerinde
 Dört container da **birebir aynı** ID ve `StartedAt`; restart sayacı 0. `.deployed-commit` =
 `b5715fe`, `HEAD` = `b5715fe`, `git status --porcelain` **0 satır**.
 
-| Ölçüm | Başlangıç | Bitiş | Yorum |
-|---|---|---|---|
-| `conversations` | 125 | 125 | aynı |
-| `messages` | 2046 | **2054** | +8 — **canlı ingest** (13:02→15:13 arasında da +51 olmuştu); sweep yayında yok |
-| `contacts` | 1537 | 1537 | aynı |
-| Oturum 201 | `CONNECTED` | `CONNECTED` | aynı |
-| RAM yedeği (4 dosya) | `0600`, 7.100.080 B | aynı | dokunulmadı |
+| Ölçüm | 16:34:56Z | 16:53:03Z | 17:00:03Z | Yorum |
+|---|---|---|---|---|
+| `conversations` | 125 | 125 | 125 | aynı |
+| `messages` | 2046 | 2054 | **2060** | +14 — **canlı ingest** (13:02→15:13 arasında da +51 olmuştu); sweep yayında yok |
+| `contacts` | 1537 | 1537 | 1537 | aynı |
+| Oturum 201 | `CONNECTED` | `CONNECTED` | `CONNECTED` | aynı |
+| RAM yedeği (4 dosya) | `0600`, 7.100.080 B | aynı | aynı | dokunulmadı |
 
 `/health` üzerinde `whatsapp_memory_persistence` alanı **`null`** — yayındaki `b5715fe` bu alanı
 hiç içermiyor (3.8.1'den önceki kod). Bu iki şeyi kanıtlar: (a) yayındaki kodda süpürme yok,
