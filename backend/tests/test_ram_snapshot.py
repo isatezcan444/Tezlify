@@ -435,3 +435,197 @@ def test_cli_encrypts_when_key_env_given(tmp_path, monkeypatch):
     # Cozulunce gecerli snapshot olmali
     payload = json.loads(tool.decrypt_bytes(blob, "k" * 40).decode("utf-8"))
     assert tool.verify_snapshot(payload)["ok"] is True
+
+
+# ------------------------------------------- butun ama EKSIK ayrimi (3.8.3)
+def _payload_with_chat(shortfall, stable, collected=None, records=None):
+    records = records if records is not None else [rec(CHAT, "A1"), rec(CHAT, "A2")]
+    per_chat = [
+        {
+            "jid": CHAT,
+            "reported_total": 10,
+            "collected": collected if collected is not None else len(records),
+            "stable": stable,
+            "shortfall": shortfall,
+            "rounds": 3,
+        }
+    ]
+    manifest = tool.build_manifest(
+        session_id=201,
+        gateway_id="1bd78836-c084",
+        source_container_id="x",
+        started_at="a",
+        ended_at="b",
+        per_chat=per_chat,
+        records=records,
+        duplicates=0,
+        rejected_missing_identity=0,
+        rejected_incomplete=0,
+    )
+    return {
+        "kind": tool.SNAPSHOT_KIND,
+        "schema": tool.SNAPSHOT_SCHEMA,
+        "header": {"session_id": 201},
+        "records": records,
+        "manifest": manifest,
+    }
+
+
+def test_verify_separates_integrity_from_completeness():
+    """Butunluk saglam ama yakalama eksik: `ok` FALSE olmali.
+
+    Checksum tutuyor diye "yedek basarili" demek, 3.8.2'de kapattigimiz
+    "sayilar yakinsiyor" yanilgisinin aynisidir.
+    """
+    res = tool.verify_snapshot(_payload_with_chat(shortfall=8, stable=False))
+    assert res["ok"] is False
+    assert res["integrity_problems"] == []
+    assert res["completeness_problems"]
+    assert any("shortfall" in p for p in res["problems"])
+
+
+def test_verify_rejects_header_manifest_session_mismatch():
+    payload = good_payload()
+    payload["header"]["session_id"] = 999
+    res = tool.verify_snapshot(payload)
+    assert res["ok"] is False
+    assert any("session_id" in p for p in res["problems"])
+
+
+def test_verify_rejects_manifest_claiming_more_than_serialized():
+    payload = good_payload()
+    payload["manifest"]["chats"][0]["collected"] = 5  # 2 kayit var
+    res = tool.verify_snapshot(payload)
+    assert res["ok"] is False
+    assert any("record_count" in p for p in res["problems"])
+
+
+# ------------------------------------------------- geri yukleme: kume esitligi
+def test_restore_in_memory_conserves_identity_set():
+    payload = good_payload([rec(CHAT, "A1"), rec(CHAT2, "B1")])
+    res = tool.restore_to_sqlite(":memory:", payload)
+    assert res["restored_rows"] == 2
+    assert res["distinct_conversations"] == 2
+    assert res["identity_set_equal"] is True
+    assert res["identity_conserved"] is True
+    assert res["identity_root_matches"] is True
+    assert res["restored_identity_root_sha256"] == payload["manifest"]["identity_root_sha256"]
+
+
+def test_restore_compares_identity_sets_not_just_counts(tmp_path, monkeypatch):
+    """Hedefte FAZLA satir varsa satir sayisi tutsa bile kabul edilmez."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db = tmp_path / "dolu.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE snapshot_messages (conversation_id TEXT NOT NULL,"
+        " wa_message_id TEXT NOT NULL, direction TEXT, message_type TEXT,"
+        " status TEXT, body TEXT, created_at TEXT, media_id TEXT,"
+        " sender_phone TEXT, recipient_phone TEXT,"
+        " PRIMARY KEY (conversation_id, wa_message_id))"
+    )
+    conn.execute("INSERT INTO snapshot_messages (conversation_id, wa_message_id) VALUES (?,?)",
+                 ("yabanci-sohbet", "X1"))
+    conn.commit()
+    conn.close()
+
+    res = tool.restore_to_sqlite(str(db), good_payload([rec(CHAT, "A1"), rec(CHAT, "A2")]))
+    assert res["restored_rows"] == 3  # 2 yeni + 1 yabanci
+    assert res["source_identity_count"] == 2
+    assert res["restored_identity_count"] == 3
+    assert res["identity_set_equal"] is False
+    assert res["identity_conserved"] is False
+
+
+def test_restore_normalises_integer_conversation_ids():
+    """Gateway `conversation_id`'yi sayi dondurebilir; kimlik metne cevrilir."""
+    payload = good_payload([rec(38289, "A1"), rec("38289", "A2")])
+    res = tool.restore_to_sqlite(":memory:", payload)
+    assert res["restored_rows"] == 2
+    assert res["distinct_conversations"] == 1
+    assert res["identity_conserved"] is True
+
+
+# ------------------------------------------------------- stdin (3.8.3)
+class _FakeStdin:
+    def __init__(self, data: bytes):
+        import io
+
+        self.buffer = io.BytesIO(data)
+
+
+def test_cli_verify_reads_stdin(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAM_SNAPSHOT_KEY", "k" * 40)
+    blob = tool.encrypt_bytes(
+        json.dumps(good_payload(), ensure_ascii=False).encode("utf-8"), "k" * 40
+    )
+    monkeypatch.setattr(tool.sys, "stdin", _FakeStdin(blob))
+    code = tool.main(["--verify", "-", "--encrypt-key-env", "RAM_SNAPSHOT_KEY"])
+    assert code == 0
+
+
+def test_cli_verify_rejects_tampered_ciphertext(tmp_path, monkeypatch):
+    """Sifreli dosyada tek bayt degisirse AES-GCM REDDETMELI."""
+    monkeypatch.setenv("RAM_SNAPSHOT_KEY", "k" * 40)
+    blob = bytearray(
+        tool.encrypt_bytes(json.dumps(good_payload(), ensure_ascii=False).encode("utf-8"), "k" * 40)
+    )
+    blob[-1] ^= 0xFF
+    path = tmp_path / "bozuk.enc"
+    path.write_bytes(bytes(blob))
+    code = tool.main(["--verify", str(path), "--encrypt-key-env", "RAM_SNAPSHOT_KEY"])
+    assert code == 3
+
+
+def test_cli_restore_from_stdin(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAM_SNAPSHOT_KEY", "k" * 40)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    blob = tool.encrypt_bytes(
+        json.dumps(good_payload(), ensure_ascii=False).encode("utf-8"), "k" * 40
+    )
+    monkeypatch.setattr(tool.sys, "stdin", _FakeStdin(blob))
+    code = tool.main(
+        [
+            "--restore-from", "-",
+            "--restore-to", ":memory:",
+            "--encrypt-key-env", "RAM_SNAPSHOT_KEY",
+        ]
+    )
+    assert code == 0
+
+
+def test_late_arrival_is_computed_not_assumed_zero():
+    """Hesaplanmayan bir alani 0 diye raporlamak yalandir."""
+    started = "2026-10-01T10:00:00Z"
+    records = [
+        rec(CHAT, "A1", ts="2026-10-01T09:59:00Z"),
+        rec(CHAT, "A2", ts="2026-10-01T10:00:00Z"),  # tam sinirda: gec degil
+        rec(CHAT, "A3", ts="2026-10-01T10:00:05Z"),
+        rec(CHAT, "A4", ts="bozuk-tarih"),  # cozulemez: sayilmaz
+    ]
+    assert tool.count_late_arrivals(records, started) == 1
+    # Pencere bilinmiyorsa 0 degil None doner.
+    assert tool.count_late_arrivals(records, "bozuk-tarih") is None
+
+
+def test_cli_dry_run_reports_real_late_arrival_count(tmp_path, monkeypatch, capsys):
+    async def fake(*, page_size=2000, jids=None):
+        data = await _fake_collect(page_size=page_size, jids=jids)
+        data["records"] = [rec(CHAT, "A1"), rec(CHAT, "A2", ts="2099-01-01T00:00:00Z")]
+        data["per_chat"][0]["collected"] = 2
+        data["per_chat"][0]["reported_total"] = 2
+        return data
+
+    monkeypatch.setattr(tool, "collect_all", fake)
+    code = tool.main(["--out", str(tmp_path / "x.json"), "--dry-run"])
+    assert code == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["late_arrival_count"] == 1
+
+
+def test_cli_verify_refuses_encrypted_without_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("RAM_SNAPSHOT_KEY", raising=False)
+    blob = tool.encrypt_bytes(b'{"x":1}', "k" * 40)
+    path = tmp_path / "k.enc"
+    path.write_bytes(blob)
+    assert tool.main(["--verify", str(path)]) == 1

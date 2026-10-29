@@ -45,6 +45,20 @@ Snapshot mesaj govdesi ve telefon icerir. Bu yuzden:
 birebir korundugunu dogrular. Uretim DB'sine yazmaz: `DATABASE_URL` postgres
 ise betik reddeder.
 
+## Neden `-` (stdin) destegi var
+
+Yedek dosyasi HOST'ta durur; konteynerin dosya sistemine yazmak yasaktir.
+Bu yuzden hem `--verify -` hem `--restore-from -` blob'u stdin'den okur:
+dosya `docker exec -i ... < dosya` ile konteynere akitilir, anahtar konteynerin
+kendi ortaminda kalir, hicbir ara dosya olusmaz.
+
+## `--restore-to :memory:`
+
+Gercek veri icin geri yukleme BELLEK ICI SQLite'a yapilir: konteyner dosya
+sistemine yazmamak icin. Kimlik korunumu kaniti birebir aynidir (tablo,
+tekillik, satir sayisi, kimlik kumesi). Dosya tabanli yol (`--restore-to
+/bir/yol.db`) testlerde ve host'ta calistirilabilir.
+
 Kullanim (uretim host'unda, backend konteyneri icinde):
 
     docker exec -i tezlify-backend python - --out - --allow-plaintext \\
@@ -133,6 +147,37 @@ def is_complete(record: Mapping[str, Any]) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _parse_ts(value: Any) -> Optional[Any]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return time.strptime(
+            value.replace("Z", "").split("+")[0].split(".")[0], "%Y-%m-%dT%H:%M:%S"
+        )
+    except ValueError:
+        return None
+
+
+def count_late_arrivals(
+    records: Iterable[Mapping[str, Any]], started_at: str
+) -> Optional[int]:
+    """`started_at`'ten YENI `created_at` tasiyan kayit sayisi.
+
+    Bu alan HESAPLANMADIGI surece 0 yazmak yalandir: "snapshot bu araligi
+    kapsiyor" iddiasini "su ana kadar her sey" iddiasindan ayiran tek sey
+    bu sayidir. Hesaplanamiyorsa `None` doner, 0 degil.
+    """
+    start = _parse_ts(started_at)
+    if start is None:
+        return None  # bilinmiyor; 0 diye raporlanmamali
+    late = 0
+    for rec in records:
+        created = _parse_ts(rec.get("created_at"))
+        if created is not None and created > start:
+            late += 1
+    return late
 
 
 def dedupe(records: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -229,7 +274,7 @@ def build_manifest(
     rejected_missing_identity: int,
     rejected_incomplete: int,
     unmapped_conversations: Sequence[str] = (),
-    late_arrival: int = 0,
+    late_arrival: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Ozet + butunluk. Govde/telefon YOK; yalnizca sayi ve hash."""
     identities = sorted(identity_token(identity_of(r)) for r in records)  # type: ignore[arg-type]
@@ -269,14 +314,35 @@ def build_manifest(
 
 
 def verify_snapshot(payload: Mapping[str, Any]) -> Dict[str, Any]:
-    """Bozuk/eksik snapshot'i REDDEDER; 'kismen iyi' diye kabul etmez."""
+    """Bozuk/eksik snapshot'i REDDEDER; 'kismen iyi' diye kabul etmez.
+
+    Iki ayri soru sorulur ve ikisi de raporlanir:
+
+    * `integrity`    — dosya butun mu? (checksum, kimlik tekilligi, sema, header)
+    * `completeness` — yakalama tam mi? (shortfall=0, kararli sohbetler,
+      kimliksiz kayit yok)
+
+    Ikisinden biri basarisizsa `ok=False`. "Butun ama eksik" bir yedek
+    BASARILI SAYILMAZ; ayrim yalnizca teshis icin tutulur.
+    """
     problems: List[str] = []
+    completeness: List[str] = []
     if not isinstance(payload, Mapping):
-        return {"ok": False, "problems": ["snapshot bir nesne degil"]}
+        return {
+            "ok": False,
+            "problems": ["snapshot bir nesne degil"],
+            "integrity_problems": ["snapshot bir nesne degil"],
+            "completeness_problems": [],
+        }
     if payload.get("kind") != SNAPSHOT_KIND:
         problems.append("kind uyusmuyor")
     if payload.get("schema") != SNAPSHOT_SCHEMA:
         problems.append("schema uyusmuyor")
+    header = payload.get("header")
+    if not isinstance(header, Mapping):
+        problems.append("header yok")
+    elif header.get("session_id") is None:
+        problems.append("header.session_id yok")
     records = payload.get("records")
     manifest = payload.get("manifest")
     if not isinstance(records, list):
@@ -285,6 +351,8 @@ def verify_snapshot(payload: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(manifest, Mapping):
         problems.append("manifest yok")
         manifest = {}
+    elif isinstance(header, Mapping) and manifest.get("session_id") != header.get("session_id"):
+        problems.append("header/manifest session_id uyusmuyor")
     for i, rec in enumerate(records):
         if not is_complete(rec):
             problems.append(f"kayit {i} eksik/bozuk")
@@ -312,7 +380,39 @@ def verify_snapshot(payload: Mapping[str, Any]) -> Dict[str, Any]:
             "identity_root_sha256"
         ):
             problems.append("identity_root_sha256 uyusmuyor")
-    return {"ok": not problems, "problems": problems}
+
+        # --- tamlik: "butun" ile "tam" ayni sey degil ---
+        total_collected = 0
+        for chat in manifest.get("chats") or []:
+            if not isinstance(chat, Mapping):
+                problems.append("manifest.chats icinde bozuk kayit")
+                continue
+            total_collected += int(chat.get("collected") or 0)
+            if int(chat.get("shortfall") or 0) != 0:
+                completeness.append("shortfall>0 olan sohbet var")
+            if not chat.get("stable"):
+                completeness.append("kararsiz (stable=false) sohbet var")
+        if int(manifest.get("rejected_missing_identity") or 0) > 0:
+            completeness.append("kimliksiz kayit var")
+        if int(manifest.get("rejected_incomplete") or 0) > 0:
+            completeness.append("eksik/bozuk kayit var")
+        if manifest.get("unstable_chats"):
+            completeness.append("manifest.unstable_chats bos degil")
+        if total_collected != len(records):
+            problems.append("sohbet basina toplanan toplam, record_count ile uyusmuyor")
+    return {
+        "ok": not (problems or completeness),
+        "problems": problems + completeness,
+        "integrity_problems": problems,
+        "completeness_problems": completeness,
+        "checked": {
+            "record_count": len(records),
+            "chat_count": len(manifest.get("chats") or []) if manifest else 0,
+            "duplicate_identity": len(idents_all) - len(set(idents_all)),
+            "records_sha256": manifest.get("records_sha256") if manifest else None,
+            "identity_root_sha256": manifest.get("identity_root_sha256") if manifest else None,
+        },
+    }
 
 
 # --------------------------------------------------------------------------
@@ -367,6 +467,9 @@ def assert_restore_target_is_safe(path: str) -> None:
     """Uretim DB'sine veya depo icine geri yuklemeyi REDDEDER."""
     if os.environ.get("DATABASE_URL", "").startswith("postgresql"):
         raise PermissionError("DATABASE_URL postgres: uretim DB'sine geri yukleme reddedildi")
+    if str(path) == ":memory:":
+        # Bellek ici DB hicbir dosyaya dokunmaz; depo disi sayilir.
+        return
     if _is_inside_repo(path):
         raise PermissionError("geri yukleme hedefi depo icinde olamaz")
 
@@ -412,15 +515,38 @@ def restore_to_sqlite(path: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
             skipped += 0 if cur.rowcount else 1
         conn.commit()
         restored = conn.execute("SELECT count(*) FROM snapshot_messages").fetchone()[0]
+        restored_conv_count = conn.execute(
+            "SELECT count(DISTINCT conversation_id) FROM snapshot_messages"
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT conversation_id, wa_message_id FROM snapshot_messages"
+        ).fetchall()
     finally:
         conn.close()
+
     expected = len(records)
+    source_idents = {identity_of(r) for r in records}  # type: ignore[misc]
+    restored_idents = {(str(c), str(w)) for c, w in rows}
+    restored_root = hashlib.sha256(
+        "\n".join(sorted(identity_token(i) for i in restored_idents)).encode("utf-8")
+    ).hexdigest()
+    manifest = payload.get("manifest") or {}
+    identity_root_matches = (
+        restored_root == manifest.get("identity_root_sha256") if manifest else None
+    )
     return {
         "inserted": inserted,
         "skipped_duplicate": skipped,
         "restored_rows": int(restored),
         "expected_rows": expected,
-        "identity_conserved": int(restored) == expected,
+        "source_identity_count": len(source_idents),
+        "restored_identity_count": len(restored_idents),
+        "distinct_conversations": int(restored_conv_count),
+        "identity_set_equal": source_idents == restored_idents,
+        "restored_identity_root_sha256": restored_root,
+        "identity_root_matches": identity_root_matches,
+        # Tek basina satir sayisi yetmez: kume esitligi de sart.
+        "identity_conserved": int(restored) == expected and source_idents == restored_idents,
     }
 
 
@@ -533,14 +659,31 @@ def _refuse(msg: str) -> int:
     return 1
 
 
+def _read_blob(path: str) -> bytes:
+    """`-` ise stdin'den okur. Konteynere dosya yazmadan dogrulama saglar."""
+    if path == "-":
+        return sys.stdin.buffer.read()
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Gateway RAM mesaj snapshot'i (SALT OKUNUR)")
     ap.add_argument("--out", default="-", help="'-' = stdout (varsayilan)")
     ap.add_argument("--manifest", help="icerik tasimayan manifest dosyasi")
     ap.add_argument("--allow-plaintext", action="store_true", help="duz metin yazimina izin ver")
     ap.add_argument("--encrypt-key-env", help="anahtari bu ortam degiskeninden oku")
-    ap.add_argument("--restore-to", help="gecici SQLite hedefi (dogrulama)")
-    ap.add_argument("--verify", help="mevcut snapshot dosyasini dogrula")
+    ap.add_argument(
+        "--restore-to",
+        help="gecici SQLite hedefi (dogrulama); ':memory:' = bellek ici, dosya yok",
+    )
+    ap.add_argument(
+        "--restore-from",
+        help="geri yuklenecek snapshot dosyasi; '-' = stdin (varsayilan: --out)",
+    )
+    ap.add_argument(
+        "--verify", help="mevcut snapshot dosyasini dogrula; '-' = stdin"
+    )
     ap.add_argument("--page-size", type=int, default=PAGE_SIZE)
     ap.add_argument("--jid", action="append", help="yalnizca bu jid (tekrarlanabilir)")
     ap.add_argument("--dry-run", action="store_true", help="topla, yazma")
@@ -548,8 +691,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.verify:
         try:
-            with open(args.verify, "rb") as fh:
-                blob = fh.read()
+            blob = _read_blob(args.verify)
             if blob.startswith(MAGIC):
                 key_env = args.encrypt_key_env or "RAM_SNAPSHOT_KEY"
                 secret = os.environ.get(key_env)
@@ -570,24 +712,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # --- toplama ---
     import asyncio
 
+    # Pencere TOPLAMADAN ONCE acilir; aksi halde manifest sifir uzunlukta bir
+    # aralik iddia eder ve `late_arrival` anlamsiz olur.
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     result = asyncio.run(collect_all(page_size=args.page_size, jids=args.jid))
+    ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if result.get("error"):
         print(f"HATA: {result['error']}", file=sys.stderr)
         return 2
 
-    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     manifest = build_manifest(
         session_id=result["session_id"],
         gateway_id=result["gateway_id"],
         source_container_id=os.environ.get("HOSTNAME"),
         started_at=started_at,
-        ended_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        ended_at=ended_at,
         per_chat=result["per_chat"],
         records=result["records"],
         duplicates=result["duplicates"],
         rejected_missing_identity=result["rejected_missing_identity"],
         rejected_incomplete=result["rejected_incomplete"],
         unmapped_conversations=result["unmapped_conversations"],
+        late_arrival=count_late_arrivals(result["records"], started_at),
     )
     payload = {
         "kind": SNAPSHOT_KIND,
@@ -643,12 +789,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _restore_cmd(args: argparse.Namespace) -> int:
-    src = args.out if args.out != "-" else None
+    src = args.restore_from or args.out
     if not src:
-        return _refuse("--restore-to icin --out <dosya> gerekir")
+        return _refuse("--restore-to icin --restore-from <dosya|-> gerekir")
     try:
-        with open(src, "rb") as fh:
-            blob = fh.read()
+        blob = _read_blob(src)
         if blob.startswith(MAGIC):
             key_env = args.encrypt_key_env or "RAM_SNAPSHOT_KEY"
             secret = os.environ.get(key_env)
