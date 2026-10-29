@@ -400,7 +400,20 @@ async def test_purge_raw_jid_migration_cleans_ghosts_and_keeps_legit():
     await purge_raw_jid_identity_data(engine)
 
     async with AsyncSessionLocal() as db:
-        assert (await db.get(Contact, ghost_id)) is None
+        # 2026-10-29 (3.8.6) sonrasi sozlesme: hayalet SILINMEZ, KARANTINAYA
+        # alinir. "Kopru yok" bir kisinin olmadiginin kaniti degildir; silmek
+        # geri getirilemez (uretimde 9 mesaj boyle kayboldu).
+        ghost_row = await db.get(Contact, ghost_id)
+        assert ghost_row is not None, "hayalet contact silinmemeli"
+        assert ghost_row.display_name is None, "ham LID adi yine de notrlenmeli"
+        quarantined = (await db.execute(
+            text("SELECT reason, message_count FROM whatsapp_identity_quarantine "
+                 "WHERE contact_id = :c"),
+            {"c": ghost_id},
+        )).first()
+        assert quarantined is not None, "karantina defterine yazilmali"
+        assert quarantined[0] == "bridge_unknown_has_messages"
+        assert quarantined[1] == 1, "kac mesajin risk altinda oldugu yazilmali"
         assert (await db.get(Conversation, legit_conv_id)) is not None
         leaky_row = await db.get(Contact, leaky_id)
         assert leaky_row is not None and leaky_row.display_name is None
@@ -411,12 +424,17 @@ async def test_purge_raw_jid_migration_cleans_ghosts_and_keeps_legit():
         leftover_msgs = (await db.execute(
             select(func.count()).select_from(Message).where(Message.sender_phone == LID_JID)
         )).scalar_one()
-        assert leftover_msgs == 0
+        assert leftover_msgs == 1, "hayaletin mesaji KORUNMALI (eskiden 0'a dusuyordu)"
         # Idempotentlik: ikinci calisma no-op olmali, hata cikarmamali
         await purge_raw_jid_identity_data(engine)
         assert (await db.get(Contact, group_id)) is not None
         # temizlik
+        await db.execute(text("DELETE FROM whatsapp_identity_quarantine WHERE contact_id = :c"), {"c": ghost_id})
         await db.execute(text("DELETE FROM conversations WHERE id = :c"), {"c": legit_conv_id})
+        await db.execute(text("DELETE FROM conversations WHERE contact_id = :c"), {"c": ghost_id})
+        ghost_cleanup = await db.get(Contact, ghost_id)
+        if ghost_cleanup:
+            await db.delete(ghost_cleanup)
         for cid in (leaky_id, group_id, legit_id):
             c = await db.get(Contact, cid)
             if c:
