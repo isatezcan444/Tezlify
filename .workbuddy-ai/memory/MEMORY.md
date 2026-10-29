@@ -55,6 +55,17 @@ Index only. Detail is deliberately elsewhere — read the reference before actin
   against 9 122 RAM messages; every turn restarted at `offset 0`, so once the total exceeded the cap the tail
   could *never* be written — no error, `/health` green. Any paged drain needs a resume cursor, and the cursor
   must not advance on `dry_run`.
+- **A deploy runs startup migrations that DELETE rows — "no migration files" does not mean "no schema/data
+  change"** (Phase 3.8.6, measured in production). The 3.8.5→3.8.6 release had **0** `*.sql`/alembic files and
+  `start.py` has no alembic call, yet `backend/app/core/migrations.py` runs on every boot and
+  `purge_raw_jid_identity_data` deleted **1 ghost LID contact + 1 conversation + 9 messages**
+  (`126|2077|1538` → `125|2068|1537`) during cutover. `migrations.py` was **byte-identical** to the deployed
+  base, so this was pre-existing behaviour, not new code — it only fired because no boot had occurred since the
+  ghost row appeared. **Before any deploy, read the candidate's own `migration-summary.txt`/`candidate.log` and
+  grep `migrations.py` for `delete(`**; the release script prints `ONCEDEN VAR OLAN mesaj kayboldu` as a
+  **warning and still exits 0** — a warning is not a gate. Deleted rows survive only in gateway RAM as
+  `CLASS_unmapped_jid`, where persistence **skips** them (no conversation) ⇒ a gateway recreate makes the loss
+  permanent. Rollback does not restore data: an image rollback is not a data rollback.
 - **A `let` re-declared inside a promise executor shadows the outer one** (Phase 3.6b: `pdoSent`). The timeout
   log then reports `pdo_sent:false` no matter what actually happened — the diagnosis lies, silently.
   Distinguish `PDO_NOT_SENT` / `WAITER_MISMATCH` / `NO_CHUNK`; one `TIMEOUT` label conflates two different bugs.
