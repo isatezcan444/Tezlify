@@ -1253,57 +1253,70 @@ async def _lid_bridge_table_available(conn, *, postgres: bool) -> bool:
         return False
 
 
-async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
-    """Faz 6e öncesi biriken ham LID/JID kimlik artıklarını temizler.
+async def purge_raw_jid_identity_data(engine: AsyncEngine) -> Dict[str, Any]:
+    """Ham LID/JID kimlikli satırları KARANTİNAYA alır — hiçbir satırı SİLMEZ.
 
-    Kapsam (yalnızca WhatsApp gateway kaynaklı satırlar; kurşun/CRM
-    contact'leri etkilenmez — onlar asla 'jid:' sentinel taşımaz):
-    1. contacts.display_name içinde ham jid/lid varsa NULL'a çekilir
-       (kimlik çözümlemesi tamamlanana kadar ad gösterilmez).
-    2. messages.sender_name içinde ham jid/lid varsa NULL'a çekilir.
-    3. Çözülmemiş LID hayalet contact'leri (phone_e164='jid:xxx@lid') ve
-       bu contact'lere bağlı sohbetler silinir — gateway, LID↔phone köprüsü
-       ile aynı kişiyi telefon JID anahtarlı olarak yeniden oluşturur.
-       Gruplar (@g.us) KORUNUR: 'jid:...@g.us' meşru grup anahtarıdır.
-       3b. Köprüsü BİLİNEN hayaletler silinmez (aşağıya bakınız).
+    Neden değişti
+    -------------
+    Bu fonksiyon 2026-09-12'de (`9647b73`) `phone_e164 = 'jid:<x>@lid'` olan her
+    contact'ı "hayalet" sayıp contact + sohbet + mesajlarıyla HARD DELETE
+    ediyordu. 2026-10-01 (`7c5cb2c`) "köprüsü bilinen" istisnası, 2026-10-28
+    (`7b510c7`) "köprü KİŞİYE bağlı, bağlantıya değil" düzeltmesi eklendi; silme
+    yolu yine de açık kaldı.
 
-    Köprüsü bilinen hayalet silinmez, ertelenir
-    -------------------------------------------
-    Yukarıdaki "çözülmemiş" ölçütü koda yansımıyordu: sorgu köprüden bağımsız
-    olarak HER hayaleti siliyordu. Köprüsü `lid_mappings` + `whatsapp_sessions`
-    üzerinden çözülmüş bir hayaletin mesajları gerçek bir kişiye aittir ve
-    onarım işi (`scripts/diagnostics/whatsapp_lid_split_repair.py`) onları
-    canonical sohbete TAŞIR. Burada silmek onarımın malzemesini yok eder ve
-    geri getirilemez veri kaybı olur — kullanıcı için "mesajlarım kayboldu".
-    Erteleme birleştirme DEĞİLDİR: bu fonksiyon yalnızca silmekten vazgeçer.
-    Birleştirmeyi hemen ardından çalışan `merge_deferred_lid_ghosts`
-    (services/whatsapp/reconciliation.py) yapar — canlı yol ve onarım işiyle
-    AYNI mantık. Sınır (`limit`) yüzünden artan kalırsa onarım işi devam ettirir.
+    Premis yanlıştı: LID gizlilik modu, telefon JID'i HİÇ açığa çıkmayan gerçek
+    bir kişi bırakabilir. O zaman "köprü satırı yok" = "kimse yok" demek değil,
+    "köprüyü hiç öğrenemedik" demektir. Üretimde ölçülen sonuç (2026-10-29,
+    3.8.6 cutover): **1 contact + 1 sohbet + 9 mesaj silindi**
+    (`126|2077|1538` -> `125|2068|1537`). Mesajlar yalnızca gateway RAM'inde
+    kaldı ve orada da kalıcılaştırma sweep'i onları ATLAR (sohbet yok) — bir
+    gateway recreate kalıcı kayıp olurdu.
 
-    Köprü BAĞLANTIYA değil KİŞİYE bağlıdır
-    --------------------------------------
-    Erteleme koşulu bir zamanlar `lid_mappings`'i `whatsapp_sessions` ile
-    `ws.gateway_id = lm.session_id` üzerinden birleştiriyordu. Bu yanlıştı:
-    `lid_mappings.session_id` bir GATEWAY BAĞLANTISININ UUID'sidir ve her
-    yeniden bağlanmada yenisi üretilir; `whatsapp_sessions.gateway_id` ise
-    yalnızca O ANKİ bağlantıyı gösterir. Üretimde ölçüldü (2026-10-27):
-    20 bağlantı, her biri ~216 eşleme, toplam 4107 satır — birleştirme
-    yalnızca 4 satır görüyordu (%0,1). Sonuç: her yeniden bağlanmadan
-    sonraki ilk boot'ta köprüsü BİLİNEN her hayalet "köprüsüz" sanılıp
-    mesajlarıyla birlikte SİLİNİYORDU (canlıda 1 sohbet + 9 mesaj gitti) ve
-    onarımın malzemesi yok oldu. Köprü kaydı geçmiş bir bağlantıya ait olsa
-    da aynı kişiyi gösterir; bu yüzden erteleme artık yalnızca `lid_jid`
-    üzerinden bakılır. Yön güvenlidir: bu koşul sadece silmeyi ENGELLER,
-    asla silmeye yol açmaz; kimin birleşeceğine `merge_deferred_lid_ghosts`
-    kişi sahipliği (`contacts.user_id`) üzerinden karar verir.
+    Asimetri tasarımı belirler: mükerrer bir sohbet can sıkar, silinmiş bir
+    mesaj geri gelmez. Bu yüzden emin olunamayan hiçbir satır silinmez.
 
-    Idempotenttir; tekrar çalıştırma hiçbir şey yapmaz. Hata durumunda
-    migration loglanır ama startup'ı düşürmez (orijinal purge deseniyle aynı
-    fail-open davranış — veri temizliği şema bütünlüğüne dokunmaz).
+    Yeni sözleşme
+    -------------
+    1. `contacts.display_name` / `messages.sender_name` içindeki ham jid/lid
+       metni NULL'lanır — kayıt silinmez, yalnızca görünen ad nötrlenir.
+    2. `jid:<x>@lid` contact'ların HER biri `whatsapp_identity_quarantine`
+       tablosuna yazılır:
+         * `bridge_known_deferred`       — köprü var; `merge_deferred_lid_ghosts`
+                                           aynı boot'ta canonical sohbete taşır.
+         * `bridge_unknown_has_messages` — köprü yok AMA mesaj var: en riskli
+                                           sınıf; eski kod tam burada siliyordu.
+         * `bridge_unknown_empty`        — köprü yok, mesaj yok; yine de
+                                           SİLİNMEZ, operatör kararına kalır.
+    3. Silme YOK. `deleted_*` alanları sözleşmenin parçası olarak her zaman 0
+       döner; `test_..._deletes_nothing` bunu ayrıca doğrular.
+
+    Idempotenttir: ikinci çalıştırma aynı satırı UPDATE eder, yenisini eklemez ve
+    hiçbir şey silmez. Hata durumunda startup düşmez (fail-open) — fonksiyon artık
+    veri kaybı riski taşımıyor, yalnızca bir defter tutuyor.
+
+    `bridge_known_deferred` satırları da yazılır: "ertelendi" bilgisi, bir sonraki
+    boot'ta birleştirmenin neden hâlâ beklediğini açıklayan tek kayıttır.
+
+    Dönen rapor testler ve health için grep'lenebilir, PII'siz sayımlar içerir.
     """
     postgres = getattr(getattr(engine, "dialect", None), "name", "") == "postgresql"
     # Gateway bu tabloyu Postgres'te özel şemada, SQLite'ta düz adla açar.
     lid_table = "whatsapp_private.lid_mappings" if postgres else "lid_mappings"
+    report: Dict[str, Any] = {
+        "sanitized_contact_names": 0,
+        "sanitized_message_senders": 0,
+        "ghosts_scanned": 0,
+        "quarantined": 0,
+        "quarantined_with_messages": 0,
+        "messages_held": 0,
+        "deferred_known_bridge": 0,
+        # Sözleşme: bu fonksiyon hiçbir şey silmez. Alanlar açıkça 0 döner ki
+        # "silmeyi bıraktı" ile "silmeyi unuttu" ayırt edilebilsin.
+        "deleted_contacts": 0,
+        "deleted_conversations": 0,
+        "deleted_messages": 0,
+        "error": None,
+    }
     try:
         async with engine.begin() as conn:
             # 1. Ham jid/lid görünen adları nötrle (contact).
@@ -1315,76 +1328,281 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
                 text(f"UPDATE contacts SET display_name = NULL WHERE display_name IS NOT NULL AND ({name_pred})"),
                 name_params,
             )
-            sanitized_names = res.rowcount or 0
+            report["sanitized_contact_names"] = res.rowcount or 0
 
             # 2. Mesaj gönderen adlarını nötrle.
             res = await conn.execute(
                 text("UPDATE messages SET sender_name = NULL WHERE sender_name LIKE '%@lid' OR sender_name LIKE 'jid:%'"),
             )
-            sanitized_msgs = res.rowcount or 0
+            report["sanitized_message_senders"] = res.rowcount or 0
 
-            # 3. Çözülmemiş LID hayalet contact'lerinin sohbetlerini sil
-            #    (messages, conversations FK ondelete CASCADE ise birlikte gider;
-            #    değilse önce manuel silinir — her iki yol da güvenlidir).
-            defer_clause = ""
-            if await _lid_bridge_table_available(conn, postgres=postgres):
-                # Yalnızca `lid_jid` — bağlantı kimliği KULLANILMAZ (yukarıdaki
-                # "Köprü BAĞLANTIYA değil KİŞİYE bağlıdır" bölümü). Birleştirme
-                # bu koşulun göremediği hiçbir köprüyü kullanamaz; tersi ise
-                # (görmek ama yine de silmek) geri getirilemez kayıptır.
-                defer_clause = (
-                    f" AND NOT EXISTS (SELECT 1 FROM {lid_table} lm "
-                    f"WHERE lm.lid_jid = substr(c.phone_e164, 5) "
-                    f"AND lm.phone_jid IS NOT NULL AND lm.phone_jid <> '')"
-                )
-            ghost_ids = (
+            # 3. Hayaletleri SINIFLANDIR ve KARANTİNAYA al. Silme yok.
+            bridge_available = await _lid_bridge_table_available(conn, postgres=postgres)
+            ghosts = (
                 await conn.execute(
                     text(
-                        "SELECT c.id FROM contacts c "
-                        "WHERE c.phone_e164 LIKE 'jid:%@lid'" + defer_clause
+                        "SELECT c.id, c.phone_e164, c.user_id FROM contacts c "
+                        "WHERE c.phone_e164 LIKE 'jid:%@lid' ORDER BY c.id"
                     )
                 )
-            ).scalars().all()
-            deferred_ghosts = 0
-            if defer_clause:
-                total_ghosts = (
-                    await conn.execute(
-                        text("SELECT count(*) FROM contacts WHERE phone_e164 LIKE 'jid:%@lid'")
-                    )
-                ).scalar() or 0
-                deferred_ghosts = max(int(total_ghosts) - len(ghost_ids), 0)
-            deleted_convs = deleted_msgs = deleted_contacts = 0
-            if ghost_ids:
-                placeholders = ", ".join(f":g{i}" for i in range(len(ghost_ids)))
-                params = {f"g{i}": gid for i, gid in enumerate(ghost_ids)}
+            ).fetchall()
+            report["ghosts_scanned"] = len(ghosts)
+
+            for contact_id, phone, owner in ghosts:
+                lid_jid = str(phone or "")[4:]
                 conv_ids = (
                     await conn.execute(
-                        text(f"SELECT id FROM conversations WHERE contact_id IN ({placeholders})"),
-                        params,
+                        text(
+                            "SELECT id FROM conversations WHERE contact_id = :c ORDER BY id"
+                        ),
+                        {"c": contact_id},
                     )
                 ).scalars().all()
+                msg_count = 0
                 if conv_ids:
-                    cph = ", ".join(f":c{i}" for i in range(len(conv_ids)))
-                    cparams = {f"c{i}": cid for i, cid in enumerate(conv_ids)}
-                    r = await conn.execute(text(f"DELETE FROM messages WHERE conversation_id IN ({cph})"), cparams)
-                    deleted_msgs = r.rowcount or 0
-                    r = await conn.execute(text(f"DELETE FROM conversations WHERE id IN ({cph})"), cparams)
-                    deleted_convs = r.rowcount or 0
-                r = await conn.execute(text(f"DELETE FROM contacts WHERE id IN ({placeholders})"), params)
-                deleted_contacts = r.rowcount or 0
+                    cph = ", ".join(f":m{i}" for i in range(len(conv_ids)))
+                    cparams = {f"m{i}": cid for i, cid in enumerate(conv_ids)}
+                    msg_count = int(
+                        (
+                            await conn.execute(
+                                text(
+                                    "SELECT count(*) FROM messages "
+                                    f"WHERE conversation_id IN ({cph})"
+                                ),
+                                cparams,
+                            )
+                        ).scalar()
+                        or 0
+                    )
 
-            if sanitized_names or sanitized_msgs or deleted_contacts or deleted_convs or deferred_ghosts:
+                bridged = False
+                if bridge_available and lid_jid:
+                    bridged = bool(
+                        (
+                            await conn.execute(
+                                text(
+                                    f"SELECT 1 FROM {lid_table} lm "
+                                    "WHERE lm.lid_jid = :l "
+                                    "AND lm.phone_jid IS NOT NULL "
+                                    "AND lm.phone_jid <> '' LIMIT 1"
+                                ),
+                                {"l": lid_jid},
+                            )
+                        ).scalar()
+                    )
+
+                if bridged:
+                    reason = "bridge_known_deferred"
+                    report["deferred_known_bridge"] += 1
+                elif msg_count > 0:
+                    reason = "bridge_unknown_has_messages"
+                    report["quarantined_with_messages"] += 1
+                else:
+                    reason = "bridge_unknown_empty"
+
+                detail = json.dumps(
+                    {
+                        "conversation_count": len(conv_ids),
+                        "message_count": msg_count,
+                        "bridge_known": bridged,
+                    },
+                    sort_keys=True,
+                )
+                primary_conv = int(conv_ids[0]) if conv_ids else None
+
+                # Idempotent upsert: contact basina tek satır. `status` KORUNUR —
+                # operatör bir satırı RELEASED/RESOLVED yaptıysa startup onu
+                # sessizce QUARANTINED'a geri döndürmez.
+                existing = (
+                    await conn.execute(
+                        text(
+                            "SELECT id FROM whatsapp_identity_quarantine "
+                            "WHERE contact_id = :c LIMIT 1"
+                        ),
+                        {"c": contact_id},
+                    )
+                ).scalar()
+                if existing is None:
+                    # `created_at`/`updated_at` ORM varsayilanlari YALNIZCA ORM
+                    # uzerinden calisir; bu ham INSERT onlari atlar ve NOT NULL
+                    # ihlali tum purge islemini geri alir. Zaman damgasi bu
+                    # yuzden SQL tarafinda verilir (SQLite + Postgres uyumlu).
+                    await conn.execute(
+                        text(
+                            "INSERT INTO whatsapp_identity_quarantine "
+                            "(contact_id, conversation_id, user_id, phone_e164, reason, "
+                            " status, message_count, detail, created_at, updated_at) "
+                            "VALUES (:c, :cv, :u, :p, :r, 'QUARANTINED', :m, :d, "
+                            " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                        ),
+                        {
+                            "c": contact_id,
+                            "cv": primary_conv,
+                            "u": owner,
+                            "p": str(phone),
+                            "r": reason,
+                            "m": msg_count,
+                            "d": detail,
+                        },
+                    )
+                else:
+                    await conn.execute(
+                        text(
+                            "UPDATE whatsapp_identity_quarantine SET "
+                            "conversation_id = :cv, user_id = :u, phone_e164 = :p, "
+                            "reason = :r, message_count = :m, detail = :d, "
+                            "updated_at = CURRENT_TIMESTAMP "
+                            "WHERE id = :id"
+                        ),
+                        {
+                            "cv": primary_conv,
+                            "u": owner,
+                            "p": str(phone),
+                            "r": reason,
+                            "m": msg_count,
+                            "d": detail,
+                            "id": existing,
+                        },
+                    )
+                report["quarantined"] += 1
+                report["messages_held"] += msg_count
+
+            if report["quarantined"] or report["sanitized_contact_names"] or report["sanitized_message_senders"]:
                 logger.info(
                     "[MIGRATION] purge_raw_jid_identity_data: %d ad nötrlendi, %d mesaj adı nötrlendi, "
-                    "%d hayalet LID contact + %d sohbet + %d mesaj silindi, "
-                    "%d köprüsü bilinen hayalet onarıma bırakıldı.",
-                    sanitized_names, sanitized_msgs, deleted_contacts, deleted_convs, deleted_msgs,
-                    deferred_ghosts,
+                    "%d hayalet karantinaya alındı (%d köprü-bekleyen, %d mesajlı), "
+                    "%d mesaj korunuyor, SİLİNEN: 0 contact / 0 sohbet / 0 mesaj.",
+                    report["sanitized_contact_names"],
+                    report["sanitized_message_senders"],
+                    report["quarantined"],
+                    report["deferred_known_bridge"],
+                    report["quarantined_with_messages"],
+                    report["messages_held"],
                 )
             else:
-                logger.debug("[MIGRATION] purge_raw_jid_identity_data: temizlenecek ham LID/JID verisi yok.")
+                logger.debug("[MIGRATION] purge_raw_jid_identity_data: karantinaya alınacak ham LID/JID verisi yok.")
     except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
+        report["error"] = str(e)
         logger.warning("[MIGRATION] purge_raw_jid_identity_data atlandı: %s", e)
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Kimlik karantinası — defter ve güvenli sayımlar
+# ---------------------------------------------------------------------------
+
+
+async def ensure_whatsapp_identity_quarantine_table(engine: AsyncEngine) -> str:
+    """`whatsapp_identity_quarantine` tablosunu güvence altına alır.
+
+    Yalnızca EKLEME (additive): mevcut hiçbir tabloya dokunmaz, `checkfirst=True`
+    ile idempotenttir, geri alma veri kaybı yaratmaz (tablo düşürülür).
+
+    SIRA ÖNEMLİ: `purge_raw_jid_identity_data` artık silmek yerine bu tabloya
+    yazıyor. Tablo yoksa yazma başarısız olur ve karantina kaydı kaybolur —
+    veri kaybı olmaz (silme yok) ama görünürlük kaybolur. Bu yüzden main.py'de
+    purge'ten ÖNCE çağrılır.
+
+    Dönüş: ``CREATED`` | ``ALREADY_PRESENT`` | ``ERROR`` (grep'lenebilir).
+    """
+    from backend.app.models.whatsapp_identity_quarantine import (
+        WhatsAppIdentityQuarantine,
+    )
+
+    try:
+        async with engine.begin() as conn:
+
+            def _exists(sync_conn) -> bool:
+                return inspect(sync_conn).has_table("whatsapp_identity_quarantine")
+
+            present = await conn.run_sync(_exists)
+            await conn.run_sync(
+                WhatsAppIdentityQuarantine.__table__.create, checkfirst=True
+            )
+        if present:
+            return "ALREADY_PRESENT"
+        logger.info(
+            "[MIGRATION] ensure_whatsapp_identity_quarantine_table CREATED "
+            "(kimlik karantinası defteri)"
+        )
+        return "CREATED"
+    except Exception as exc:  # noqa: BLE001 - startup'i dusurmez
+        logger.warning("[MIGRATION] ensure_whatsapp_identity_quarantine_table: %s", exc)
+        return "ERROR"
+
+
+# `/health` her istekte çağrılır; orada veritabanı turu atmak, veritabanı
+# yavaşladığında sağlık ucunu da yavaşlatır ve "sağlık probu asıl arızayı
+# gizler" durumunu üretir. Bu yüzden karantina özeti YALNIZCA purge çalıştığında
+# (boot) tazelenir ve health onu okur. Operatör canlı sayıyı `quarantine_counts`
+# ile alır.
+_QUARANTINE_SNAPSHOT: Dict[str, Any] = {
+    "available": False,
+    "quarantined": 0,
+    "with_messages": 0,
+    "messages_held": 0,
+    "by_reason": {},
+}
+
+
+def quarantine_status() -> Dict[str, Any]:
+    """Son purge'ün bıraktığı PII'siz karantina özeti (senkron, DB'siz).
+
+    `/health` bunu okur. Hiç purge çalışmadıysa `available=False` döner —
+    "0 karantina" ile "ölçülmedi" aynı şey değildir ve karıştırılmamalıdır.
+    """
+    return dict(_QUARANTINE_SNAPSHOT)
+
+
+async def quarantine_counts(engine: AsyncEngine) -> Dict[str, Any]:
+    """Health/diagnostics için GÜVENLİ karantina sayımları + özeti tazeler.
+
+    Yalnızca sayı ve sınıflandırma döner: mesaj gövdesi, telefon numarası, JID,
+    SQL parametresi veya sır YOKTUR. Ölçülemezse `available=False` döner —
+    sağlık ucu bu yüzden ASLA düşmez.
+    """
+    empty: Dict[str, Any] = {
+        "available": False,
+        "quarantined": 0,
+        "with_messages": 0,
+        "messages_held": 0,
+        "by_reason": {},
+    }
+    try:
+        async with engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT reason, status, count(*), "
+                        "coalesce(sum(message_count), 0) "
+                        "FROM whatsapp_identity_quarantine "
+                        "GROUP BY reason, status"
+                    )
+                )
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - tablo yoksa/erisilemezse sessiz
+        return empty
+
+    by_reason: Dict[str, int] = {}
+    quarantined = with_messages = messages_held = 0
+    for reason, status, count, msg_sum in rows:
+        if str(status) != "QUARANTINED":
+            continue
+        by_reason[str(reason)] = by_reason.get(str(reason), 0) + int(count)
+        quarantined += int(count)
+        if str(reason) == "bridge_unknown_has_messages":
+            with_messages += int(count)
+            messages_held += int(msg_sum or 0)
+    result = {
+        "available": True,
+        "quarantined": quarantined,
+        "with_messages": with_messages,
+        "messages_held": messages_held,
+        "by_reason": by_reason,
+    }
+    _QUARANTINE_SNAPSHOT.clear()
+    _QUARANTINE_SNAPSHOT.update(result)
+    return result
 
 
 # ---------------------------------------------------------------------------

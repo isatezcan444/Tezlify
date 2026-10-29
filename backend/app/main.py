@@ -35,6 +35,9 @@ from backend.app.core.migrations import (
     ensure_messages_wa_message_id,
     ensure_messages_wa_message_id_unique,
     purge_raw_jid_identity_data,
+    ensure_whatsapp_identity_quarantine_table,
+    quarantine_counts,
+    quarantine_status,
     backfill_phone_sender_names,
     purge_degenerate_phone_contacts,
     backfill_whatsapp_last_message_previews,
@@ -304,7 +307,19 @@ async def lifespan(app: FastAPI):
             "WhatsApp message identity invariant unavailable: "
             f"uq_msg_conv_wa_message_id={wa_unique_status}"
         )
+    # SIRA ONEMLI: karantina defteri purge'ten ONCE hazir olmali. Purge artik
+    # SILMIYOR, bu tabloya yaziyor; tablo yoksa yazma duser ve hangi hayaletin
+    # tutuldugu gorunmez olur (veri kaybi olmaz, gorunurluk kaybi olur).
+    quarantine_status = await ensure_whatsapp_identity_quarantine_table(engine)
+    if quarantine_status == "ERROR":
+        logger.warning(
+            "[MIGRATION] kimlik karantina defteri hazir degil; purge yine de "
+            "SILMEZ (fail-closed), yalnizca kayit tutulamaz."
+        )
     await purge_raw_jid_identity_data(engine)
+    # `/health`in göstereceği özeti BURADA tazele: sağlık ucu DB turu atmaz,
+    # yoksa veritabanı yavaşladığında asıl arızayı sağlık probu gizlerdi.
+    await quarantine_counts(engine)
     # Purge, köprüsü BİLİNEN hayaletleri silmez, ERTELER (mesaj kaybı olmasın
     # diye). Erteleme birleştirme değildir: burada, onarım işiyle AYNI
     # birleştirme mantığıyla canonical sohbete taşınırlar. Sınırlıdır ve
@@ -881,6 +896,12 @@ async def health_check():
         # diye okunmamalıdır. Sayaçlar süreç belleğidir (restart'ta sıfırlanır);
         # bu yüzden geçmişin kaynağı DEĞİL, yalnızca "şu an bozuk mu" sinyalidir.
         "whatsapp_data_audit": _data_audit_stats(),
+        # Eskiden OTOMATIK SILINEN, artik KARANTINAYA alinan cozulmemis LID
+        # kimlikleri. `with_messages > 0` ise eski davranis gercek mesaj yok
+        # ederdi; `messages_held` o mesajlarin kac tane oldugunu soyler.
+        # Yalnizca sayim ve siniflandirma: govde/telefon/JID YOK. Deger boot'ta
+        # tazelenir; saglik ucu DB'ye gitmez.
+        "whatsapp_identity_quarantine": _identity_quarantine_status(),
     }
 
 
@@ -896,6 +917,18 @@ def _memory_persistence_status() -> Dict[str, Any]:
         )
 
         return memory_persistence_status()
+    except Exception as exc:  # noqa: BLE001 - health asla probla düşmemeli
+        return {"available": False, "error": str(exc)[:200]}
+
+
+def _identity_quarantine_status() -> Dict[str, Any]:
+    """Karantina defterinin PII'siz özeti. `/health` bunun yüzünden DÜŞMEZ.
+
+    Senkron ve DB'siz: özet boot'ta `quarantine_counts` ile tazelenir. Buradaki
+    sarmalayıcı yalnızca import sürprizlerini kapatır.
+    """
+    try:
+        return quarantine_status()
     except Exception as exc:  # noqa: BLE001 - health asla probla düşmemeli
         return {"available": False, "error": str(exc)[:200]}
 

@@ -25,6 +25,7 @@ from backend.app.models.subscription import UserSubscription
 from backend.app.models.task_queue import TaskJob, TaskJobStatus
 from backend.app.models.whatsapp_connect_stage import WhatsAppConnectStage
 from backend.app.models.whatsapp_data_audit import WhatsAppDataAudit
+from backend.app.models.whatsapp_identity_quarantine import WhatsAppIdentityQuarantine
 
 __all__ = [
     "Base",
@@ -68,4 +69,5 @@ __all__ = [
     "TaskJobStatus",
     "WhatsAppConnectStage",
     "WhatsAppDataAudit",
+    "WhatsAppIdentityQuarantine",
 ]
