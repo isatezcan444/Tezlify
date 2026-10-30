@@ -521,3 +521,137 @@ kanıtlandı, timer yok.
 **Üretim güvenliği, WhatsApp oturumu ve mevcut RAM verisi her şeyin üzerinde tutuldu:**
 gateway restart **0**, oturum **1/1 connected**, RAM **9154** (değişmedi), persistence **kapalı**,
 DB yazımı **0**, deploy **0**, IAM/bucket değişikliği **0**, snapshot silme/üzerine yazma **0**.
+
+---
+
+# EK — ONAY SONRASI UYGULAMA (2026-10-30 12:12–12:14 UTC)
+
+§14'te bekleyen onay verildi: **dar kapsamlı dosya yerleştirme** + **önce bir elle koşum** +
+sonra timer. Aşağıda gerçekten yapılanlar.
+
+## E1. Yerleştirilen dosyalar — SHA ile doğrulandı
+
+Yerleştirmeden önce bağımlılık zinciri okundu: `cmd_run()` içinde
+
+```python
+script_dir = Path(__file__).resolve().parents[1]   # /opt/tezlify/scripts
+collector  = script_dir / "diagnostics" / "ram_snapshot.py"
+offsite    = script_dir / "backup" / "offsite_oci.py"
+```
+
+Yani **iki değil üç betik** gerekiyordu. Yalnızca ikisi konsaydı iş kolektör adımında düşerdi.
+
+| Dosya | Yerel SHA-256 | Uzak SHA-256 | Durum |
+|---|---|---|---|
+| `scripts/backup/hourly_snapshot.py` | `96fb274a…29c6` | `96fb274a…29c6` | **YENİ** (izlenmiyor) |
+| `scripts/backup/offsite_oci.py` | `a4d48ab1…5c1e` | `a4d48ab1…5c1e` | **YENİ** (izlenmiyor) |
+| `scripts/diagnostics/ram_snapshot.py` | `5010a1a6…c268` | `5010a1a6…c268` | **zaten vardı** — `git diff` boş, commit'li blob ile aynı |
+| `monitoring/systemd/tezlify-ram-snapshot.service` | `18ad7c40…8ae9` | `18ad7c40…8ae9` | **YENİ** (izlenmiyor) |
+| `monitoring/systemd/tezlify-ram-snapshot.timer` | `df59508c…1ffd` | `df59508c…1ffd` | **YENİ** (izlenmiyor) |
+| `monitoring/systemd/install-ram-snapshot-timer.sh` | `ed4e0b5c…8e6e` | `ed4e0b5c…8e6e` | **YENİ** (izlenmiyor, `755`) |
+
+**Önemli:** `ram_snapshot.py` production deposunda **zaten izlenen** bir dosyaydı; kopyam
+commit'li blob ile **birebir aynı** çıktı (`git diff --stat` boş). Yani yeni bir sürüm
+sürüklenmesi (drift) oluşmadı.
+
+## E2. Ön kontrol — bu kez gerçek yoldan
+
+```
+cd /opt/tezlify/monitoring/systemd && ./install-ram-snapshot-timer.sh
+→ SONUÇ: on kontrol temiz. Hicbir sey degistirilmedi.        RC=0
+```
+
+11 kontrolün hepsi `[OK]`. Boş alan 52.259 MiB.
+
+## E3. Elle koşum — `/opt/tezlify` yolundan
+
+```
+sudo -u ubuntu TEZLIFY_OFFSITE_APPROVED=1 /usr/bin/python3 \
+  /opt/tezlify/scripts/backup/hourly_snapshot.py run --execute \
+  --bucket tezlify-ram-snapshots --prefix tezlify/whatsapp/ram-snapshots \
+  --log /var/backups/tezlify-ram/snapshot.jsonl
+→ RC=0
+```
+
+| Alan | Değer |
+|---|---|
+| `name` | `tezlify-ram-20261030T121254Z` |
+| `status` / `exit_code` | **OK** / **0** |
+| `record_count` / `chat_count` | 9.154 / 100 |
+| `rsnap_bytes` / manifest | 7.189.748 B / 16.956 B |
+| `upload_status` / `remote_verified` | **UPLOADED** / **true** |
+| `seconds` | 11,93 |
+| `error` | `null` |
+
+## E4. Birim kurulumu — timer başlatılmadan
+
+```
+sudo ./install-ram-snapshot-timer.sh --apply
+→ birimler kopyalandi: /etc/systemd/system
+→ daemon-reload yapildi
+→ SONUC: birimler kuruldu, timer BASLATILMADI.        RC=0
+```
+
+## E5. Timer etkinleştirildi
+
+```
+sudo systemctl enable --now tezlify-ram-snapshot.timer
+→ Created symlink /etc/systemd/system/timers.target.wants/tezlify-ram-snapshot.timer
+→ is-enabled = enabled · is-active = active
+→ NEXT = 2026-10-30 13:01:53 UTC
+```
+
+`systemd-analyze verify` → `RC=0` (uyarılar yalnızca Oracle'ın kendi izleme ajanı
+birimleriyle ilgili, bu sistemle ilgisiz).
+
+## E6. Birim systemd üzerinden de kanıtlandı
+
+Elle koşum betiği doğrular, ama **birimin ortamını** (`User`, `WorkingDirectory`,
+`Environment`) doğrulamaz. Bu yüzden birim bir kez systemd üzerinden çalıştırıldı:
+
+```
+sudo systemctl start tezlify-ram-snapshot.service
+→ Result=success · ExecMainStatus=0 · ActiveState=inactive (oneshot bitti)
+```
+
+Ürettiği log satırı: `tezlify-ram-20261030T121325Z`, **`status=OK`**,
+**`remote_verified=true`**, `UPLOADED`, 9.154 kayıt, **11,78 s**.
+
+Yani 13:01'de ne olacağı tahmin edilmiyor — **aynı birim bugün çalıştı ve başarılı oldu**.
+
+## E7. Son sağlık kontrolü
+
+| Ölçüm | Değer |
+|---|---|
+| `/opt/tezlify` HEAD | `5cd3eae` (**deploy yok**) |
+| `.deployed-commit` | `cbe4f509` (değişmedi) |
+| Restart (gw/be/db/caddy) | **0/0/0/0** |
+| `whatsapp_memory_persistence.enabled` | **`None`** (kapalı) |
+| Timer | **enabled / active**, ilk koşum 13:01:53 UTC |
+| Disk | 45G dolu / 52G boş / %47 |
+| Yerel snapshot | **10** `.rsnap` / 5 log satırı |
+
+## E8. ⚠️ Gelecek deploy için kayıtlı risk
+
+`/opt/tezlify` deposunda şu 4 yol **izlenmiyor**:
+
+```
+?? monitoring/systemd/install-ram-snapshot-timer.sh
+?? monitoring/systemd/tezlify-ram-snapshot.service
+?? monitoring/systemd/tezlify-ram-snapshot.timer
+?? scripts/backup/
+```
+
+Bir sonraki deploy bu yolları **ekleyen** bir commit'e geçerse git "untracked working tree
+files would be overwritten" diyebilir. `git reset --hard` bu durumda üzerine yazar (istenen
+davranış), ama `checkout`/`merge` tabanlı bir yol **reddeder**.
+
+**Azaltma:** yerleştirilen içerik commit `aefc985`'teki içerikle **birebir aynı** (SHA'lar
+yukarıda). Yani deploy bu yolları getirdiğinde davranış değişmez. Yine de deploy öncesi bu 4
+yolun durumu kontrol edilmeli; çakışma olursa **önce silinip** sonra deploy edilmeli.
+
+## E9. Nihai durum
+
+Sistem **artık çalışıyor**: saatlik şifreli snapshot + OCI'ya yükleme + geri indirip SHA
+doğrulama, ilk otomatik koşum `2026-10-30 13:01:53 UTC`. Retention yok (bilinçli), otomatik
+silme yok. Persistence kapalı, deploy yapılmadı, gateway restart 0.
