@@ -1,0 +1,19 @@
+[Unit]
+Description=Tezlify WhatsApp RAM Snapshot Timer (Hourly, Phase 3.9.17)
+Documentation=file:/opt/tezlify/docs/audits/whatsapp-automatic-hourly-snapshot-phase-3.9.17.md
+Requires=tezlify-ram-snapshot.service
+
+[Timer]
+# Her saatin basi. Kalici: host kapaliyken kacirilan tur, acilista BIR kez
+# telafi edilir (birikmis turlar ust uste kosmaz; kilit de ikinci turu engeller).
+OnCalendar=hourly
+Persistent=true
+
+# Ayni dakikada baska zamanlanmis islerle cakismasin.
+RandomizedDelaySec=120
+AccuracySec=1min
+
+Unit=tezlify-ram-snapshot.service
+
+[Install]
+WantedBy=timers.target

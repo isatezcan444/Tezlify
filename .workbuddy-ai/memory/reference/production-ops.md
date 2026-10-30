@@ -767,3 +767,41 @@ Anahtar argv'ye, ortama, dosyaya yazılmaz (`--stdin`/`getpass`). Çıkış kodl
 
 `offsite_oci.py` ve bu araç üretimde **kurulu değil**; `scp` ile geçici dizine alınır,
 iş bitince silinir (`/opt/tezlify/scripts/backup/` boştur).
+
+### Off-site hedef — ölçülen kimlik (tahmin değil)
+
+| Alan | Değer |
+|---|---|
+| Bucket | **`tezlify-ram-snapshots`** (tek bucket) |
+| Region | `eu-frankfurt-1` |
+| `publicAccessType` | `None` (public değil) |
+| Prefix | `tezlify/whatsapp/ram-snapshots` |
+| Nesne düzeni | `<prefix>/<yıl>/<ay>/<gün>/tezlify-ram-<ts>.rsnap` + `.manifest.json` |
+
+`3.9.6` raporundaki `tezlify-backup/snapshots/` **plan** çizimidir, gerçek bucket değildir;
+gerçek ad `tezlify-ram-snapshots`. Doğrulama: `offsite_oci.py probe` (salt okunur `GET /n/` + bucket listesi).
+
+### Konteynerde betik çalıştırma — `python -c`, `python -` DEĞİL
+
+İmajda `ram_snapshot.py` **yok** (`/app/scripts/diagnostics/` boş) ve konteynere dosya yazmak yasak.
+`python -` (betik stdin'den) tek girdi gerektiren işlerde çalışır; **iki girdi** gerektiğinde
+(betik + veri) çakışır ve biri boş okur. Çözüm: `python -c "<kaynak>" <bayraklar>` → betik argv'de,
+**stdin serbest**. Doğrulama: `docker exec tezlify-backend python -c "$(cat ram_snapshot.py)" --help`
+→ RC=0 (32 KB kaynak argv'de sorunsuz). Kaynakta sır yoktur; anahtar yalnızca konteyner ortamında
+`GATEWAY_ENCRYPTION_KEY` **adıyla** geçer.
+
+### Mevcut zamanlanmış işler (ölçüldü, 2026-10-30)
+
+| Timer | Aralık | Durum |
+|---|---|---|
+| `tezlify-monitor.timer` | 3 dk | `enabled` |
+| `tezlify-wa-observer.timer` | 5 dk | `enabled` |
+| `tezlify-ram-snapshot.timer` | saatlik | **repoda hazır, KURULMADI** (3.9.17, ayrı onay) |
+
+İkisi de salt okunur gözlemci; snapshot almıyorlar. `ubuntu` docker grubunda (gid 988) → `sudo` gerekmez.
+
+### Disk ve depolama (2026-10-30)
+
+Host `/` 96 GB, **52 GB boş**. Saatlik snapshot ölçülen maliyeti **7.146.029 B/tur**
+(779 B/mesaj). Bugünkü boyutla günde 0,160 GiB (52 GB ≈ 326 gün); **2000/sohbet tavanında**
+günde 3,48 GiB → 52 GB **≈15 günde** dolar. Retention yazılmadı; ayrı tasarım + ayrı onay.

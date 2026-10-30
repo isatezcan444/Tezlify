@@ -1,0 +1,39 @@
+[Unit]
+Description=Tezlify WhatsApp RAM Snapshot (Hourly, Phase 3.9.17)
+Documentation=file:/opt/tezlify/docs/audits/whatsapp-automatic-hourly-snapshot-phase-3.9.17.md
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/tezlify
+
+# Off-site yukleme icin STANDING onay. Betik bu degiskeni kendisi SET ETMEZ;
+# burada tanimli oldugu icin yukleme yapilabilir. Bu satir kaldirilirsa gorev
+# yalnizca yerel sifreli snapshot uretir (off-site kopya OLUSMAZ).
+Environment=TEZLIFY_OFFSITE_APPROVED=1
+
+# --execute olmadan da yerel snapshot alinir; --execute ile off-site'a yuklenir
+# ve uzaktan geri indirilerek SHA-256 dogrulanir.
+ExecStart=/usr/bin/python3 /opt/tezlify/scripts/backup/hourly_snapshot.py run \
+    --execute \
+    --bucket tezlify-ram-snapshots \
+    --prefix tezlify/whatsapp/ram-snapshots \
+    --log /var/backups/tezlify-ram/snapshot.jsonl
+
+# Toplama + dogrulama + upload + geri indirme tek turda; cok yavas diskte bile
+# yarida kesilmesin. Kilit zaten ikinci bir turu engeller.
+TimeoutStartSec=1200
+
+# Yedekleme isi canli trafigin onune gecmemeli.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+StandardOutput=append:/opt/tezlify/logs/tezlify-ram-snapshot.log
+StandardError=append:/opt/tezlify/logs/tezlify-ram-snapshot.log
+
+[Install]
+WantedBy=multi-user.target
