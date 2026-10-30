@@ -135,3 +135,29 @@ Bu test geçerse zincir **kâğıttan veriye** kadar kanıtlanmış olur ve 3.9.
 
 *Bu belgede anahtar, token, private key veya credential değeri yoktur. Yalnızca 8 haneli genel doğrulama çapası (`c25805a2`) ve dosya biçimi ölçümleri yer alır. Gerçekleştirilmeyen işlemler tamamlanmış gösterilmedi.*
 *Hazırlayan: WorkBuddy AI Agent — 2026-10-30*
+
+---
+
+## 6. EK — `.key-escrow` (v1) ile `.key-escrow-v2` AYNI ANAHTARDIR (3.9.19'da ölçüldü)
+
+Operatörün aklına gelebilecek soruyu kapatır: **"İki farklı anahtar mı var, hangisini yazacağım?"**
+
+| Dosya | Boyut | Önek | Anahtar kısmı | `anchor8` |
+|---|---|---|---|---|
+| `.key-escrow` | 90 B | 22 | **66** — `"…"` tırnak içinde | tırnaklar soyulunca **`c25805a2`** |
+| `.key-escrow-v2` | 88 B | 22 | **64** — çıplak küçük-hex | **`c25805a2`** |
+
+Yani v1 → v2 geçişi bir **anahtar döndürmesi değil**, yalnızca **tırnak temizliğidir**. İkisi de
+aynı anahtarı taşır; aktif `GATEWAY_ENCRYPTION_KEY` de aynı çapayı verir.
+
+**Kâğıda yazılacak olan:** `.key-escrow-v2` içindeki `=` işaretinden **sonraki 64 karakter**.
+v1'i kullanmayın — tırnakları yanlışlıkla kâğıda geçirme riski var.
+
+### Ek kanıt (3.9.19)
+
+Escrow anahtarı yalnızca ortam değişkeni üzerinden verilerek **gerçek bir üretim snapshot'ı**
+deşifre edildi: `ok=true`, bütünlük ve tamlık problem listeleri boş, `record_count=9154`,
+`identity_root_sha256` ve `records_sha256` manifest ile birebir. Yani çapa, dosyanın varlığına
+değil, **veriyi açabilme yeteneğine** bağlı olarak doğrulandı.
+
+**Fiziksel kopyalar hâlâ oluşturulmadı** — bu belge bir prosedürdür, tamamlama kaydı değildir.
