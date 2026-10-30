@@ -1,0 +1,137 @@
+# ESCROW FİZİKSEL KOPYA — OPERATÖR RUNBOOK'U
+
+**Tarih:** 2026-10-30
+**Durum:** **HAZIRLIK TAMAM — KOPYA HENÜZ YOK.** Bu belge bir prosedürdür, bir tamamlama kaydı değildir.
+**Neden var:** 3.9.11'in tek gerçek engeli `ESCROW_SEPARATION_BLOCKED`. Operatör **Seçenek B (fiziksel/offline kopya)** seçti.
+
+---
+
+## 0. NEDEN BU ADIMI AJAN YAPAMIYOR
+
+Anahtarın kâğıda geçirilmesi **fiziksel** bir eylemdir. Ajan:
+- anahtarı okuyamaz (okusa terminal çıktısına, yani transkripte düşer),
+- yazdıramaz, kâğıda geçiremez, kasaya koyamaz,
+- ve anahtarı hiçbir çıktıya/rapora/log'a yazmamak bu programın baştan beri değişmez kuralıdır.
+
+Bu yüzden bu adımda üretilen şey **kopyanın kendisi değil, kopyanın doğruluğunu kanıtlayan araçtır.**
+
+---
+
+## 1. GENEL DOĞRULAMA ÇAPASI — `c25805a2`
+
+Anahtarın kendisi değil, **SHA-256'sının ilk 8 hex'i**. 64 karakter = 256 bit entropi olduğu için bu 8 hane anahtar hakkında kullanılabilir bilgi vermez; yalnızca "elle yazarken hata yaptım mı" sorusunu yanıtlar.
+
+| Ölçüm | Değer |
+|---|---|
+| `anchor8` = `sha256(64 karakterlik anahtar)` ilk 8 hex | **`c25805a2`** |
+| Dosyanın tamamının SHA-256'sının ilk 8 hex'i | `d03ed27a` |
+| 3.9.7'de kaydedilen `fp8` | **`c25805a2`** — birebir aynı ✅ |
+
+Yani çapa, bu programda zaten kullanılan parmak izi şemasıyla **aynı**; yeni bir tanım uydurulmadı.
+
+**Escrow dosyasının yapısı (içerik okunmadan, yalnızca biçim ölçüldü):**
+
+| Özellik | Ölçülen |
+|---|---|
+| Yol | `/var/backups/tezlify-ram/.key-escrow-v2` |
+| Boyut / izin / sahip | 88 B · `600` · `ubuntu` |
+| Satır | 1 satır, 87 karakter (+ satır sonu) |
+| Biçim | `<22 karakter önek>=<64 karakter anahtar>` |
+| `=` konumu | 23 |
+| Anahtar kısmı | **64 karakter, küçük-hex, doğrulandı** |
+| Büyük harf (anahtar kısmında) | 0 |
+
+→ Kâğıda yazılacak olan **`=` işaretinden sonraki 64 karakterdir.** Önek yazılmaz.
+
+---
+
+## 2. OPERATÖR ADIMLARI
+
+> Aşağıdaki komutları **kendi terminalinizde** çalıştırın. Çıktıyı hiçbir sohbete, ajana, ekran görüntüsüne veya bulut notuna yapıştırmayın.
+
+### Adım 1 — Yazdırılabilir kartı üret
+
+```bash
+ssh -i ~/.ssh/id_tezlify_oracle ubuntu@130.162.247.20 \
+  'sed "s/.*=//" /var/backups/tezlify-ram/.key-escrow-v2' \
+  | python3 scripts/backup/escrow_physical.py sheet --i-am-the-operator
+```
+
+Kart 16 grup × 4 karakter hâlinde basılır, `ANCHOR8` üstte yazar. Ekranda görünür → **yazdırın veya doğrudan kâğıda geçirin**, sonra terminal geçmişini temizleyin (`history -c` ya da o terminali kapatın).
+
+### Adım 2 — Kâğıttan geri yaz ve doğrula
+
+```bash
+python3 scripts/backup/escrow_physical.py verify --expect c25805a2
+```
+
+Anahtarı yapıştırıp Enter. Terminal ise girdi **gizli** okunur (`getpass`), ekranda yankılanmaz.
+
+- `SONUC = MATCH` → kopya doğru.
+- `SONUC = MISMATCH` → tek karakter hatası çapayı tamamen değiştirir; Adım 1–2'yi tekrarlayın.
+
+Çıkış kodları sözleşmedir: `0` eşleşti · `1` eşleşmedi · `2` geçersiz girdi.
+
+### Adım 3 — İki kopya, iki konum
+
+En az **iki** fiziksel kopya, **iki ayrı** fiziksel konumda. Snapshot'ların (OCI) tutulduğu ortamdan bağımsız yerlerde.
+
+### Adım 4 — Kaydı buraya işle
+
+Kopya oluşturulduğunda bu belgeye **yalnızca şunu** ekleyin — anahtar değil:
+
+```
+Tarih / saat:
+Kopya sayısı:       2
+Konumlar:           <fiziksel konum 1>, <fiziksel konum 2>
+Doğrulama:          verify --expect c25805a2 → MATCH
+Doğrulayan:         <isim>
+```
+
+---
+
+## 3. BU ADIMDA NE YAPILDI / NE YAPILMADI
+
+| Yapıldı | Yapılmadı |
+|---|---|
+| Escrow dosyasının **biçimi** ölçüldü (içerik okunmadı) | Anahtar okunmadı / yazdırılmadı / kopyalanmadı |
+| Genel çapa `c25805a2` hesaplandı ve 3.9.7 ile eşleştiği doğrulandı | Anahtar hiçbir dosyaya/rapora/log'a yazılmadı |
+| `escrow_physical.py` yazıldı ve **sahte anahtarla** test edildi | Üretimde hiçbir dosya değiştirilmedi |
+| Kâğıt kopya prosedürü yazıldı | Kâğıt kopya **oluşturulmadı** (fiziksel eylem) |
+| | Escrow taşınmadı, silinmedi, `.env.production` değişmedi |
+
+Üretimde 0 restart, 0 deploy, 0 DB yazımı, 0 dosya değişikliği.
+
+---
+
+## 4. BU KOPYA NEYİ KORUR, NEYİ KORUMAZ
+
+| Senaryo | Fiziksel kopya var mı? | Sonuç |
+|---|---|---|
+| VM diski bozuldu, OCI'daki `.rsnap` sağlam | **Evet** | ✅ Kurtarılır — asıl hedef bu |
+| VM tamamen kayboldu, tenancy sağlam | **Evet** | ✅ Kurtarılır |
+| OCI hesabı/tenancy ele geçirildi veya kapatıldı | Evet | ⚠️ Anahtar var, **şifreli dosya yok** → kurtarılamaz |
+| Kâğıt kopya kayboldu, VM sağlam | — | ✅ Etkisiz (anahtar hâlâ diskte) |
+| Kâğıt kopya kayboldu, VM de gitti | — | ❌ Kurtarılamaz |
+
+**Sonuç:** fiziksel kopya *anahtar* riskini kapatır, *kopya sayısı* riskini kapatmaz. İkinci sağlayıcıya ikinci kopya hâlâ açık bir iştir (3.9.11 §10).
+
+**Ayrıca:** kâğıt kopya tek başına hiçbir veriyi açmaz — OCI'deki `.rsnap` dosyaları olmadan anlamsızdır. Yani kâğıdın çalınması tek başına veri sızıntısı değildir; yine de kasada/güvenli yerde saklanmalı.
+
+---
+
+## 5. BUNUN ARDINDAN "TAM PASS" NASIL KANITLANIR
+
+Kâğıt kopya doğrulandıktan sonra yapılacak test — **3.9.13**:
+
+1. Anahtar **yalnızca kâğıttan** okunur (dosyadan değil, `.env.production`'dan değil).
+2. Anahtar geçici bir ortam değişkenine alınır, `ram_snapshot.py --restore-from <off-site .rsnap> --restore-to ':memory:'` çalıştırılır.
+3. Beklenen: `9139/9139`, `identity_set_equal=true`, `identity_root_matches=true` (3.9.11'de ölçülen değerlerin aynısı).
+4. Geçici dosya/ortam değişkeni temizlenir, doğrulanır.
+
+Bu test geçerse zincir **kâğıttan veriye** kadar kanıtlanmış olur ve 3.9.11'in `PARTIAL` olan 8. ve 9. kriterleri **PASS**'a döner. O ana kadar "off-site recovery COMPLETE" **denemez**.
+
+---
+
+*Bu belgede anahtar, token, private key veya credential değeri yoktur. Yalnızca 8 haneli genel doğrulama çapası (`c25805a2`) ve dosya biçimi ölçümleri yer alır. Gerçekleştirilmeyen işlemler tamamlanmış gösterilmedi.*
+*Hazırlayan: WorkBuddy AI Agent — 2026-10-30*
