@@ -322,6 +322,25 @@ async def drain_gateway_memory_once(
     if not user_id or not gateway_id:
         return stats
 
+    # Kill-switch BURADA da kontrol edilir — yalnızca `run_memory_persistence_once`
+    # içinde değil. Aksi halde "kapalı" denilen özellik, bu fonksiyonu doğrudan
+    # çağıran bir yol (diagnostik betik, gelecekteki bir job, CLI) üzerinden
+    # yazmaya devam ederdi ve kapatma kararı yalnızca teamüle kalırdı.
+    #
+    # `dry_run=True` BİLEREK serbest bırakılır: ölçüm turu hiçbir satır yazmaz
+    # (`db.commit()` yalnızca `not dry_run` iken çağrılır) ve "kaç satır
+    # yazılırdı" sorusunun cevabı, özellik kapalıyken de alınabilmelidir.
+    if not dry_run and not getattr(
+        settings, "WHATSAPP_MEMORY_PERSIST_ENABLED", False
+    ):
+        stats["error"] = "PERSIST_DISABLED"
+        stats["blocked_by_killswitch"] = True
+        logger.info(
+            "Memory persistence: kill-switch kapalı; yazma turu reddedildi "
+            "(gateway=%s)", gateway_id,
+        )
+        return stats
+
     conv_by_jid, conv_by_id = await _load_conversation_index(
         db, user_id, session_db_id, gateway_id
     )
