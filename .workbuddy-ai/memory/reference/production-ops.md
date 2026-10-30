@@ -805,3 +805,46 @@ gerçek ad `tezlify-ram-snapshots`. Doğrulama: `offsite_oci.py probe` (salt oku
 Host `/` 96 GB, **52 GB boş**. Saatlik snapshot ölçülen maliyeti **7.146.029 B/tur**
 (779 B/mesaj). Bugünkü boyutla günde 0,160 GiB (52 GB ≈ 326 gün); **2000/sohbet tavanında**
 günde 3,48 GiB → 52 GB **≈15 günde** dolar. Retention yazılmadı; ayrı tasarım + ayrı onay.
+
+### systemd birimi ≠ git'teki kod (3.9.18'de ölçüldü)
+
+`/opt/tezlify` HEAD `5cd3eae`, deploy edilen `cbe4f509` ⇒ **3.9.17 production'a deploy edilmemiş**.
+Sonuç, ölçüldü:
+
+```
+ls /opt/tezlify/scripts/backup/hourly_snapshot.py   → No such file or directory
+ls /opt/tezlify/scripts/backup/offsite_oci.py       → No such file or directory
+ls /opt/tezlify/monitoring/systemd/                 → yalnız tezlify-monitor.* + tezlify-wa-observer.*
+```
+
+Yani `tezlify-ram-snapshot.service`'in `ExecStart` hedefi **yok**; birim kurulursa her saat düşer.
+**Bir timer'ı kurmadan önce `ExecStart` yolunun production'da gerçekten var olduğunu `ls` ile
+doğrula** — git'te olması yetmez. `install-ram-snapshot-timer.sh`'in kendisi de yoktu (`RC=127`).
+
+**Kural:** bir systemd birimini "hazır" saymak için üç şey ayrı ayrı doğrulanır —
+(1) birim dosyası `/opt/tezlify/monitoring/systemd/`'de, (2) `ExecStart` hedefi diskte,
+(3) hedefin import ettiği her modül diskte. Üçüncüsü en sık atlanır.
+
+### İlk gerçek snapshot (3.9.18) — kanıtlanmış referans değerler
+
+| Ölçüm | Değer |
+|---|---|
+| Snapshot | `tezlify-ram-20261030T115656Z` |
+| Kayıt / sohbet | **9.154 / 100** |
+| `.rsnap` / manifest | 7.186.048 B / 16.956 B |
+| Süre | **11,59 s** |
+| Yoğunluk | **785 B/mesaj** |
+| Bucket | 16 nesne / 57.339.163 B / `escrow_izi = YOK` |
+| Yerel dizin | 8 `.rsnap` + 8 manifest + 2 anahtar-escrow (`.key-escrow` 90 B, `.key-escrow-v2` 88 B) |
+
+`.snapshot.lock` (29 B) kalır ama **stale değil**: `flock` fd üzerinde, süreç ölünce kernel bırakır.
+
+### `offsite_oci.py` stdout biçimi — iki tuzak (3.9.18'de canlı yakalandı)
+
+1. `upload` (dry-run) → plan JSON **+ ardından** `[DRY-RUN] ...` banner metni.
+   `json.loads(text[text.find("{"):])` **patlar**.
+2. `upload --execute` → **İKİ** JSON belgesi: plan, sonra sonuç. İlkini alırsan `results` boş
+   görünür ve **başarılı yükleme `UNKNOWN`** diye raporlanır (bucket dolmuş olsa bile).
+
+Doğru okuma: `_iter_json_objects()` ile tüm üst düzey nesneleri tara, **son** nesneyi al.
+`ls` alt komutu `list` değil — `inventory|probe|upload|verify|ls|download`.

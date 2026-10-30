@@ -698,3 +698,152 @@ def test_upload_verdict_maps_statuses():
     ok = tool._upload_verdict(
         {"results": [{"status": "UPLOADED"}, {"status": "ALREADY_PRESENT"}]}, execute=True)
     assert ok["failed"] is False and ok["upload_status"] == "UPLOADED"
+
+
+# --------------------------------------------------------------------------
+# 13) offsite_oci cikti bicimi — 3.9.18'de canli kosumda yakalanan hata
+# --------------------------------------------------------------------------
+class _Proc:
+    def __init__(self, stdout="", stderr="", rc=0):
+        self.stdout = stdout.encode() if isinstance(stdout, str) else stdout
+        self.stderr = stderr.encode() if isinstance(stderr, str) else stderr
+        self.returncode = rc
+
+
+def _patch_run(monkeypatch, proc):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return proc
+
+    monkeypatch.setattr(tool.subprocess, "run", fake_run)
+    return calls
+
+
+def test_offsite_run_parses_json_followed_by_dry_run_banner(monkeypatch, tmp_path):
+    """GERCEK cikti bicimi: plan JSON'u + ardindan "[DRY-RUN] ..." satiri.
+
+    `json.loads` bu ciktiyi yutamaz; 3.9.18'de ilk canli kosumda upload tam
+    olarak bu yuzden dustu. `raw_decode` ilk JSON degerini alip gerisini yok sayar.
+    """
+    out = (
+        '{\n  "bucket": "b",\n  "prefix": "p",\n  "escrow_blocked": [],\n'
+        '  "plan": [{"file": "x.rsnap", "bytes": 1}]\n}\n'
+        '\n[DRY-RUN] Ag yazimi yapilmadi. Gercek aktarim icin --execute '
+        '+ TEZLIFY_OFFSITE_APPROVED=1 gerekir.\n'
+    )
+    _patch_run(monkeypatch, _Proc(stdout=out))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py")
+    got = up.upload(source=tmp_path, bucket="b", prefix="p",
+                    files=["x.rsnap"], execute=False)
+    assert got["bucket"] == "b"
+    assert got["plan"][0]["file"] == "x.rsnap"
+
+
+def test_offsite_run_takes_last_json_when_upload_prints_plan_and_results(monkeypatch, tmp_path):
+    """GERCEK `--execute` cikti bicimi: plan JSON'u + sonuc JSON'u.
+
+    `offsite_oci.py upload --execute` once plani, sonra sonucu basar. Ilk nesne
+    alinirsa `results` bos gorunur ve BASARILI yukleme "UNKNOWN" diye raporlanir.
+    3.9.18'de canli kosumda tam bu oldu: iki nesne bucket'a gitti ama gorev
+    DEGRADED dedi.
+    """
+    out = (
+        '{\n  "bucket": "b",\n  "prefix": "p",\n  "escrow_blocked": [],\n'
+        '  "plan": [{"file": "x.rsnap", "bytes": 1}]\n}\n'
+        '{\n  "results": [\n'
+        '    {"file": "x.rsnap", "status": "UPLOADED", "http": 200},\n'
+        '    {"file": "x.manifest.json", "status": "UPLOADED", "http": 200}\n'
+        '  ]\n}\n'
+    )
+    _patch_run(monkeypatch, _Proc(stdout=out))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py")
+    got = up.upload(source=tmp_path, bucket="b", prefix="p",
+                    files=["x.rsnap", "x.manifest.json"], execute=True)
+    assert "results" in got, "sonuc nesnesi (plan degil) alinmali"
+    assert [r["status"] for r in got["results"]] == ["UPLOADED", "UPLOADED"]
+    assert tool._upload_verdict(got, execute=True)["failed"] is False
+
+
+def test_iter_json_objects_skips_junk_and_finds_all():
+    text = 'log satiri\n{"a": 1}\n[DRY-RUN] ara metin\n{bozuk\n{"b": 2}\n'
+    docs = list(tool._iter_json_objects(text))
+    assert docs == [{"a": 1}, {"b": 2}]
+
+
+def test_iter_json_objects_returns_empty_for_plain_text():
+    assert list(tool._iter_json_objects("LIST FAILED HTTP 500")) == []
+
+
+def test_offsite_run_parses_pure_json(monkeypatch, tmp_path):
+    _patch_run(monkeypatch, _Proc(stdout='{"results": [{"status": "UPLOADED"}]}'))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py")
+    got = up.upload(source=tmp_path, bucket="b", prefix="p",
+                    files=["x.rsnap"], execute=True)
+    assert got["results"][0]["status"] == "UPLOADED"
+
+
+def test_offsite_run_rejects_output_without_json(monkeypatch, tmp_path):
+    _patch_run(monkeypatch, _Proc(stdout="LIST FAILED HTTP 500", stderr="boom", rc=3))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py")
+    with pytest.raises(tool.UploadFailed):
+        up.upload(source=tmp_path, bucket="b", prefix="p", files=["x.rsnap"], execute=False)
+
+
+def test_offsite_run_rejects_non_object_json(monkeypatch, tmp_path):
+    _patch_run(monkeypatch, _Proc(stdout="[1, 2, 3]"))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py")
+    with pytest.raises(tool.UploadFailed):
+        up.upload(source=tmp_path, bucket="b", prefix="p", files=["x.rsnap"], execute=False)
+
+
+def test_offsite_upload_builds_expected_argv(monkeypatch, tmp_path):
+    calls = _patch_run(monkeypatch, _Proc(stdout='{"plan": []}'))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py", python="py")
+    up.upload(source=tmp_path, bucket="bk", prefix="pf",
+              files=["a.rsnap", "b.manifest.json"], execute=True)
+    argv = calls[0]
+    assert argv[:3] == ["py", str(tmp_path / "offsite_oci.py"), "upload"]
+    assert argv.count("--only") == 2
+    assert "--execute" in argv
+    # sirasi onemli: --only <dosya> ciftleri
+    assert "a.rsnap" in argv and "b.manifest.json" in argv
+
+
+def test_offsite_upload_omits_execute_in_dry_run(monkeypatch, tmp_path):
+    calls = _patch_run(monkeypatch, _Proc(stdout='{"plan": []}'))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py", python="py")
+    up.upload(source=tmp_path, bucket="bk", prefix="pf", files=["a.rsnap"], execute=False)
+    assert "--execute" not in calls[0]
+
+
+def test_offsite_download_check_uses_download_check_flag(monkeypatch, tmp_path):
+    calls = _patch_run(monkeypatch, _Proc(stdout='{"all_verified": true, "rows": []}'))
+    up = tool.OffsiteUploader(tmp_path / "offsite_oci.py", python="py")
+    got = up.download_check(source=tmp_path, bucket="bk", prefix="pf", files=["a.rsnap"])
+    assert got["all_verified"] is True
+    assert "--download-check" in calls[0]
+
+
+def test_job_survives_real_dry_run_banner_shape(tmp_path, monkeypatch):
+    """Orkestratorun tamami: gercek ciktilar artik akisi bozmuyor."""
+    real_uploader = tool.OffsiteUploader(tmp_path / "offsite_oci.py", python="py")
+
+    outputs = [
+        # 1) dry-run: plan + "[DRY-RUN]" banner
+        _Proc(stdout='{"plan": []}\n\n[DRY-RUN] yazilmadi\n'),
+        # 2) gercek yukleme: plan + sonuc (IKI JSON)
+        _Proc(stdout='{"plan": []}\n{"results": ['
+                     '{"file": "a", "status": "UPLOADED"}, '
+                     '{"file": "b", "status": "UPLOADED"}]}\n'),
+        # 3) download-check
+        _Proc(stdout='{"all_verified": true, "rows": []}'),
+    ]
+    seq = iter(outputs)
+    monkeypatch.setattr(tool.subprocess, "run", lambda argv, **kw: next(seq))
+
+    res, _, _ = run(tmp_path, uploader=real_uploader)
+    assert res.status == "OK"
+    assert res.detail["remote_verified"] is True
+    assert res.detail["upload_status"] == "UPLOADED"

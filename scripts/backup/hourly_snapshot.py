@@ -98,7 +98,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 EXIT_OK = 0
 EXIT_USAGE = 1
@@ -395,6 +395,31 @@ def verify_blob(
     return dict(result)
 
 
+def _iter_json_objects(text: str) -> Iterable[Dict[str, Any]]:
+    """Metindeki TUM ust duzey JSON nesnelerini sirayla dondurur.
+
+    `json.loads` butun metnin tek JSON olmasini ister; `raw_decode` yalnizca ilk
+    degeri alir. Ikisi de "iki JSON nesnesi + arada serbest metin" bicimini
+    cozemez — `offsite_oci.py upload` tam olarak boyle yazar. Bu yardimci metni
+    tarar, her `{` konumundan bir nesne cozmeyi dener, basarisizsa bir karakter
+    ilerler.
+    """
+    decoder = json.JSONDecoder()
+    idx, n = 0, len(text)
+    while idx < n:
+        start = text.find("{", idx)
+        if start < 0:
+            return
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except ValueError:
+            idx = start + 1
+            continue
+        if isinstance(obj, Mapping):
+            yield dict(obj)
+        idx = end
+
+
 # --------------------------------------------------------------------------
 # Off-site (mevcut araca ince sarmalayici)
 # --------------------------------------------------------------------------
@@ -419,15 +444,17 @@ class OffsiteUploader:
             check=False,
         )
         text = proc.stdout.decode("utf-8", "replace")
-        start = text.find("{")
-        if start < 0:
+        docs = list(_iter_json_objects(text))
+        if not docs:
             raise UploadFailed(
                 f"offsite cikis={proc.returncode}: {scrub(proc.stderr.decode('utf-8', 'replace'))}"
             )
-        try:
-            return json.loads(text[start:])
-        except ValueError as exc:
-            raise UploadFailed("offsite ciktisi JSON degil") from exc
+        # SON JSON nesnesi alinir. `offsite_oci.py upload` stdout'a IKI JSON
+        # basar: once plan (`{"bucket":..,"plan":..}`), sonra sonuc
+        # (`{"results":[..]}`); aralarda "[DRY-RUN] ..." gibi metin olabilir.
+        # Ilk nesne alinirsa `results` hep bos gorunur ve basarili yukleme
+        # "UNKNOWN" diye raporlanir — 3.9.18'de canli kosumda tam bu oldu.
+        return docs[-1]
 
     def upload(
         self,
@@ -665,10 +692,12 @@ def _run_locked(
         return res
 
     manifest = got.manifest
+    # `ram_total_reported` BILEREK yok: `build_manifest()` bu alani uretmiyor
+    # (yalnizca snapshot header'inda var), dolayisiyla buradan okumak her zaman
+    # `null` yazardi — kalici olarak bos bir alan log'a koymak yaniltici olur.
     detail: Dict[str, Any] = {
         "record_count": manifest.get("record_count"),
         "chat_count": manifest.get("chat_count"),
-        "ram_total_reported": manifest.get("ram_total_reported"),
     }
 
     # --- 2) butunluk + tamlik (eksik sayfalama basari DEGILDIR) ---
