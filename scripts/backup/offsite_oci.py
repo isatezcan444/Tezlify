@@ -215,6 +215,23 @@ class Principal:
             sign_headers("GET", url, b"", self.session_key, self._key_id))
         return status, body
 
+    def bucket_meta(self, bucket: str) -> tuple[int, dict | None]:
+        """Bucket metadata (publicAccessType, versioning, id)."""
+        url = f"{self._base}/n/{self.namespace}/b/{bucket}"
+        status, _, body = http_call(
+            "GET", url, None,
+            sign_headers("GET", url, b"", self.session_key, self._key_id))
+        if status != 200:
+            return status, None
+        return status, json.loads(body)
+
+    def head_bucket(self, bucket: str) -> int:
+        url = f"{self._base}/n/{self.namespace}/b/{bucket}"
+        status, _, _ = http_call(
+            "HEAD", url, None,
+            sign_headers("HEAD", url, b"", self.session_key, self._key_id))
+        return status
+
 
 # ------------------------------------------------------------------- helpers
 def sha256_file(path: Path) -> tuple[str, int]:
@@ -393,6 +410,17 @@ def cmd_probe(args) -> int:
         for b in buckets:
             print(f"  - {b.get('name')} public={b.get('publicAccessType')} "
                   f"created={b.get('timeCreated')}")
+        if args.bucket:
+            st2, meta = p.bucket_meta(args.bucket)
+            print(f"\nbucket_meta({args.bucket}) = HTTP {st2}")
+            if meta:
+                print(f"  id              = {meta.get('id')}")
+                print(f"  publicAccessType= {meta.get('publicAccessType')}")
+                print(f"  versioning      = {meta.get('versioning')}")
+                print(f"  storageTier     = {meta.get('storageTier')}")
+                print(f"  compartmentId   = {meta.get('compartmentId')}")
+                print(f"  namespace       = {meta.get('namespace')}")
+            print(f"bucket_head({args.bucket}) = HTTP {p.head_bucket(args.bucket)}")
         return 0
     print(f"bucket_list_hata= {body[:180].decode('utf-8', 'replace')}")
     return 3
@@ -408,6 +436,8 @@ def main(argv=None) -> int:
 
     pr = sub.add_parser("probe", help="instance principal yetki sondasi")
     pr.add_argument("--compartment", default=None)
+    pr.add_argument("--bucket", default=None,
+                    help="bucket metadata'sini da oku")
     pr.set_defaults(func=cmd_probe)
 
     u = sub.add_parser("upload", help="bucket'a yukle (idempotent, fail-closed)")
