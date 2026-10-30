@@ -733,3 +733,37 @@ kaynağı tekrar oluşturmaz, kural/statement farklıysa CONFLICT deyip **dokunm
 **İki tuzak:**
 1. `GET /20160918/dynamicGroups` **listesi `matchingRule` döndürmez** — kural doğrulaması için `GET /dynamicGroups/{id}` gerekir.
 2. Yeni bucket'ta `GET /b/{bucket}` bir süre **404** dönebilir (eventual consistency); ~15 sn sonra 200. Yetki sanıp policy'yi genişletme.
+
+### "RAM-only" sayısı — toplam ile fark ayrı şeylerdir (measured 2026-10-30)
+
+Uzun süre "RAM-only 9154" denildi; **yanlıştı**. İki sayı ayrı:
+
+| Sayı | Anlamı | Ölçüm |
+|---|---|---|
+| **9154** | Gateway RAM'indeki **toplam** mesaj | `GET /messages/bulk?limit=1` → `total` |
+| **6960** | Bunlardan **DB'de karşılığı olmayanlar** | kimlik kümesi farkı **veya** persistence dry-run `inserted` |
+| 2194 | DB'deki toplam = RAM ile kesişim | DB ⊆ RAM (her DB mesajı RAM'de) |
+
+İki bağımsız yöntem (kimlik farkı ve `drain_gateway_memory_once(dry_run=True)`) **aynı** sonucu
+verdiği için sayı güvenilir. Yeni raporlarda "RAM-only" = **6960**.
+
+**`dry_run=True` gerçekten yazmaz:** `db.commit()` yalnızca `not dry_run` iken çağrılır ve
+`_prefetch_existing_ids` salt okunur. Kill-switch yalnızca `run_memory_persistence_once`
+içinde denetlenir; `drain_gateway_memory_once` doğrudan çağrılabilir (bilinen tasarım boşluğu,
+düzeltme ayrı onay ister).
+
+**LID tablosu `whatsapp_private` şemasındadır**, `public` değil:
+`SELECT … FROM whatsapp_private.lid_mappings` (`session_id`, `lid_jid`, `phone_jid`).
+`public` şemada aramak "tablo yok" sanılmasına yol açar.
+
+### Bağımsız escrow ile off-site restore — `scripts/backup/escrow_offsite_restore.py`
+
+Tek komut: `anchor8` kontrolü → OCI'den indirme → boyut/`opc-meta-sha256`/yerel üç yönlü
+karşılaştırma → **bellekte** şifre çözme → `:memory:` restore → kimlik kökünü **uzaktan
+indirilen manifest** ile karşılaştırma. İndirme **diske yazılmaz**, geçici dosya oluşmaz.
+
+Anahtar argv'ye, ortama, dosyaya yazılmaz (`--stdin`/`getpass`). Çıkış kodları:
+`0` PASS · `1` kullanım · `2` ağ · `3` bütünlük · `4` escrow çapası · `5` kimlik.
+
+`offsite_oci.py` ve bu araç üretimde **kurulu değil**; `scp` ile geçici dizine alınır,
+iş bitince silinir (`/opt/tezlify/scripts/backup/` boştur).
