@@ -652,3 +652,84 @@ when called with `db=None` (the sweep does this). The first version put `AsyncSe
 the `try`, so a pool failure escaped and would have stopped the very repair loop the audit exists to
 explain. Pinned by `test_session_acquisition_failure_never_raises`; falsified by moving the acquisition
 back out (exactly that test goes red with `RuntimeError: pool exhausted`).
+
+## OCI erişimi — instance principal, kimlik bilgisi olmadan (measured 2026-10-30)
+
+`tezlify-oracle` üretimde **hiçbir OCI kimlik bilgisi tutmuyor**: `oci` CLI yok,
+`~/.oci` yok, `.env.production`'da OCI değişkeni yok, uygulama bulut depolama
+kullanmıyor. Buna rağmen OCI API'sine erişilebiliyor — IMDS + instance principal.
+
+**Çalışan akış** (saf Python + `cryptography`, paket kurulumu gerekmez):
+
+| Adım | Ayrıntı |
+|---|---|
+| IMDS | `http://169.254.169.254/opc/v2` + header `Authorization: Bearer Oracle` |
+| Sertifika | `/identity/cert.pem`, `/identity/key.pem`, `/identity/intermediate.pem` |
+| Tenancy | `/instance/` içindeki **`tenantId`**. **Sertifikada SAN YOK** — `SubjectAlternativeName` aramak `ExtensionNotFound` verir; yedek yol `subject` içindeki `OU=opc-tenant:…` |
+| keyId | `"{tenancy}/fed-x509/{SHA1 fingerprint}"`, fingerprint = iki nokta ayrımlı büyük hex |
+| Token | `POST https://auth.{region}.oraclecloud.com/v1/x509`, body `{certificate, publicKey, intermediateCertificates}` |
+| Token sonrası | `keyId = "ST$" + token`, imza **bellekte üretilen oturum RSA-2048** anahtarıyla |
+
+**İki ölçülmüş tuzak:**
+1. Auth POST'unda `content-type: application/octet-stream` → **HTTP 415**. `application/json` şart.
+2. `GET /n/{ns}/b` compartment'sız → **400 `MissingCompartmentId`**; `?compartmentId=<tenancy>` ile **404 `NamespaceNotFound`** = *yetki yok* (OCI yetkisizliği "kaynak yok" gibi gizler). `GET /n/` 200 dönse bile bucket enum yetkisi ayrı bir policy'dir.
+
+**Durum (2026-10-30):** namespace `frlm5ioojy2m`; DG + policy + bucket kuruldu, bucket
+listesi **200**. 8 nesne / 28.532.095 B yüklendi ve indirilerek SHA-256 ile doğrulandı.
+Araç: `scripts/backup/offsite_oci.py` (`inventory` / `probe` / `upload` / `verify` /
+`ls` / `download`). Escrow yüklemeyi kod seviyesinde bloke eder.
+
+### Off-site nesne düzeni ve araç komutları (measured 2026-10-30)
+
+| Konu | Değer |
+|---|---|
+| Bucket | `tezlify-ram-snapshots` (`NoPublicAccess`, versioning `Enabled`, `Standard`) |
+| Prefix | `tezlify/whatsapp/ram-snapshots/{YYYY}/{MM}/{DD}/<dosya>` (tarih **dosya adından**) |
+| Yükleme | `upload --bucket … [--only <dosya>] --execute` + `TEZLIFY_OFFSITE_APPROVED=1` |
+| Doğrulama | `verify --bucket … [--only …] [--download-check]` |
+| Envanter | `ls --bucket …` → nesne sayısı, toplam bayt, **`escrow_izi`** |
+| İndirme | `download --bucket … --file X --out /tmp/X` (sha eşleşmezse yazmaz) |
+
+**Ölçülmüş üç tuzak:**
+1. `GET …/o` **`&fields=name,size,timeCreated` olmadan `size`/`timeCreated` döndürmez** (`None`).
+2. `verify` yalnızca `opc-meta-sha256`'ya bakarsa **boyutu doğrulamaz** — `--download-check`
+   gerçekten indirip `len(body)` ile `sha256`'yı birlikte karşılaştırır. İkisi ayrı iddia.
+3. Zaten yüklenmiş nesne `If-None-Match: *` yüzünden **412/409** alır → araç bunu
+   `ALREADY_PRESENT` sayar, **üzerine yazmaz**. Versioning şişmez.
+
+### OCI 404 maskesi — nasıl ayırt edilir (measured 2026-10-30)
+
+OCI, yetkisiz erişimi "kaynak yok" gibi gizler. `404 NamespaceNotFound`'u
+"namespace yok" sanmak yanlış; **kod adı = gerçek sebep değil**.
+
+Maskeyi kanıtlayan üç ölçüm (hepsi salt-okunur):
+1. Kaynağın varlığını **başka** uçtan kanıtla — `GET /n/` → 200 ise namespace var.
+2. **Geçersiz** parametreyle aynı isteği at — aynı 404 dönüyorsa yanıt parametreye bağlı değil.
+3. **Eksik** parametreyle at — 400 dönerse uç nokta isteği parse ediyor (404 bozuk istek değil).
+
+Aynı eksik parametre iki uçta **iki farklı maskeli kod** üretebiliyor:
+`GET /n/{ns}/b` → `400 MissingCompartmentId`, `GET /n/{ns}/` → `404 CompartmentIdNotFound`.
+
+**Sınır:** instance principal IAM'i okuyamıyor (`dynamicGroups`/`policies` →
+`404 NotAuthorizedOrNotFound`), ama `compartments` (200) ve `tenancies` (200)
+okunabiliyor. Yani "dynamic group yok" / "policy yok" / "policy koşulu uyuşmuyor"
+üçlüsü **ayırt edilemez** — bu üçü aynı gözlemi üretir. Bu durumda
+"yetki yok" demek de, "policy yok" demek de yanlış; doğrusu **NOT VERIFIED**.
+
+### OCI kaynak kurulumu — hangi kimlikle (measured 2026-10-30)
+
+Instance principal **yalnızca veri düzlemi** için yeterli; **IAM ve bucket oluşturamaz**
+(`policies`/`dynamicGroups` okumakta bile `404 NotAuthorizedOrNotFound`).
+
+| İş | Kimlik | Nereden |
+|---|---|---|
+| Snapshot listeleme/okuma/yazma | instance principal | üretim VM'i |
+| DG / policy / bucket oluşturma | **user principal** | **yerel makine** `~/.oci/config` |
+| Doğrulama | instance principal | üretim VM'i |
+
+Kurulum: `scripts/backup/oci_provision.py inspect|apply --execute` (idempotent; mevcut
+kaynağı tekrar oluşturmaz, kural/statement farklıysa CONFLICT deyip **dokunmaz**).
+
+**İki tuzak:**
+1. `GET /20160918/dynamicGroups` **listesi `matchingRule` döndürmez** — kural doğrulaması için `GET /dynamicGroups/{id}` gerekir.
+2. Yeni bucket'ta `GET /b/{bucket}` bir süre **404** dönebilir (eventual consistency); ~15 sn sonra 200. Yetki sanıp policy'yi genişletme.
