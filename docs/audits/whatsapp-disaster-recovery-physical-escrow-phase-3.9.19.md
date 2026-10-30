@@ -1,369 +1,458 @@
-# AŞAMA 3.9.19 — FİZİKSEL ESCROW VE BAĞIMSIZ FELAKET KURTARMA TESTİ
+# AŞAMA 3.9.19 — FİZİKSEL ESCROW VE BAĞIMSIZ FELAKET KURTARMA (A/B/C BİRLEŞİK)
 
-**Tarih:** 2026-10-30 12:18–12:24 UTC
-**Kapsam:** anahtar escrow doğrulaması, fiziksel kopya prosedürü, izole restore testi
-**Genel sonuç:** **PARTIAL** — teknik zincir kanıtlandı, **fiziksel kopyalar henüz yok**
-
----
-
-## GENEL SONUÇ
-
-| Alan | Sonuç |
-|---|---|
-| Aktif anahtar ↔ escrow eşleşmesi | **PASS** — kriptografik olarak kanıtlandı |
-| Anchor `c25805a2` doğruluğu | **PASS** — 3 bağımsız ölçüm + gerçek deşifreleme |
-| İzole restore (`:memory:`) | **PASS** — 9.154/9.154, identity set/root eşit |
-| PostgreSQL güvenlik kapısı | **PASS** — 4 olumsuz yol da reddedildi |
-| Fiziksel kopya A | **BLOCKED** — kullanıcı henüz oluşturmadı |
-| Fiziksel kopya B | **BLOCKED** — kullanıcı henüz oluşturmadı |
-| Fiziksel escrow ile bağımsız restore | **NOT RUN** — kopya yok |
-
-**Neden tam PASS değil:** §11 tamamlanma kriterleri "fiziksel kopya A ve B kullanıcı tarafından
-oluşturuldu" diyor. Bunlar **fiziksel eylemlerdir**; ajan yapamaz ve yapmadı. Bu raporda
-kopyaların var olduğu **iddia edilmiyor**.
-
-**İkinci dürüstlük noktası:** saatlik timer **henüz hiç otomatik koşmadı**. Rapor anında
-(12:18 UTC) ilk otomatik koşum 13:01:53 UTC'de, yani **43 dakika sonraydı**. Log'daki 5 satırın
-hepsi 3.9.18'deki **elle/systemd tetiklemeli** koşumlardır.
+**Tarih:** 2026-10-30 · A/B/C birleşik tamamlama denemesi
+**Ölçüm anı:** 12:37 UTC
+**Genel sonuç:** **PARTIAL — operatör eylemi bekliyor**
 
 ---
 
-## 1. BAŞLANGIÇ DURUMU
+## GENEL SONUÇ — KISA
 
-Aşama başında salt okunur ölçüm:
-
-| Ölçüm | Değer |
-|---|---|
-| `/opt/tezlify` HEAD | `5cd3eae` |
-| `.deployed-commit` | `cbe4f509` |
-| Konteynerler | 4 ayakta, healthy |
-| Restart (gw/be/db/caddy) | **0/0/0/0** |
-| `whatsapp_memory_persistence.enabled` | **`None`** (kapalı) |
-| Yerel snapshot | **10** `.rsnap` (7.100.080 – 7.189.748 B) |
-| Backup dizini | `700 ubuntu:ubuntu` |
-| Snapshot / manifest / log izinleri | **hepsi `600`** |
-| Disk | 95 G toplam · **51 G boş** · %46 |
-| Log | 5 satır, `600` |
-
----
-
-## 2. TIMER VE SON SNAPSHOT DOĞRULAMASI
-
-| # | Kontrol | Sonuç | Kanıt |
-|---|---|---|---|
-| 1 | `tezlify-ram-snapshot.timer` enabled + active | **PASS** | `is-enabled=enabled`, `is-active=active` |
-| 2 | Son **otomatik** snapshot gerçekten çalıştı | **NOT RUN** | ilk otomatik koşum 13:01:53 UTC, henüz gelmedi |
-| 3 | Son snapshot `status=OK` | **PASS** | `tezlify-ram-20261030T121325Z` |
-| 4 | `remote_verified=true` | **PASS** | aynı satır |
-| 5 | Yerel SHA ↔ OCI kopyası | **PASS** | `2d1fbc85…` her iki tarafta |
-| 6 | Snapshot dosyaları `0600` | **PASS** | 10/10, `0600` olmayan **0** |
-| 7 | Backup dizini `0700` | **PASS** | `0o700` |
-
-### Tüm koşumlar
-
-| Zaman (UTC) | Durum | rc | remote | upload |
-|---|---|---|---|---|
-| 11:54:08 | `DEGRADED_LOCAL_ONLY` | 4 | — | — |
-| 11:55:24 | `DEGRADED_LOCAL_ONLY` | 4 | — | `UNKNOWN` |
-| 11:56:56 | **OK** | 0 | **true** | `UPLOADED` |
-| 12:12:54 | **OK** | 0 | **true** | `UPLOADED` |
-| 12:13:25 | **OK** | 0 | **true** | `UPLOADED` |
-
-İlk iki satır 3.9.18'de bulunan iki stdout ayrıştırma hatasının kanıtıdır (düzeltildi).
-
-**Sonuç:** timer **kurulu ve çalışır durumda**, ama "otomatik koşum kanıtlandı" **denemez** —
-bu ancak 13:01:53 UTC sonrası doğrulanabilir.
-
----
-
-## 3. ESCROW SÜRÜM ANALİZİ
-
-Biçim, **içerik okunmadan** ölçüldü.
-
-| Özellik | `.key-escrow` (v1) | `.key-escrow-v2` |
+| İş | Durum | Neden |
 |---|---|---|
-| Boyut / izin | 90 B · `600` | 88 B · `600` |
-| Önek uzunluğu | 22 | 22 |
-| Anahtar kısmı uzunluğu | **66** | **64** |
-| 64-hex mi? | **HAYIR** | **EVET** |
-| Tırnak içinde mi? | **EVET** (`"…"`) | hayır |
-| Tırnaklar soyulunca | 64 hex | — |
-| `anchor8` | **`c25805a2`** (tırnak soyulduktan sonra) | **`c25805a2`** |
+| **A** — Fiziksel kopya A/B | **BLOCKED** | fiziksel insan eylemi; ajan yapamaz |
+| **B** — Kâğıttan restore | **NOT RUN** | A tamamlanmadan çalıştırılamaz |
+| **C** — Otomatik timer kanıtı | **NOT RUN** | ilk tetikleme 13:01:53 UTC, henüz gelmedi |
 
-**Kritik bulgu:** v1 ile v2 **aynı anahtardır**. Fark bir anahtar döndürmesi (rotation) değil,
-**tırnak temizliğidir** — v1 anahtarı `"…"` içinde saklıyordu, v2 çıplak 64-hex yazıyor.
+Bu raporda **hiçbir fiziksel işlem yapılmış gibi gösterilmedi** ve **hiçbir manuel koşum otomatik
+sayılmadı**.
 
-### Aktif anahtar karşılaştırması
-
-| Kaynak | Uzunluk | 64-hex | `anchor8` |
-|---|---|---|---|
-| `.key-escrow-v2` | 64 | ✅ | **`c25805a2`** |
-| **Aktif** `GATEWAY_ENCRYPTION_KEY` (konteyner env) | 64 | ✅ | **`c25805a2`** |
-| Runbook'ta belgelenen (3.9.7 `fp8`) | 64 | ✅ | **`c25805a2`** |
-
-**Sonuç: PASS** — aktif şifreleme anahtarı `.key-escrow-v2` ile **aynıdır**. v1 de aynı anahtarı
-taşır ama biçimi eski. **Fiziksel kopya için doğru kaynak v2'dir** (kâğıda `=` sonrası 64 karakter).
+**Bu turda üretilen gerçek değer:** §2 tam durum denetimi, §11 kapasite analizi, §12 ikinci
+off-site değerlendirmesi ve **§3.3'te runbook'taki kritik çelişkinin bulunup düzeltilmesi**.
 
 ---
 
-## 4. ANCHOR DOĞRULAMASI
+## 1. ÖNCEKİ 3.9.19 DURUMUNUN ÖZETİ
 
-İstenen: *"Sadece dosyanın mevcut olması yeterli değildir."* Bu yüzden üç ayrı kanıt üretildi.
+Commit `e7f8f76` ile teslim edilen durum:
 
-### Kanıt 1 — Üç bağımsız ölçüm aynı çapayı verdi
-
-Escrow dosyası, konteyner ortamı ve runbook'taki kayıt: **üçü de `c25805a2`**.
-
-### Kanıt 2 — Gerçek snapshot deşifre edildi
-
-Anahtar yalnızca `env=` üzerinden geçirildi (argv'de **yok**), `ram_snapshot.py --verify -`
-çalıştırıldı:
-
-```
-verify_rc = 0
-ok        = True
-integrity_problems    = 0
-completeness_problems = 0
-```
-
-Yani anahtar **gerçek bir üretim snapshot'ını açıyor**. Bu, "iki string eşit" demenin çok
-ötesinde bir kanıttır: çapa, veriye **fonksiyonel** olarak bağlıdır.
-
-### Kanıt 3 — Deşifre edilen içerik manifest ile birebir
-
-| Alan | verify | manifest | Eşit |
-|---|---|---|---|
-| `record_count` | 9.154 | 9.154 | ✅ |
-| `chat_count` | 100 | 100 | ✅ |
-| `identity_root_sha256` | `0deff9b5…` | `0deff9b5…` | ✅ |
-| `records_sha256` | `e10d6fe9…` | `e10d6fe9…` | ✅ |
-| `duplicate_identity` | 0 | 0 | ✅ |
-
-**Sonuç: PASS.**
-
----
-
-## 5. FİZİKSEL KOPYA HAZIRLIK PROSEDÜRÜ
-
-Mevcut altyapı **yeniden kullanıldı**, ikinci bir sistem kurulmadı:
-
-| Bileşen | Durum |
+| Kanıt | Sonuç |
 |---|---|
-| `scripts/backup/escrow_physical.py` | **zaten var** — güvenlik sözleşmesi test edildi |
-| `docs/audits/whatsapp-escrow-physical-copy-runbook.md` | **zaten var** — operatör prosedürü |
-| `anchor8 = c25805a2` | doğrulandı |
-
-### Aracın sözleşmesi — sahte anahtarla kanıtlandı
-
-Gerçek anahtar kullanılmadı; `'a'×64` sahte anahtarıyla:
-
-| Komut | Beklenen | Ölçülen |
-|---|---|---|
-| `anchor` | yalnız uzunluk + çapa, **anahtar basılmaz** | `uzunluk=64`, `anchor8=ffe054fe` ✅ |
-| `verify --expect <doğru>` | MATCH, rc=0 | **MATCH**, rc=0 ✅ |
-| `verify --expect deadbeef` | MISMATCH, rc=1 | **MISMATCH**, rc=1 ✅ |
-| `sheet` (onaysız) | REDDEDİLMELİ, rc=2 | **REDDEDİLDİ**, rc=2 ✅ |
-
-Araç: dosyaya yazmıyor, ortam değişkenine koymuyor, ağa göndermiyor, `--out` parametresi
-**bilerek yok**, clipboard'a dokunmuyor.
-
-### Kopya A ve B prosedürü
-
-| Adım | Kopya A | Kopya B |
-|---|---|---|
-| 1 | `escrow_physical.py sheet --i-am-the-operator` (operatörün kendi terminali) | aynı |
-| 2 | Kâğıda 16×4 grubu elle geçir | aynı |
-| 3 | `verify --expect c25805a2` → **MATCH** | aynı |
-| 4 | Tarih + konum + doğrulayan kişi runbook'a işlenir | aynı |
-| 5 | **Birinci** güvenli fiziksel konum | **Farklı** bina / risk alanı |
-
-**Yasak:** fotoğraf, bulut notu, dijital mesaj, ekran görüntüsü.
+| Aktif anahtar ↔ `.key-escrow-v2` | **aynı** — `anchor8 = c25805a2` |
+| `.key-escrow` (v1) | aynı anahtar, **tırnak içinde** (66 karakter) — rotasyon değil |
+| Anchor doğrulaması | 3 bağımsız ölçüm + **gerçek snapshot deşifre edildi** |
+| İzole restore | 9.154/9.154, `identity_set_equal=true`, `identity_root_matches=true` |
+| PostgreSQL kapıları | 4 olumsuz yol da reddedildi |
+| Fiziksel kopya A/B | **yok** |
+| Otomatik timer koşumu | **kanıtlanmadı** |
 
 ---
 
-## 6. FİZİKSEL KOPYALARIN KULLANICI TARAFINDAN DOĞRULANMA DURUMU
+## 2. PRODUCTION BAŞLANGIÇ DURUMU
 
-| Kriter | Durum |
-|---|---|
-| Kopya A oluşturuldu | **BLOCKED** — henüz yok |
-| Kopya B oluşturuldu | **BLOCKED** — henüz yok |
-| İki kopya da anchor kontrolünden geçti | **NOT RUN** |
-| Kopya tarihi + tanımlayıcı kaydedildi | **NOT RUN** |
+12:37 UTC'de salt okunur ölçüm. **3.9.19 raporuyla birebir aynı — drift yok.**
 
-**Bu aşamada fiziksel kopya oluşturulmadı ve oluşturulduğu iddia edilmiyor.** Prosedür ve araç
-hazır; eylem operatöre aittir.
+| Ölçüm | Değer | Beklenen | Sonuç |
+|---|---|---|---|
+| Yerel `main` HEAD | `e7f8f76` | — | temiz ağaç |
+| `/opt/tezlify` HEAD | `5cd3eae` | değişmemeli | **PASS** |
+| `.deployed-commit` | `cbe4f509` | değişmemeli | **PASS** |
+| Deploy drift | 3.9.17+ deploy edilmemiş | bilinen durum | değişmedi |
+| `tezlify-gateway` | Up 2 days, healthy | healthy | **PASS** |
+| `tezlify-backend` | Up 15 hours, healthy | healthy | **PASS** |
+| `tezlify-db` | Up 4 weeks, healthy | healthy | **PASS** |
+| `tezlify-caddy` | Up 2 weeks, healthy | healthy | **PASS** |
+| Restart (gw/be/db/caddy) | **0/0/0/0** | değişmemeli | **PASS** |
+| `whatsapp_memory_persistence.enabled` | **`None`** | kapalı | **PASS** |
+| Timer | `enabled` + `active (waiting)` | — | **PASS** |
+| Backup dizini | `0o700` | `0700` | **PASS** |
+| `.key-escrow-v2` | `0o600`, 88 B | `0600` | **PASS** |
+| `.key-escrow` | `0o600`, 90 B | `0600` | **PASS** |
+| `snapshot.jsonl` | `0o600`, 1.839 B | `0600` | **PASS** |
+| `.rsnap` izinleri | 10/10 `0600` | `0600` | **PASS** |
+| Son snapshot bütünlüğü | `9154/100`, `shortfall=0`, `unstable=0` | — | **PASS** |
+| Yerel `.rsnap` SHA | `2d1fbc85…` | OCI ile aynı | **PASS** |
 
-**Operatör kopyaları oluşturduktan sonra** yalnızca şu doğrulama adımları çalıştırılmalı —
-hiçbiri anahtarı yazdırmaz:
+**Sonuç: PASS** — production'da hiçbir değişiklik yok.
+
+---
+
+## 3. FİZİKSEL KOPYA A
+
+**Durum: BLOCKED.**
+
+Kopya A oluşturulmadı. Ajan fiziksel kâğıt kopyası üretemez ve ürettiğini iddia etmiyor.
+
+### 3.3 Runbook'ta bulunan KRİTİK ÇELİŞKİ ve düzeltmesi
+
+Önceki runbook'un 1. adımı şuydu:
 
 ```bash
-# 1) kâğıttan geri yaz, çapa ile karşılaştır (girdi gizli okunur)
+# ESKI — ARTIK YASAK
+ssh -i ~/.ssh/id_tezlify_oracle ubuntu@<host> \
+  'sed "s/.*=//" /var/backups/tezlify-ram/.key-escrow-v2' \
+  | python3 scripts/backup/escrow_physical.py sheet --i-am-the-operator
+```
+
+Bu komut **anahtarı sunucudan SSH stdout ile yerel makineye taşıyor**. Bu turun kuralları bunu
+açıkça yasaklıyor:
+
+> "Anahtarı uzak SSH çıktısı olarak yerel makineye taşıma yasak."
+
+Üstelik `escrow_physical.py` **production sunucusunda yok** (ölçüldü:
+`/opt/tezlify/scripts/backup/` yalnızca `hourly_snapshot.py` ve `offsite_oci.py` içeriyor), yani
+eski komut zaten yerel araca bağımlıydı.
+
+**Düzeltilmiş prosedür — anahtar sunucudan çıkmaz.** Operatör kendi terminalinde sunucuya girer
+ve biçimlendirmeyi **sunucuda** çalıştırır; kâğıda bakarak yazar:
+
+```bash
+ssh -i ~/.ssh/id_tezlify_oracle ubuntu@<host>
+# --- sunucuda, etkilesimli oturumda ---
+python3 - <<'EOF'
+import hashlib, re
+k = open("/var/backups/tezlify-ram/.key-escrow-v2").read().strip()
+k = k.split("=", 1)[1].strip().strip('"')
+assert re.fullmatch(r"[0-9a-f]{64}", k), "beklenmeyen anahtar bicimi"
+print("uzunluk =", len(k))
+print("anchor8 =", hashlib.sha256(k.encode()).hexdigest()[:8])
+for r in range(4):
+    print("  " + "  ".join(f"{r*4+i+1:>2}:{k[(r*4+i)*4:(r*4+i)*4+4]}" for i in range(4)))
+EOF
+```
+
+Ekranda `anchor8 = c25805a2` görünmeli. 16 grubu (4×4) sırayla kâğıda geçirin, sonra oturumu
+kapatın ve terminal geçmişini temizleyin.
+
+**Doğrulama — anahtar yerel makineye veri olarak geçmez.** Kâğıttan okuyup `getpass` ile yazın
+(ekranda yankılanmaz):
+
+```bash
 python3 scripts/backup/escrow_physical.py verify --expect c25805a2
-#    → SONUC = MATCH  (rc=0)
-
-# 2) kâğıttan okunan anahtarla gerçek restore (anahtar env ile, argv'de değil)
-python3 scripts/diagnostics/ram_snapshot.py \
-  --restore-from <indirilen>.rsnap --restore-to ':memory:' \
-  --encrypt-key-env ESCROW_KEY
-#    → identity_set_equal=true, identity_root_matches=true
+# → SONUC = MATCH   (rc=0)
 ```
+
+Araç sözleşmesi sahte anahtarla doğrulandı: `anchor` anahtarı basmıyor, `verify` MATCH/MISMATCH
+doğru, `sheet` onaysız `rc=2` ile reddediyor.
 
 ---
 
-## 7. BAĞIMSIZ RESTORE TESTİ
+## 4. FİZİKSEL KOPYA B
 
-**Ortam:** production host'unda `/tmp/tz3919` (mode `700`), `:memory:` SQLite, `DATABASE_URL`
-**kaldırıldı**, production konteynerlerine müdahale **yok**.
+**Durum: BLOCKED.**
 
-| # | Adım | Sonuç |
-|---|---|---|
-| 1 | OCI'den snapshot + manifest indirildi | **PASS** — 7.189.748 B / 16.956 B |
-| 2 | SHA-256 doğrulandı | **PASS** — `2d1fbc85…` / `c90d074a…`, `match=True` |
-| 3 | Anahtar güvenli yolla alındı | **PASS** — `env=`, argv'de değil |
-| 4 | `:memory:` üzerine restore | **PASS** — `rc=0` |
-| 5 | PostgreSQL bağlantısı reddedildi | **PASS** — bkz. §9 |
-| 6 | Kayıt sayısı | **PASS** — 9.154 |
-| 7 | Sohbet sayısı | **PASS** — 100 |
-| 8 | Identity set eşitliği | **PASS** — `true` |
-| 9 | Identity root eşleşmesi | **PASS** — `true` |
-| 10 | Mesaj kaybı yok | **PASS** — `expected_rows == restored_rows` |
-| 11 | Üretim DB'sine yazılmadı | **PASS** — `database_write_count = 0` |
+Kopya B oluşturulmadı. Kopya A'dan **farklı fiziksel konumda** (farklı bina / bağımsız risk
+alanı) saklanmalı ve aynı `verify --expect c25805a2 → MATCH` kontrolünden geçmeli.
 
-### Restore çıktısı
+Kopya A tamamlanmadan bu adıma geçilmedi.
 
-```
-restore_rc              = 0
-inserted                = 9154
-skipped_duplicate       = 0
-restored_rows           = 9154
-expected_rows           = 9154
-source_identity_count   = 9154
-restored_identity_count = 9154
-distinct_conversations  = 100
-identity_set_equal      = True
-identity_root_matches   = True
-identity_conserved      = True
-```
-
-### Yazma kanıtı
-
-```
-DB_ONCE  = 2253|126|1538     (messages|conversations|contacts)
-DB_SONRA = 2253|126|1538
-```
-
-**Birebir aynı ⇒ `database_write_count = 0`.** Restore yalnızca belleğe yazdı.
-
-### ⚠️ Bu testin sınıfı
-
-**MEKANİK TEST — bağımsız fiziksel escrow kabulü DEĞİL.** Anahtar dijital escrow dosyasından
-okundu, kâğıttan değil. §6'daki kopyalar oluşmadan bu test "kâğıttan veriye" zincirini
-kanıtlamaz. İstenen kabul için anahtarın **kâğıttan** girilmesi gerekir.
+| Kopya | Oluşturuldu | Doğrulama | Konum |
+|---|---|---|---|
+| A | **hayır** | — | — |
+| B | **hayır** | — | — |
 
 ---
 
-## 8. IDENTITY SET / ROOT SONUÇLARI
+## 5. ANCHOR DOĞRULAMASI
+
+**Durum: PASS** (3.9.19'da ölçüldü, bu turda değişmedi).
+
+| Kanıt | Sonuç |
+|---|---|
+| Escrow dosyası `anchor8` | `c25805a2` |
+| Aktif `GATEWAY_ENCRYPTION_KEY` `anchor8` | `c25805a2` |
+| Runbook'taki 3.9.7 `fp8` | `c25805a2` |
+| **Gerçek snapshot deşifre** | `ok=true`, iki problem listesi boş |
+
+Deşifre kanıtı — anahtar yalnızca `env=` ile (argv'de **değil**):
+
+```
+verify_rc = 0        ok = True
+record_count = 9154  chat_count = 100
+identity_root_sha256 = 0deff9b5…   records_sha256 = e10d6fe9…
+```
+
+Dördü de manifest ile birebir. **Çapa, dosyanın varlığına değil, veriyi açabilme yeteneğine bağlı
+olarak doğrulandı.**
+
+---
+
+## 6. KÂĞITTAN RESTORE TESTİ
+
+**Durum: NOT RUN.**
+
+Kural gereği bu test yalnızca fiziksel kopyalar hazırlanıp doğrulandıktan sonra çalıştırılabilir.
+Kopyalar yok ⇒ test yapılmadı.
+
+3.9.19'da yapılan restore testi **dijital escrow** ile yapıldığı için yalnızca **mekanik test**
+sınıfındadır ve bağımsız fiziksel escrow kabulü olarak **sayılmaz**.
+
+**Kopyalar hazır olduğunda çalıştırılacak test:** izole dizin (`0700`), `:memory:` hedef,
+`DATABASE_URL` kaldırılmış, anahtar **kâğıttan `getpass` ile**, `restore_rc=0`,
+`identity_set_equal=true`, `identity_root_matches=true`, `database_write_count=0`.
+
+---
+
+## 7. IDENTITY SET / ROOT SONUÇLARI
+
+**Durum: PASS (mekanik test).**
 
 | Ölçüm | Değer |
 |---|---|
-| Kaynak kimlik sayısı | 9.154 |
-| Geri yüklenen kimlik sayısı | 9.154 |
+| `record_count` / `chat_count` | 9.154 / 100 |
 | `identity_set_equal` | **true** |
-| `restored_identity_root_sha256` | `0deff9b5…` |
-| Manifest `identity_root_sha256` | `0deff9b5…` |
 | `identity_root_matches` | **true** |
 | `identity_conserved` | **true** |
+| `restored_identity_root_sha256` | `0deff9b5…` |
 | `duplicate_identity` | 0 |
-| `shortfall_sum` (manifest, sohbet toplamı) | **0** |
-| `collected_sum` | 9.154 = `record_count` |
+| `shortfall_sum` | 0 |
 | `unstable_chats` | `[]` |
-| `late_arrival_count` | 0 |
-| `rejected_missing_identity` / `rejected_incomplete` | 0 / 0 |
-
-Kimlik kümesi **birebir korundu**; kayıp veya fazlalık yok.
 
 ---
 
-## 9. POSTGRESQL GÜVENLİK TESTİ
+## 8. POSTGRESQL GÜVENLİK TESTLERİ
 
-Dört olumsuz yol da **ampirik olarak** denendi — matris iddiaları varsayılmadı, ölçüldü.
+**Durum: PASS.**
 
-| # | Senaryo | Beklenen | Ölçülen | Sonuç |
-|---|---|---|---|---|
-| 1 | `DATABASE_URL=postgresql://…` | reddet | `rc=1`, *"REDDEDILDI: DATABASE_URL postgres: uretim DB'sine geri yukleme reddedildi"* | **PASS** |
-| 2 | Yanlış anahtar (64 sıfır) | AES-GCM reddet | `rc=3` | **PASS** |
-| 3 | Bozuk snapshot (tek bayt XOR) | bütünlük reddet | `rc=3` | **PASS** |
-| 4 | Depo içi hedef (`/opt/tezlify/tezlify.db`) | reddet | `rc=1` | **PASS** |
-
-**Sonuç: PASS.** Güvenlik kapıları yalnızca kodda değil, **çalışırken** de doğrulandı.
-
----
-
-## 10. FELAKET SENARYOSU MATRİSİ
-
-| Senaryo | Kurtarma kaynağı | Ön koşul | Gerekli dosya/erişim | Kanıt durumu |
-|---|---|---|---|---|
-| **Gateway container kaybı** | Yerel snapshot | Container yeniden başlar, RAM dolu | `/var/backups/tezlify-ram/*.rsnap` + anahtar | **KANITLANDI** — restore testi |
-| **Sunucu disk kaybı** | OCI snapshot + fiziksel escrow | Yeni sunucu + anahtar | OCI erişimi + **kâğıt anahtar** | **KISMİ** — OCI indirme ✅, kâğıt ❌ |
-| **OCI erişim kaybı** | Yerel snapshot + fiziksel escrow | Sunucu sağlam | yerel `.rsnap` + kâğıt | **KISMİ** — yerel ✅, kâğıt ❌ |
-| **Sunucu + OCI kaybı** | Fiziksel escrow + bağımsız snapshot kopyası | İkinci konumda `.rsnap` kopyası | kâğıt + ikinci kopya | **BLOCKED** — ikisi de yok |
-| **Anahtar escrow kaybı** | İkinci fiziksel kopya | Kopya B | kâğıt B | **BLOCKED** — kopya yok |
-| **Bozuk snapshot** | SHA/manifest doğrulaması | — | — | **KANITLANDI** — rc=3 |
-| **Yanlış anahtar** | AES-GCM doğrulaması | — | — | **KANITLANDI** — rc=3 |
-| **PostgreSQL hedefi** | Güvenlik kapısı | — | — | **KANITLANDI** — rc=1 |
-
-**Kritik boşluk:** "Sunucu + OCI kaybı" senaryosu bugün **kurtarılamaz**. Kâğıt kopya *anahtar*
-riskini kapatır; **ikinci snapshot kopyası** (ikinci sağlayıcı) hâlâ yoktur.
-
----
-
-## 11. AÇIK RİSKLER
-
-| # | Risk | Ciddiyet | Durum |
+| # | Senaryo | rc | Mesaj |
 |---|---|---|---|
-| 1 | Fiziksel kopya A/B yok | **YÜKSEK** | BLOCKED — operatör eylemi |
-| 2 | İkinci sağlayıcıda snapshot kopyası yok | **YÜKSEK** | açık — "sunucu+OCI kaybı" kurtarılamaz |
-| 3 | Otomatik koşum henüz kanıtlanmadı | **ORTA** | 13:01:53 UTC'de doğrulanacak |
-| 4 | OCI kota sınırı bilinmiyor | **ORTA** | 3.9.18'den devir |
-| 5 | Persistence hâlâ kapalı (`enabled=None`) | **YÜKSEK** | yama `313380f` merge edilmedi |
-| 6 | Retention yok — tavan senaryosunda 52 GB ~15 gün | **ORTA** | ayrı onay bekliyor |
-| 7 | Log'da 1. satırda `ram_total_reported` (eski kod) | **DÜŞÜK** | değeri `None`; yeni satırlarda yok |
-| 8 | `.key-escrow` (v1) tırnaklı eski biçim | **DÜŞÜK** | aynı anahtar; v2 doğru kaynak |
+| 1 | `DATABASE_URL=postgresql://…` | **1** | `REDDEDILDI: DATABASE_URL postgres: uretim DB'sine geri yukleme reddedildi` |
+| 2 | Yanlış anahtar (`0`×64) | **3** | geri yükleme başarısız |
+| 3 | Bozuk snapshot (tek bayt XOR) | **3** | geri yükleme başarısız |
+| 4 | Depo içi hedef | **1** | — |
+
+Üretim DB'sine **gerçek yazma denemesi yapılmadı**. Yazma sayacı: `DB_ONCE = DB_SONRA =
+2253|126|1538` ⇒ `database_write_count = 0`.
 
 ---
 
-## 12. SONRAKİ AŞAMA ÖNERİSİ
+## 9. OTOMATİK TIMER KANITI
 
-**AŞAMA 3.9.20 — PERSISTENCE AKTİVASYONU ÖNCESİ SON GÜVENLİK VE VERİ BÜTÜNLÜĞÜ DENETİMİ**
+**Durum: NOT RUN.**
 
-Ancak ondan **önce** kapatılması gereken iki fiziksel iş var:
+### Ölçüm
 
-1. **Kopya A ve B'nin operatör tarafından oluşturulması** — §5'teki prosedürle, `verify
-   --expect c25805a2` → MATCH olana kadar.
-2. **Kâğıttan restore testi** — anahtar kâğıttan girilerek §7 tekrarlanır; o zaman test
-   "bağımsız fiziksel escrow" sınıfına yükselir.
+```
+systemctl is-enabled  → enabled
+systemctl is-active   → active (waiting)
+Active since          → 2026-10-30 12:13:25 UTC
+Trigger (NEXT)        → 2026-10-30 13:01:53 UTC   (ölçüm anında 23 dk kaldı)
+LAST                  → -   (hiç çalışmadı)
+```
 
-Bu iki iş tamamlanmadan 3.9.19 **PASS'e çekilemez**.
+### Journal — kesin kanıt
 
-**Bu aşamada yapılmayanlar:** persistence aktivasyonu yok · `313380f` merge yok · DB'ye RAM verisi
-aktarımı yok · gateway davranış değişikliği yok · deploy yok · restart yok · timer değişikliği yok.
+```
+timer:   Oct 30 12:13:25 Started tezlify-ram-snapshot.timer
+service: Oct 30 12:13:25 Starting tezlify-ram-snapshot.service
+         Oct 30 12:13:36 Finished tezlify-ram-snapshot.service
+```
+
+Journal'daki **tek** service kaydı 12:13:25'teki **elle** `systemctl start`'tır (3.9.18'de
+yapıldı). Timer'ın kendisi **hiç tetiklemedi** — `LAST = -` bunu doğruluyor.
+
+### Sınıflandırma
+
+Log'daki 5 satırın tamamı **manuel/systemd tetiklemeli**dir. Hiçbiri otomatik koşum **değildir**.
+Bu raporda otomatik koşum olarak sayılmadı.
+
+Timer elle tetiklenmedi, saati değiştirilmedi, sistem bekletilmedi.
+
+### Doğal tetiklemeden SONRA çalıştırılacak salt-okunur kontroller
+
+```bash
+# 1) timer gercekten tetikledi mi
+systemctl list-timers tezlify-ram-snapshot.timer --no-pager
+journalctl -u tezlify-ram-snapshot.timer -n 5 --no-pager
+
+# 2) service timer tarafindan mi baslatildi (elle degil)
+journalctl -u tezlify-ram-snapshot.service -n 10 --no-pager
+
+# 3) son kosum OK mu
+tail -1 /var/backups/tezlify-ram/snapshot.jsonl
+
+# 4) restart sayilari degismedi mi
+for c in tezlify-gateway tezlify-backend tezlify-db tezlify-caddy; do
+  printf "%s=%s " "$c" "$(docker inspect -f '{{.RestartCount}}' $c)"; done; echo
+```
+
+Beklenen: `LAST` dolu, journal'da timer tetiklemesi, `status=OK`, `remote_verified=true`,
+restart 0/0/0/0.
 
 ---
 
-## SECRET TARAMASI
+## 10. SNAPSHOT SHA VE OCI DOĞRULAMASI
+
+**Durum: PASS.**
+
+| Ölçüm | Değer |
+|---|---|
+| Son snapshot | `tezlify-ram-20261030T121325Z` |
+| Yerel `.rsnap` SHA-256 | `2d1fbc85…` |
+| OCI kopyası SHA-256 | `2d1fbc85…` — **eşit** |
+| Manifest SHA-256 | `c90d074a…` — eşit |
+| Manifest | `kind=tezlify.ram_snapshot`, `schema=1` |
+| Yerel dosya sayısı | 10 `.rsnap` / 10 manifest |
+| OCI | **20 nesne / 71.752.571 B** |
+| OCI tutarlılığı | 16 → 20 nesne, 57.339.163 + 2×(7.189.748+16.956) = **71.752.571** ✅ |
+| `escrow_izi` | **YOK** |
+
+---
+
+## 11. DİSK / KAPASİTE ANALİZİ
+
+**Durum: PASS (bilgi).** Retention veya otomatik silme **eklenmedi**.
+
+### Ölçülen
+
+| Ölçüm | Değer |
+|---|---|
+| Tek koşum | 7.189.748 B (`.rsnap`) + 16.956 B (manifest) = **7.206.704 B** |
+| Disk | 96 G toplam · 45 G dolu · **52 G boş** · **%47** |
+| Snapshot boyut aralığı | 7.100.080 – 7.189.748 B |
+| OCI nesne / bayt | 20 / 71.752.571 B |
+| **OCI kotası** | **ERİŞİLEMEDİ** |
+
+### Projeksiyon — bugünkü boyutla
+
+| Pencere | Toplam |
+|---|---|
+| Günlük (24 koşum) | 172.960.896 B = **164,9 MiB** = **0,161 GiB** |
+| Haftalık (168) | 1.210.726.272 B = **1,13 GiB** |
+| Aylık (720) | 5.188.826.880 B = **4,83 GiB** |
+
+52 GiB boş alanla bugünkü hızda **~322 gün** yeter.
+
+### Tavan senaryosu — 200.000 mesaj (785 B/mesaj)
+
+| Pencere | Toplam |
+|---|---|
+| Tek koşum | 157.000.000 B ≈ **149,7 MiB** |
+| Günlük | **3,51 GiB** |
+| Aylık | **105,3 GiB** |
+
+Tavan senaryosunda 52 GiB **~14,8 günde** dolar.
+
+### OCI kotası
+
+Kota bilgisine **erişilemedi** (instance-principal izni kota sorgusuna yetmiyor). **Tahmin
+üretilmedi.** Bu açık bir risk olarak §14'te duruyor.
+
+---
+
+## 12. İKİNCİ OFF-SITE KOPYA DEĞERLENDİRMESİ
+
+**Yeni sağlayıcı kurulmadı, kimlik bilgisi oluşturulmadı.** Yalnızca değerlendirme.
+
+**Kritik çerçeve:** `.rsnap` zaten AES-256-GCM ile şifreli. Yani üçüncü taraf sağlayıcı yalnızca
+**şifreli metin** görür — sağlayıcıya duyulan güven ihtiyacı düşüktür. Buna karşılık **üç seçenek
+de aynı anahtara bağlıdır**; anahtar riskini yalnızca §3'teki fiziksel escrow kapatır.
+
+### Karşılaştırma
+
+| Kriter | (1) İkinci OCI bölgesi | (2) İkinci sağlayıcı (R2/B2/S3) | (3) Operatör offline kopya |
+|---|---|---|---|
+| **Bağımsızlık** | **ZAYIF** — aynı tenancy/hesap; hesap kapanırsa ikisi de gider | **GÜÇLÜ** — farklı şirket, farklı kimlik | **EN GÜÇLÜ** — air-gap, ağ yok |
+| **Erişim güvenliği** | Aynı IAM; sızıntı ikisini de açar | Yeni secret = yeni saldırı yüzeyi, ama izole | Fiziksel kontrol; dijital saldırı yok |
+| **Şifreleme** | Aynı anahtar (tek nokta) | Aynı anahtar; envelope opsiyonel | Aynı anahtar; ciphertext medyada |
+| **Maliyet** | ~0,04 $/ay egress + ~0,12 $ depolama | R2 ~0,07 $/ay · B2 ~0,03 $/ay · S3 ~0,11 $/ay + egress | Tek seferlik medya (~20–50 $) |
+| **Kurtarma süresi** | Dakikalar | Dakikalar | **Saatler–günler** (fiziksel erişim) |
+| **Operasyonel karmaşıklık** | **Düşük** — aynı araç, bölge değişir | **Orta** — yeni uploader + doğrulama yolu | **Yüksek** — insan disiplini, medya rotasyonu |
+
+### Değerlendirme
+
+- **(1) tek başına yetersiz.** "Sunucu + OCI kaybı" senaryosunu **çözmez**, çünkü aynı hesap
+  altındadır. Bölge arızasına karşı korur, hesap kaybına karşı korumaz.
+- **(2) doğru otomatik çözüm.** Farklı şirket + farklı kimlik gerçek bağımsızlık verir. Maliyeti
+  ihmal edilebilir. Riski: yeni bir secret yönetimi ve ikinci bir yükleme yolu — "ikinci yedekleme
+  sistemi kurma" ilkesiyle çelişmemesi için **mevcut orkestratöre hedef eklemek** şeklinde
+  tasarlanmalı, ayrı bir sistem değil.
+- **(3) son savunma hattı.** Otomatik değil, yavaş, ama ağ ve kimlik gerektirmez. (2) ile
+  **birlikte** anlamlıdır.
+
+**Öneri:** (2) + (3) birlikte. (1) atlanmalı — bağımsızlık yanılsaması yaratır.
+**Kurulum için ayrı onay gerekir** (yeni secret, yeni sağlayıcı hesabı).
+
+---
+
+## 13. SECRET TARAMA SONUÇLARI
 
 | Denetim | Sonuç |
 |---|---|
 | Bu raporda 64-hex anahtar | **0** |
 | OCID / IPv4 / Bearer / private key | **0** |
-| Log'da anahtara eşit 64-hex | **0** (5 adet 64-hex'in tamamı `rsnap_sha256`) |
-| Manifest'lerde anahtar | **0** / 10 dosya |
 | Anahtar argv'ye geçti mi | **hayır** — yalnızca `env=` |
-| Anahtar sohbete/rapora/log'a yazıldı mı | **hayır** |
+| Anahtar SSH stdout ile yerel makineye taşındı mı | **hayır** — prosedür düzeltildi (§3.3) |
+| Anahtar log'a / manifest'e yazıldı mı | **hayır** — 0/10 manifest |
+| Log'daki 64-hex'ler | 5 adet, **hepsi `rsnap_sha256`**; 0'ı anahtara eşit |
+| Commit'e giren secret | **0** |
 
-Raporda yalnızca **8 haneli genel çapa** (`c25805a2`) ve **özet önekleri** (ilk 8 hex) bulunur.
+Raporda yalnızca **8 haneli genel çapa** (`c25805a2`) ve **özet önekleri** (ilk 8 hex) var.
 
 ---
 
-*Üretim güvenliği korundu: 0 restart, 0 deploy, 0 DB yazımı, 0 snapshot silme, 0 escrow
-değişikliği, 0 IAM/bucket değişikliği. Timer'a dokunulmadı.*
+## 14. AÇIK RİSKLER
+
+| # | Risk | Ciddiyet | Durum |
+|---|---|---|---|
+| 1 | Fiziksel kopya A/B yok | **YÜKSEK** | BLOCKED — operatör eylemi |
+| 2 | Kâğıttan restore yapılmadı | **YÜKSEK** | NOT RUN — A'ya bağlı |
+| 3 | Otomatik timer koşumu kanıtlanmadı | **ORTA** | NOT RUN — 13:01:53 UTC sonrası |
+| 4 | İkinci sağlayıcıda ciphertext yok | **YÜKSEK** | "sunucu+OCI kaybı" kurtarılamaz |
+| 5 | OCI kota sınırı bilinmiyor | **ORTA** | erişilemedi; tahmin üretilmedi |
+| 6 | Persistence kapalı (`enabled=None`) | **YÜKSEK** | `313380f` merge edilmedi |
+| 7 | Retention yok — tavanda 52 GB ~14,8 gün | **ORTA** | ayrı onay bekliyor |
+| 8 | Eski runbook komutu anahtarı SSH ile taşıyordu | **ORTA** | **düzeltildi** (§3.3) |
+
+---
+
+## 15. NİHAİ KABUL MATRİSİ
+
+| # | Kriter | Durum | Kanıt |
+|---|---|---|---|
+| 1 | Aktif anahtar ↔ v2 escrow eşleşiyor | **PASS** | üç ölçüm `c25805a2` |
+| 2 | Anchor `c25805a2` doğrulandı | **PASS** | deşifreleme ile |
+| 3 | Fiziksel kopya A oluşturuldu | **BLOCKED** | — |
+| 4 | Fiziksel kopya A `MATCH` | **NOT RUN** | — |
+| 5 | Fiziksel kopya B oluşturuldu | **BLOCKED** | — |
+| 6 | Fiziksel kopya B `MATCH` | **NOT RUN** | — |
+| 7 | Kâğıttan anahtarla restore başarılı | **NOT RUN** | A'ya bağlı |
+| 8 | Identity set eşit | **PASS** | mekanik test |
+| 9 | Identity root eşit | **PASS** | mekanik test |
+| 10 | Kayıt sayısı eksiksiz | **PASS** | 9.154/9.154 |
+| 11 | Production DB yazımı sıfır | **PASS** | 2253\|126\|1538 → aynı |
+| 12 | Yanlış anahtar reddedildi | **PASS** | rc=3 |
+| 13 | Bozuk snapshot reddedildi | **PASS** | rc=3 |
+| 14 | PostgreSQL hedefi reddedildi | **PASS** | rc=1 |
+| 15 | Depo içi hedef reddedildi | **PASS** | rc=1 |
+| 16 | Gerçek otomatik timer koşumu | **NOT RUN** | `LAST = -` |
+| 17 | Remote verification başarılı | **PASS** | son 3 koşum `true` |
+| 18 | Snapshot SHA eşleşti | **PASS** | `2d1fbc85…` |
+| 19 | Secret sızıntısı yok | **PASS** | §13 |
+| 20 | Production restart yok | **PASS** | 0/0/0/0 |
+| 21 | Production deploy yok | **PASS** | `5cd3eae`/`cbe4f509` |
+| 22 | Persistence kapalı | **PASS** | `enabled=None` |
+
+**Skor: 15 PASS · 2 BLOCKED · 5 NOT RUN**
+
+### Neden COMPLETE/PASS yazılmadı
+
+Zorunlu üç kriter kanıtlanmadı:
+- fiziksel kopya A ve B (operatör eylemi),
+- kâğıttan restore (A'ya bağlı),
+- gerçek otomatik timer koşumu (zamanı gelmedi).
+
+**3.9.19 durumu: PARTIAL.** Bu üçü tamamlanmadan PASS verilemez.
+
+---
+
+## DURMA NOKTASI
+
+Operatör eylemi bekleniyor. Bu aşamada yapılmayanlar:
+
+- persistence aktivasyonu **yok**
+- `313380f` merge **yok**
+- RAM verisinin PostgreSQL'e aktarımı **yok**
+- gateway davranış değişikliği **yok**
+- yeni off-site sağlayıcı **yok**
+- retention politikası **yok**
+- deploy / restart / timer değişikliği **yok**
+
+**Sonraki aşama:** AŞAMA 3.9.20 — persistence aktivasyonu öncesi son güvenlik ve veri bütünlüğü
+denetimi. Ayrı prompt ve açık onay bekler.
+
+---
+
+*Bu raporda anahtar, token, private key veya credential değeri yoktur. Yalnızca 8 haneli genel
+doğrulama çapası (`c25805a2`) ve özet önekleri yer alır. Yapılmayan işlemler yapılmış
+gösterilmedi; manuel koşumlar otomatik sayılmadı.*

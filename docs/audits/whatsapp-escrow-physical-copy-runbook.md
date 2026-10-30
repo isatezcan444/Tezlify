@@ -49,15 +49,38 @@ Yani çapa, bu programda zaten kullanılan parmak izi şemasıyla **aynı**; yen
 
 > Aşağıdaki komutları **kendi terminalinizde** çalıştırın. Çıktıyı hiçbir sohbete, ajana, ekran görüntüsüne veya bulut notuna yapıştırmayın.
 
-### Adım 1 — Yazdırılabilir kartı üret
+### Adım 1 — Kartı **sunucuda** üret (anahtar sunucudan ÇIKMAZ)
+
+> **3.9.19-A'da düzeltildi.** Bu adımın eski hâli anahtarı `ssh … | python3 …` ile **SSH
+> çıktısı olarak yerel makineye** taşıyordu. Bu artık **yasaktır**: *"Anahtarı uzak SSH çıktısı
+> olarak yerel makineye taşıma yasak."* Ayrıca `escrow_physical.py` production sunucusunda
+> bulunmaz, yani eski komut zaten yerel araca bağımlıydı.
+
+Önce sunucuya **etkileşimli** girilir:
 
 ```bash
-ssh -i ~/.ssh/id_tezlify_oracle ubuntu@130.162.247.20 \
-  'sed "s/.*=//" /var/backups/tezlify-ram/.key-escrow-v2' \
-  | python3 scripts/backup/escrow_physical.py sheet --i-am-the-operator
+ssh -i ~/.ssh/id_tezlify_oracle ubuntu@<host>
 ```
 
-Kart 16 grup × 4 karakter hâlinde basılır, `ANCHOR8` üstte yazar. Ekranda görünür → **yazdırın veya doğrudan kâğıda geçirin**, sonra terminal geçmişini temizleyin (`history -c` ya da o terminali kapatın).
+Sonra biçimlendirme **sunucunun kendi python'u ile** çalıştırılır — anahtar ağ üzerinden veri
+olarak taşınmaz, yalnızca ekranda görünür ve elle kâğıda geçirilir:
+
+```bash
+python3 - <<'EOF'
+import hashlib, re
+k = open("/var/backups/tezlify-ram/.key-escrow-v2").read().strip()
+k = k.split("=", 1)[1].strip().strip('"')
+assert re.fullmatch(r"[0-9a-f]{64}", k), "beklenmeyen anahtar bicimi"
+print("uzunluk =", len(k))
+print("anchor8 =", hashlib.sha256(k.encode()).hexdigest()[:8])
+for r in range(4):
+    print("  " + "  ".join(f"{r*4+i+1:>2}:{k[(r*4+i)*4:(r*4+i)*4+4]}" for i in range(4)))
+EOF
+```
+
+Ekranda `uzunluk = 64` ve `anchor8 = c25805a2` görünmeli. 16 grubu (4 satır × 4 grup) sırayla
+kâğıda geçirin. Bitince oturumu kapatın ve terminal geçmişini temizleyin (`history -c` ya da
+terminali kapatın).
 
 ### Adım 2 — Kâğıttan geri yaz ve doğrula
 

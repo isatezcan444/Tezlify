@@ -18,17 +18,20 @@ yanitlamak icin var, anahtar hakkinda kullanilabilir bilgi vermez.
 
 Kullanim (operatör, kendi terminalinde):
 
-    # 1. Capayi ogren (uretimde, anahtar basilmadan):
-    ssh ... 'sed "s/.*=//" /var/backups/tezlify-ram/.key-escrow-v2' \\
-        | python3 scripts/backup/escrow_physical.py anchor
+    ONEMLI (3.9.19-A): anahtar `ssh ... | python3 ...` ile SSH ciktisi olarak
+    yerel makineye TASINMAZ — bu yasaktir. Anahtar yalnizca sunucunun kendi
+    terminalinde gorunur ve elle kagida gecirilir.
 
-    # 2. Yazdirmak icin kart uret (anahtar ekrana gelir — kendi terminaliniz):
-    ssh ... 'sed "s/.*=//" /var/backups/tezlify-ram/.key-escrow-v2' \\
-        | python3 scripts/backup/escrow_physical.py sheet --i-am-the-operator
+    # 1. Sunucuya etkilesimli gir, kart uret (anahtar ekrana gelir):
+    ssh ...  # sunucuda:
+    python3 -c "import hashlib,re; k=open('/var/backups/tezlify-ram/.key-escrow-v2').read().strip().split('=',1)[1].strip().strip(chr(34)); print('anchor8 =', hashlib.sha256(k.encode()).hexdigest()[:8]); [print('  '+'  '.join(k[(r*4+i)*4:(r*4+i)*4+4] for i in range(4))) for r in range(4)]"
 
-    # 3. Kagitdan geri yazarak dogrula (anahtar basilmaz):
+    # 2. Kagitdan geri yazarak dogrula (anahtar basilmaz, yerel makinede):
     python3 scripts/backup/escrow_physical.py verify --expect c25805a2
-    (anahtari yapisitirip Enter; ekranda yankilanmaz)
+    (anahtari kagittan okuyup yazin; getpass ekranda yankilamaz)
+
+    # 3. Yerel dosyadan dogrulama gerekiyorsa (yalnizca test/gelistirme):
+    python3 scripts/backup/escrow_physical.py anchor --from-file <yol>
 
 Cikis kodlari: 0 = eslesti, 1 = eslesmedi, 2 = girdi gecersiz.
 """
