@@ -292,6 +292,14 @@ def cmd_upload(args) -> int:
     escrow = [i["file"] for i in collect(source)
               if i.get("action") == "BLOCKED_ESCROW"]
 
+    if args.only:
+        wanted = set(args.only)
+        unknown = wanted - {i["file"] for i in items}
+        if unknown:
+            print(f"[ABORT] bilinmeyen --only dosya: {sorted(unknown)}")
+            return 2
+        items = [i for i in items if i["file"] in wanted]
+
     plan = []
     for it in items:
         plan.append({"file": it["file"], "bytes": it["bytes"],
@@ -342,8 +350,13 @@ def cmd_upload(args) -> int:
             t0 = time.monotonic()
             p.put_object(args.bucket, key, data, it["sha256"])
             dt = time.monotonic() - t0
+            remote = p.head_object(args.bucket, key) or {}
             results.append({"file": it["file"], "status": "UPLOADED",
-                            "seconds": round(dt, 2)})
+                            "http": 200,
+                            "seconds": round(dt, 2),
+                            "local_bytes": it["bytes"],
+                            "remote_bytes": int(remote.get("content-length", -1)),
+                            "remote_meta_sha256": remote.get("opc-meta-sha256", "")})
             audit({"file": it["file"], "action": "upload",
                    "bytes": it["bytes"], "sha256": it["sha256"],
                    "object": key, "seconds": round(dt, 2)})
@@ -363,6 +376,9 @@ def cmd_upload(args) -> int:
 def cmd_verify(args) -> int:
     source = Path(args.source)
     items = [i for i in collect(source) if i.get("action") != "BLOCKED_ESCROW"]
+    if getattr(args, "only", None):
+        wanted = set(args.only)
+        items = [i for i in items if i["file"] in wanted]
     p = Principal()
     rows, ok = [], True
     for it in items:
@@ -376,19 +392,27 @@ def cmd_verify(args) -> int:
             if args.download_check:
                 body = p.get_object(args.bucket, key)
                 actual = hashlib.sha256(body).hexdigest()
+                size_ok = len(body) == it["bytes"]
                 match = actual == it["sha256"]
                 rows.append({"file": it["file"], "status":
-                             "VERIFIED" if match else "HASH_MISMATCH",
+                             "VERIFIED" if (match and size_ok) else "HASH_MISMATCH",
                              "remote_sha256": actual,
-                             "local_sha256": it["sha256"]})
-                ok = ok and match
+                             "local_sha256": it["sha256"],
+                             "local_bytes": it["bytes"],
+                             "downloaded_bytes": len(body),
+                             "size_match": size_ok})
+                ok = ok and match and size_ok
             else:
                 match = remote_sha == it["sha256"]
+                remote_bytes = int(remote.get("content-length", -1))
                 rows.append({"file": it["file"], "status":
                              "VERIFIED" if match else "META_MISMATCH",
                              "remote_sha256": remote_sha,
-                             "local_sha256": it["sha256"]})
-                ok = ok and match
+                             "local_sha256": it["sha256"],
+                             "local_bytes": it["bytes"],
+                             "remote_bytes": remote_bytes,
+                             "size_match": remote_bytes == it["bytes"]})
+                ok = ok and match and remote_bytes == it["bytes"]
         except Exception as exc:  # noqa: BLE001
             rows.append({"file": it["file"], "status": "FAILED",
                          "error": f"{type(exc).__name__}: {exc}"})
@@ -426,6 +450,52 @@ def cmd_probe(args) -> int:
     return 3
 
 
+def cmd_list(args) -> int:
+    p = Principal()
+    url = (f"{p._base}/n/{p.namespace}/b/{args.bucket}/o"
+           f"?prefix={urllib.parse.quote(args.prefix, safe='')}"
+           f"&fields=name,size,timeCreated&limit=1000")
+    status, _, body = http_call(
+        "GET", url, None,
+        sign_headers("GET", url, b"", p.session_key, p._key_id))
+    if status != 200:
+        print(f"LIST FAILED HTTP {status}: {body[:200].decode('utf-8','replace')}")
+        return 3
+    objs = json.loads(body).get("objects", [])
+    total = 0
+    escrow_hits = []
+    for o in objs:
+        total += int(o.get("size", 0))
+        name = o.get("name", "")
+        if "escrow" in name.lower() or "key" in name.lower():
+            escrow_hits.append(name)
+        print(f"  {name}  {o.get('size')} B  {o.get('timeCreated')}")
+    print(f"\nnesne_sayisi = {len(objs)}")
+    print(f"toplam_bayt  = {total}")
+    print(f"escrow_izi   = {escrow_hits if escrow_hits else 'YOK'}")
+    return 0
+
+
+def cmd_download(args) -> int:
+    p = Principal()
+    key = object_key(args.prefix, args.file)
+    body = p.get_object(args.bucket, key)
+    digest = hashlib.sha256(body).hexdigest()
+    local, _ = sha256_file(Path(args.source) / args.file)
+    print(f"object      = {key}")
+    print(f"bytes       = {len(body)}")
+    print(f"sha256      = {digest}")
+    print(f"local_sha256= {local}")
+    print(f"match       = {digest == local}")
+    if digest != local:
+        return 1
+    out = Path(args.out)
+    out.write_bytes(body)
+    os.chmod(out, 0o600)
+    print(f"yazildi     = {out}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Tezlify off-site snapshot aktarimi")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -445,6 +515,8 @@ def main(argv=None) -> int:
     u.add_argument("--bucket", required=True)
     u.add_argument("--prefix", default="tezlify/whatsapp/ram-snapshots")
     u.add_argument("--execute", action="store_true")
+    u.add_argument("--only", action="append", default=None,
+                   help="yalnizca bu dosya(lar)i isle (tekrarlanabilir)")
     u.set_defaults(func=cmd_upload)
 
     v = sub.add_parser("verify", help="uzak kopyalari dogrula")
@@ -453,7 +525,22 @@ def main(argv=None) -> int:
     v.add_argument("--prefix", default="tezlify/whatsapp/ram-snapshots")
     v.add_argument("--download-check", action="store_true",
                    help="uzaktan indirip sha256 karsilastir")
+    v.add_argument("--only", action="append", default=None,
+                   help="yalnizca bu dosya(lar)i dogrula")
     v.set_defaults(func=cmd_verify)
+
+    ls = sub.add_parser("ls", help="bucket icerigini listele (escrow kontrolu)")
+    ls.add_argument("--bucket", required=True)
+    ls.add_argument("--prefix", default="tezlify/whatsapp/ram-snapshots")
+    ls.set_defaults(func=cmd_list)
+
+    dl = sub.add_parser("download", help="uzak nesneyi indir + sha256 dogrula")
+    dl.add_argument("--bucket", required=True)
+    dl.add_argument("--file", required=True)
+    dl.add_argument("--out", required=True)
+    dl.add_argument("--source", default="/var/backups/tezlify-ram")
+    dl.add_argument("--prefix", default="tezlify/whatsapp/ram-snapshots")
+    dl.set_defaults(func=cmd_download)
 
     args = ap.parse_args(argv)
     return args.func(args)
