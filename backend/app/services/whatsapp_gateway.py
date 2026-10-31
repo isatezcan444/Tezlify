@@ -373,6 +373,8 @@ async def list_all_messages(
     since: Optional[int] = None,
     per_chat_limit: Optional[int] = None,
     jids: Optional[List[str]] = None,
+    after_seq: Optional[int] = None,
+    seq_epoch: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Faz 10 (P5): gateway belleğindeki TÜM geçmişi zaman damgası sıralı,
     deterministik offset sayfalamasıyla toplu çeker. initial-sync job'ı
@@ -390,6 +392,11 @@ async def list_all_messages(
     başına ~50 mesajla sınırlanır; daha eski geçmiş kullanıcı kaydırdıkça
     lazy hydration ile çekilir. Eski gateway parametreyi yok sayar → tam
     geçmiş + dedup (geriye dönük uyumlu).
+
+    P0-1 (keyset pagination): ``after_seq`` verildiğinde gateway, ekleme
+    sırasına göre ``_seq > after_seq`` kayıtlarını döner. Bu, liste başından
+    eviction yapıldığında offset kaymasını engeller. Eski gateway bu parametreyi
+    yok sayar → eski offset davranışı (geriye dönük uyumlu, fail-safe).
     """
     params: Dict[str, Any] = {"limit": limit, "offset": offset}
     if since is not None:
@@ -401,6 +408,10 @@ async def list_all_messages(
         # verilmezse davranis degismez (tum sohbetler) — eski gateway de
         # bilinmeyen parametreyi yok sayar, yani geriye donuk uyumlu.
         params["jids"] = ",".join(str(j) for j in jids)
+    if after_seq is not None:
+        params["afterSeq"] = int(after_seq)
+    if seq_epoch is not None:
+        params["seqEpoch"] = str(seq_epoch)
     return await _request("GET", f"{_s(gateway_id)}/messages/bulk", params=params)
 
 

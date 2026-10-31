@@ -135,7 +135,7 @@ def fake_gateway(messages: List[Dict[str, Any]], page_size: int):
     """
     calls = {"n": 0, "offsets": []}
 
-    async def _fake(_gateway_id, limit=1000, offset=0, since=None, per_chat_limit=None, jids=None):
+    async def _fake(_gateway_id, limit=1000, offset=0, since=None, per_chat_limit=None, jids=None, **kwargs):
         calls["n"] += 1
         start = max(0, int(offset or 0))
         calls["offsets"].append(start)
@@ -234,11 +234,11 @@ async def test_partial_db_error_then_safe_retry():
     real_insert = mp._insert_messages_resilient
     calls = {"n": 0}
 
-    async def _flaky(db, rows):
+    async def _flaky(db, rows, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise OperationalError("INSERT", {}, Exception("simulated db outage"))
-        return await real_insert(db, rows)
+        return await real_insert(db, rows, **kwargs)
 
     async with AsyncSessionLocal() as db:
         with patch.object(mp.gw, "list_all_messages", side_effect=fake_gateway(msgs, 3)):
@@ -425,7 +425,7 @@ async def test_db_outage_never_touches_gateway_memory():
         seen.append("list_all_messages")
         return {"messages": msgs, "total": 5, "offset": 0, "limit": 500}
 
-    async def _boom(_db, _rows):
+    async def _boom(_db, _rows, **kwargs):
         raise OperationalError("INSERT", {}, Exception("db down"))
 
     with patch.object(mp.gw, "list_all_messages", side_effect=_fake_list):

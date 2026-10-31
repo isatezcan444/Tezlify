@@ -168,7 +168,7 @@ async def run_drain(
     pages = paged(messages, page_size)
     calls = {"n": 0}
 
-    async def _fake(_gateway_id, limit=1000, offset=0, since=None, per_chat_limit=None, jids=None):
+    async def _fake(_gateway_id, limit=1000, offset=0, since=None, per_chat_limit=None, jids=None, **kwargs):
         idx = calls["n"]
         calls["n"] += 1
         if idx >= len(pages):

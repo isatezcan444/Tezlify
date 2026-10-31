@@ -964,9 +964,11 @@ async def metrics_check() -> Dict[str, Any]:
     Değerler SÜREÇ belleğidir — yeniden başlatmada sıfırlanır, bunun için
     `process_local: true` ve `generated_at` alanları yanıtta durur.
     """
+    persistence = _memory_persistence_status()
     return {
         "service": "Tezlify Backend API",
         "version": settings.VERSION,
         "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "whatsapp_identity_sweep": identity_sweep_metrics(),
+        "whatsapp_memory_persistence": persistence,
     }
