@@ -37,7 +37,8 @@ from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.conversation import Conversation
 from backend.app.models.message import Message
 from backend.app.services import whatsapp_service
-from backend.app.services.whatsapp_service import ingest_gateway_event, jid_to_phone
+from backend.app.services.whatsapp.identity import contact_phone_for_jid
+from backend.app.services.whatsapp_service import ingest_gateway_event
 
 TEST_USER = "12345678-1234-1234-1234-123456789012"
 OTHER_USER = "87654321-4321-4321-4321-210987654321"
@@ -103,20 +104,34 @@ def _event(
 
 
 async def _purge(jid: str, gw_id: str) -> None:
-    """Bu testin yazdığı satırları siler. Başka tenant'a dokunmaz."""
+    """Bu testin yazdığı satırları siler. Başka tenant'a dokunmaz.
+
+    Anahtar `contact_phone_for_jid(jid)`'dir — `jid_to_phone(jid)` DEĞİL.
+    Neden: kişiyi yazan taraf (`_upsert_contact`) `contact_phone_for_jid`
+    kullanıyor. Grup JID'lerinde ("...@g.us") bu, `jid:<group-jid>`
+    sentinel'idir; çünkü bir grup JID'i telefon numarasına çevrilemez.
+    `jid_to_phone` ise grup için **None** döndürür ve `WHERE phone_e164 = NULL`
+    hiçbir satırı eşleştirmez — temizlik sessizce hiçbir şey silmez.
+
+    Ölçülen sonuç (AŞAMA 5.2.4, F-2): grup testi her koşuda bir konuşma
+    bırakıyordu (4 koşu → 4 satır). Tek kaynak olan `contact_phone_for_jid`
+    hem normal hem grup JID'ini doğru anahtara çevirir; normal JID'de sonuç
+    `jid_to_phone` ile birebir aynıdır, yani mevcut davranış korunur.
+    """
+    key = contact_phone_for_jid(jid)
     async with AsyncSessionLocal() as db:
         conv_ids = (await db.execute(
             text(
                 "SELECT id FROM conversations WHERE contact_id IN "
                 "(SELECT id FROM contacts WHERE phone_e164 = :p)"
             ),
-            {"p": jid_to_phone(jid)},
+            {"p": key},
         )).scalars().all()
         for cid in conv_ids:
             await db.execute(text("DELETE FROM messages WHERE conversation_id = :c"), {"c": cid})
             await db.execute(text("DELETE FROM conversations WHERE id = :c"), {"c": cid})
         await db.execute(
-            text("DELETE FROM contacts WHERE phone_e164 = :p"), {"p": jid_to_phone(jid)}
+            text("DELETE FROM contacts WHERE phone_e164 = :p"), {"p": key}
         )
         await db.execute(
             text("DELETE FROM whatsapp_sessions WHERE gateway_id = :g"), {"g": gw_id}
@@ -365,19 +380,11 @@ async def test_group_message_behaviour_unchanged():
         assert result.get("_no_broadcast") is None
         assert await _message_count(wa_id) == 1
     finally:
-        async with AsyncSessionLocal() as db:
-            conv_ids = (await db.execute(
-                text("SELECT id FROM conversations WHERE contact_id IN "
-                     "(SELECT id FROM contacts WHERE phone_e164 = :p)"),
-                {"p": jid_to_phone(group_jid)},
-            )).scalars().all()
-            for cid in conv_ids:
-                await db.execute(text("DELETE FROM messages WHERE conversation_id = :c"), {"c": cid})
-                await db.execute(text("DELETE FROM conversations WHERE id = :c"), {"c": cid})
-            await db.execute(text("DELETE FROM contacts WHERE phone_e164 = :p"),
-                             {"p": jid_to_phone(group_jid)})
-            await db.execute(text("DELETE FROM whatsapp_sessions WHERE gateway_id = :g"), {"g": gw_id})
-            await db.commit()
+        # Temizlik `_purge`'e delege edilir. Burada satır içi bir kopya
+        # TUTULMAZ: aynı mantığın iki kopyası olması, anahtar kuralı
+        # düzeltildiğinde birinin geride kalmasına yol açıyordu — grup
+        # testinin artık bırakmasının nedeni tam olarak buydu (F-2).
+        await _purge(group_jid, gw_id)
 
 
 @pytest.mark.asyncio

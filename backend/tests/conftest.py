@@ -126,6 +126,61 @@ def run_db_migrations():
     else:
         loop.run_until_complete(_run())
 
+
+@pytest.fixture(autouse=True)
+def postgres_fresh_pool():
+    """PostgreSQL'de her test taze bir bağlantı havuzuyla başlar.
+
+    Sorun
+    -----
+    `engine` modül düzeyindedir ve havuzu süreç boyunca yaşar. pytest-asyncio
+    her test için AYRI bir event loop açar (`asyncio_default_test_loop_scope =
+    function`), `run_db_migrations` ise kendi session loop'unda bağlantı açar.
+    asyncpg bağlantıları loop'a bağlıdır: havuzdan gelen bir bağlantı başka bir
+    loop'ta kullanılırsa
+
+        RuntimeError: … got Future … attached to a different loop
+
+    alınır. SQLite/aiosqlite bu hatayı göstermez (bağlantı thread tabanlı
+    olduğu için loop'a bağlı değildir), bu yüzden sorun yalnız PostgreSQL
+    koşularında ortaya çıkar.
+
+    Neden `close=False`
+    -------------------
+    Havuzu kapatmak (`dispose(close=True)`) bağlantıları KAPATMAYA çalışır; bu
+    da asyncpg'de await gerektirir ve ölü loop'ta yapılmaya çalışılınca aynı
+    "different loop" hatasını fırlatır — yani düzeltmeye çalıştığımız hatayı
+    yeniden üretir. `close=False` havuzu bağlantıları kapatmadan değiştirir:
+    sonraki `checkout` yeni bağlantıyı İÇİNDE BULUNDUĞU loop'ta açar. Eski
+    bağlantılar referanssız kalır ve asyncpg tarafından toplanır.
+
+    Neden dialect kontrolü
+    ----------------------
+    Guard `settings.DATABASE_URL`'e değil `engine.dialect.name`'e bakar: engine
+    hangi URL ile kurulduysa onu söyler, `settings` sonradan değiştirilse bile
+    yanıltmaz. PostgreSQL değilse fixture HİÇBİR ŞEY yapmaz — SQLite koşuları
+    için davranış bit düzeyinde aynıdır (ne havuz değişir ne bağlantı açılır).
+
+    Kapsam
+    ------
+    autouse, ama pratikte yalnız PostgreSQL koşularında etkindir: SQLite'ta
+    gövde ilk satırda `yield`'e düşer. Tek tek testlere `usefixtures` eklemek
+    yerine bunu seçmenin nedeni, PostgreSQL'e karşı koşan HER testin bu
+    tazelemeye ihtiyaç duyması ve hiçbirinin bunu hatırlamak zorunda kalmaması.
+    """
+    from backend.app.core.database import engine
+
+    if engine.dialect.name != "postgresql":
+        # SQLite: hiçbir şeye dokunma. Havuzu değiştirmek, `:memory:`
+        # veritabanı kullanan bir kurulumda şemayı da uçururdu.
+        yield
+        return
+
+    engine.sync_engine.dispose(close=False)
+    yield
+    engine.sync_engine.dispose(close=False)
+
+
 @pytest.fixture(autouse=True)
 def enable_history_expansion_in_tests():
     old = getattr(settings, "WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED", False)
