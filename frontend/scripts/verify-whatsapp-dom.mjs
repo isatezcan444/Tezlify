@@ -259,6 +259,12 @@ try {
     await act(async () => {
       root.render(h(I18nProvider, null, h(ToastProvider, null, element)));
     });
+    // Let the component's post-mount rAF double-pin settle. Without this, a
+    // scenario that manipulates scrollTop immediately after mount races the
+    // deferred pin, which then silently snaps the viewport back to the bottom
+    // and makes the scenario observe the wrong state (harness nondeterminism,
+    // not a component defect).
+    await act(async () => { await new Promise((r) => requestAnimationFrame(r)); });
     return {
       host,
       root,
@@ -353,11 +359,14 @@ try {
     const msgs = Array.from({ length: 12 }, (_, i) => mkMsg(i + 1));
     const view = await mount(h(ChatThread, { messages: msgs, hasMore: true, onLoadOlder: () => {} }));
     const el = threadContainer(view.host);
+    // REAL mechanism: a populated thread pins itself to the newest message on
+    // mount via `scrollTop = scrollHeight` (instant, zero animation). It does
+    // NOT call `scrollIntoView` — that is reserved for jump-to-message. Assert
+    // the observable result BEFORE the manual positioning below can mask it.
+    assert.equal(el.scrollTop, el.scrollHeight - el.clientHeight, 'mount should auto-scroll to the bottom');
     // The user is at the bottom.
     await act(async () => { el.scrollTop = el.scrollHeight - el.clientHeight; });
     await fireScroll(el);
-    // Mounting a populated thread scrolls to the bottom once.
-    assert.equal(el[SIM].scrollIntoViewCalls, 1, 'mount should auto-scroll once');
 
     await view.update(h(ChatThread, { messages: [...msgs, mkMsg(13)], hasMore: true, onLoadOlder: () => {} }));
 
@@ -670,7 +679,6 @@ try {
     // kept and told which conversation it now renders, so it resets itself.
     // Rebuilding it instead was what allowed a stale thread root to survive in
     // the pane, one per clicked conversation.
-    const callsBefore = el[SIM].scrollIntoViewCalls;
     await view.update(
       h(ChatThread, { messages: convB, hasMore: false, leadName: 'B', conversationKey: 'B' })
     );
@@ -680,12 +688,14 @@ try {
     assert.equal(scrollerCount(view.host), 1, 'the pane must hold exactly one thread');
     assert.ok((elB.textContent || '').includes('mesaj-1049#'), 'the newest message must be rendered');
     assert.ok(!(elB.textContent || '').includes('mesaj-30#'), "the previous chat's messages must be gone");
+    // The switch re-positions to B's newest message (real mechanism: a
+    // scrollTop pin; the component does not use scrollIntoView for this), so it
+    // must land at the bottom rather than inherit A's scrolled-up viewport.
     assert.equal(
       elB.scrollTop,
       elB.scrollHeight - elB.clientHeight,
-      'switching conversations must land at the bottom, not inherit A\'s viewport'
+      'switching conversations must re-run the scroll to newest and land at the bottom, not inherit A\'s viewport'
     );
-    assert.ok(elB[SIM].scrollIntoViewCalls > callsBefore, 'the switch must re-run the scroll to newest');
     assert.equal(pill(view.host), null, 'no spurious new-message pill on switch');
     await view.unmount();
   });
@@ -715,8 +725,11 @@ try {
     );
     const elB = threadContainer(view.host);
     assert.ok((elB.textContent || '').includes('mesaj-7039#'), 'the newest message of B must be rendered');
-    assert.ok(elB[SIM].scrollIntoViewCalls >= 1, 'the chat must position itself when its content appears');
-    assert.equal(elB.scrollTop, elB.scrollHeight - elB.clientHeight, 'and show the newest message');
+    assert.equal(
+      elB.scrollTop,
+      elB.scrollHeight - elB.clientHeight,
+      'the chat must position itself when its content appears and show the newest message'
+    );
 
     // --- back to A: the reused instance re-positions for A ---
     await view.update(
@@ -724,8 +737,11 @@ try {
     );
     const elA = threadContainer(view.host);
     assert.equal(scrollerCount(view.host), 1, 'still exactly one thread in the pane');
-    assert.ok(elA[SIM].scrollIntoViewCalls >= 1, 'switching back must re-run the initial positioning');
-    assert.equal(elA.scrollTop, elA.scrollHeight - elA.clientHeight, 'switching back lands on A\'s newest message');
+    assert.equal(
+      elA.scrollTop,
+      elA.scrollHeight - elA.clientHeight,
+      'switching back must re-run the initial positioning and land on A\'s newest message'
+    );
     await view.unmount();
   });
 

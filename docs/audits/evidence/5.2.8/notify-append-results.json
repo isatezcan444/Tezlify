@@ -1,0 +1,43 @@
+{
+  "passed": 8,
+  "failed": 0,
+  "results": [
+    [
+      "A. notify(open): bubble + preview + timestamp + count, unread stays 0, sound fired",
+      "PASS"
+    ],
+    [
+      "B. notify(closed): unread +1 and badge rendered, preview + count update",
+      "PASS"
+    ],
+    [
+      "C. outbound: no unread, no sound, no toast",
+      "PASS"
+    ],
+    [
+      "D. replay: same wa_message_id does not double count, re-toast, or re-sound",
+      "PASS"
+    ],
+    [
+      "E. append(history): older message renders, preview/timestamp do NOT regress, no unread, no sound",
+      "PASS"
+    ],
+    [
+      "F. dedup history->live: the same wa_message_id renders once and counts once",
+      "PASS"
+    ],
+    [
+      "G. preview ordering: newer wins, older is ignored, equal timestamp applies",
+      "PASS"
+    ],
+    [
+      "H. toast: an inbound notify raises a real toast only when NOT on the whatsapp tab",
+      "PASS"
+    ]
+  ],
+  "pageErrors": [],
+  "console": [
+    "[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ]
+}

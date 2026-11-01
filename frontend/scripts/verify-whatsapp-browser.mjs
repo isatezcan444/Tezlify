@@ -67,6 +67,8 @@ import { flushSync } from 'react-dom';
 import { ChatThread } from '${SRC}/features/whatsapp/components/ChatThread';
 import { ChatComposer } from '${SRC}/features/whatsapp/components/ChatComposer';
 import { I18nProvider } from '${SRC}/context/I18nContext';
+import { ThemeProvider } from '${SRC}/context/ThemeContext';
+import { ToastProvider } from '${SRC}/context/ToastContext';
 
 const mkMsg = ${JSON.stringify(null)};
 const make = (id) => ({
@@ -93,8 +95,14 @@ threads = seed();
 
 function App() {
   const [, setTick] = useState(0);
-  return React.createElement(I18nProvider, null,
-    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', height: 420 } },
+  // Mirror the REAL app provider tree (src/App.tsx): Theme > I18n > Toast.
+  // ChatBubble calls useToast(); without the real ToastProvider it throws
+  // "useToast must be used within a ToastProvider". This is the production
+  // provider (not a mock), so toast rendering stays fully live.
+  return React.createElement(ThemeProvider, null,
+    React.createElement(I18nProvider, null,
+      React.createElement(ToastProvider, null,
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', height: 420 } },
       React.createElement('div', { id: 'thread', style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
         React.createElement(ChatThread, {
           // Production contract: the thread is NOT keyed by conversation id.
@@ -120,6 +128,8 @@ function App() {
         onSend: async (text) => { sent.push({ convId, text }); },
         onSendMediaFile: async () => {},
       })
+        )
+      )
     )
   );
 }
@@ -230,23 +240,23 @@ window.__h = {
     return el.scrollTop;
   },
   async typeDraft(text) {
-    const input = document.querySelector('input[type="text"]');
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    const input = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
     setter.call(input, text);
     input.dispatchEvent(new window.Event('input', { bubbles: true }));
     await frame(); await frame();
     return input.value;
   },
   async send() {
-    const input = document.querySelector('input[type="text"]');
+    const input = document.querySelector('textarea');
     input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     await frame(); await frame(); await wait(50);
     return sent.slice();
   },
   state() {
     const el = scroller();
-    const input = document.querySelector('input[type="text"]');
-    const pill = document.querySelector('.bottom-4.right-4');
+    const input = document.querySelector('textarea');
+    const pill = document.querySelector('[data-testid="new-message-pill"]');
     return {
       convId,
       hasScroller: !!el,
@@ -275,6 +285,33 @@ window.__h = {
       olderRequests,
     };
   },
+  // Scenario J: force the pane geometry so the thread's MAXIMUM scrollTop sits
+  // inside the pagination trigger zone. The previous fixture assumed "4
+  // messages ≈ <60px of overflow" — a layout guess that real Tailwind
+  // invalidated (measured: 1528px). Measure the content and size the viewport
+  // instead of guessing; the caller then re-opens the chat so the real
+  // "click a chat" path runs against the fitted geometry.
+  async fitOverflow(px) {
+    const outer = document.querySelector('#root > div');
+    const rootEl = document.getElementById('root');
+    const el = scroller();
+    for (let i = 0; i < 4; i += 1) {
+      const overflow = el.scrollHeight - el.clientHeight;
+      if (Math.abs(overflow - px) <= 2) break;
+      const next = Math.round(outer.getBoundingClientRect().height + (overflow - px));
+      outer.style.height = next + 'px';
+      rootEl.style.height = next + 'px';
+      await frame(); await frame(); await settle();
+    }
+    return {
+      overflow: el.scrollHeight - el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    };
+  },
+  // Charge only the OPEN with requests: geometry work the harness performs
+  // itself must not be counted against the scenario.
+  clearOlderRequests() { const n = olderRequests; olderRequests = 0; return n; },
   markEl() { window.__prevEl = scroller(); return !!window.__prevEl; },
   sameEl() { return window.__prevEl === scroller(); },
 };
@@ -646,7 +683,7 @@ await check('H: opening 6 conversations in a row leaves exactly one thread root 
   const s = await state();
   assert.equal(s.threadRoots, 1, `the pane must hold one thread root, found ${s.threadRoots}`);
   assert.equal(s.scrollers, 1, `the pane must hold one scroll container, found ${s.scrollers}`);
-  const inputs = await call('document.querySelectorAll(\'input[type="text"]\').length');
+  const inputs = await call('document.querySelectorAll(\'textarea\').length');
   assert.equal(inputs, 1, `the composer must not stack either, found ${inputs}`);
   assert.equal(s.convId, 2);
   assert.ok((s.threadText || '').includes('mesaj-1049#'), 'the visible chat must be the selected one');
@@ -691,15 +728,23 @@ await check('I: one scroll-to-top gesture fetches exactly one older page', async
 // not fetch older history.
 await check('J: opening a chat whose max scrollTop is inside the trigger zone fetches nothing', async () => {
   await call('window.__h.reset()');
-  // A handful of messages overflows the pane by well under 60px.
+  // A handful of messages, then size the pane so the thread overflows by 30px.
   await call('window.__h.setThreadSize(2, 4)');
+  await call('window.__h.select(2)');
+  await new Promise((r) => setTimeout(r, 300));
+  const fit = await call('window.__h.fitOverflow(30)');
+  // Re-open the chat so the conversation-switch reset AND the initial-scroll
+  // effect both run against the fitted geometry — the real "click a chat" path.
+  await call('window.__h.select(1)');
+  await call('window.__h.clearOlderRequests()');
   await call('window.__h.select(2)');
   await new Promise((r) => setTimeout(r, 1200));
   const s = await state();
   const maxScrollTop = s.hasScroller ? s.scrollHeight - s.clientHeight : 0;
   assert.ok(
     maxScrollTop > 0 && maxScrollTop < 60,
-    `precondition: the thread must overflow by 0-60px, got ${maxScrollTop}px`
+    `precondition: the thread must overflow by 0-60px, got ${maxScrollTop}px ` +
+      `(fitted to ${fit.overflow}px on ${fit.scrollHeight}px of content)`
   );
   assert.equal(
     s.olderRequests,
