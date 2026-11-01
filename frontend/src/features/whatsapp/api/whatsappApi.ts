@@ -539,18 +539,33 @@ export function buildConversationUpdatedPayload(
 // Faz 12 (P0 — ağ fırtınası): canlılık yoklaması ARTIK SÜREKLİ POLLING YAPMAZ.
 //
 // Eskiden `useLiveMode` içinde `setInterval(probe, 30_000)` vardı; Network
-// sekmesinde kalıcı bir `GET /whatsapp/sessions` akışı üretiyordu. Oturum
-// yaşam döngüsü zaten `/ws` üzerinden gerçek olaylarla akıyor
-// (session_connected / session_disconnected / session_qr_updated /
-// session_sync_completed / gateway_connected). Yoklama yalnızca bu GERÇEK
-// sinyallerde ve WS yeniden bağlandığında tekrarlanır.
+// sekmesinde kalıcı bir `GET /whatsapp/sessions` akışı üretiyordu. Yoklama
+// ARTIK yalnızca iki GERÇEK sinyalde tekrarlanır: aşağıdaki `/ws` oturum
+// olayları ve WS yeniden bağlandığında gelen `tezlify:ws_connected`.
+//
+// Kümedeki olaylar gateway'in ÜRETTİĞİ ve backend'in `/ws` üzerinden tarayıcıya
+// ilettiği oturum yaşam döngüsü sinyalleridir.
+//
+// `gateway_connected` BİLİNÇLİ OLARAK listede DEĞİL. Olay, gateway'in kendi
+// soketine bağlanan her istemciye gider (backend köprüsü de o istemcilerden
+// biridir), ama içinde `gateway_session_id` yoktur ve `sessions_count` TÜM
+// tenant'ların toplamıdır. Sahip çözülemediği için backend onu YAYINLAMAZ:
+// `events.py` içindeki `_ACKNOWLEDGED_IGNORE_EVENTS` ile yalnızca ACK edilir,
+// broadcast edilmez. Yani tarayıcı soketine hiç ulaşmaz — burada beklemek ölü
+// bir tetikleyiciydi. Yeniden bağlanma ihtiyacı `tezlify:ws_connected` ile
+// karşılanıyor (aşağıdaki `handleWsConnected`; kaynağı App.tsx).
+//
+// `session_deleted` ise sistemde üreticisi BULUNMAYAN bir beklenti olarak
+// duruyor: gateway'de emitter, backend'de handler yok — silme işini backend
+// yapıyor (`sessions.delete_session` → gateway `delete_session`). Parity testi
+// bunu `FRONTEND_UNPRODUCED_EVENTS` altında açıkça listeliyor; sessizce tolere
+// etmek yerine görünür kalsın diye.
 const LIVE_SESSION_EVENTS = new Set([
   'session_connected',
   'session_disconnected',
   'session_deleted',
   'session_qr_updated',
   'session_sync_completed',
-  'gateway_connected',
 ]);
 
 export function useLiveMode(): { status: LiveModeStatus; probe: () => Promise<LiveModeStatus> } {

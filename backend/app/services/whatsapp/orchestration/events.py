@@ -113,6 +113,23 @@ logger = logging.getLogger(__name__)
 # Events that are intentionally not persisted but must reach the UI
 _PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({"history_sync_completed"})
 
+# Events the gateway emits that carry NO tenant identity and therefore must not
+# be forwarded to any tenant socket.
+#
+# `gateway_connected` is sent by `attachClient()` in whatsapp-gateway/src/events.js
+# to every client that opens the gateway's own WebSocket — and the backend bridge
+# is one of those clients. Its payload is `{event, sessions_count}`, where
+# `sessions_count` is `sessionManager.listSessions().length`: a count across ALL
+# tenants, not this tenant's sessions.
+#
+# It carries no `gateway_session_id`, so no owner can be resolved, and
+# `ConnectionManager.broadcast()` is fail-closed when the target is missing
+# (backend/app/api/v1/websocket.py). Forwarding it to one tenant would hand that
+# tenant a cross-tenant count; forwarding it to every tenant would be exactly the
+# wide broadcast that fail-closed contract exists to prevent. So the event is
+# acknowledged and dropped — deliberately, and without an ERROR line.
+_ACKNOWLEDGED_IGNORE_EVENTS: FrozenSet[str] = frozenset({"gateway_connected"})
+
 # Rate-limit suppression for orphan event logging to avoid log flood
 _orphan_suppressed: Dict[str, Dict[str, Any]] = {}
 
@@ -280,6 +297,26 @@ def _defer_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
     the true status.
     """
     logger.debug("Gateway olayi ertelendi: %s", reason)
+    event["_skip"] = reason
+    return event
+
+
+def _acknowledge_without_broadcast(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """Recognises a known event and deliberately does not forward it.
+
+    Distinct from the two other drop paths:
+    - `_skip_event` logs at WARNING because something was dropped and an
+      operator should look. That is wrong here: this outcome is expected on
+      every bridge connect, and a WARNING per reconnect is noise that hides
+      real drops.
+    - `_defer_event` means "buffered, re-applied later". Nothing re-applies this.
+
+    The `_skip` marker is reused on purpose: `_ingest_and_publish` (main.py)
+    ACKs an event that carries `_skip` instead of NACKing it, so if the gateway
+    ever attaches an `event_id` to this event the outbox will not redeliver an
+    event that can never succeed.
+    """
+    logger.debug("Gateway olayi bilincli olarak yayinlanmadi: %s", reason)
     event["_skip"] = reason
     return event
 
@@ -854,6 +891,18 @@ class WhatsAppEventOrchestrator:
         upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
 
         msg = event.get("message") or {}
+        # `messages.upsert` tasidigi `type`: `notify` = canli mesaj, `append` =
+        # gecmis/senkron kapsaminda eklenen mesaj. Gateway bunu `upsert_type`
+        # olarak gonderir. Bilinmeyen bir deger `notify` gibi islenir (mesaj
+        # kaybolmasin) ama sessizce yutulmaz — log'da gorunur.
+        upsert_type = str(event.get("upsert_type") or "notify").strip().lower()
+        if upsert_type not in ("notify", "append"):
+            logger.warning(
+                "Bilinmeyen messages.upsert type=%r; notify gibi islendi (conversation=%s)",
+                upsert_type, event.get("conversation_id"),
+            )
+            upsert_type = "notify"
+        is_append = upsert_type == "append"
         jid = msg.get("conversation_id") or event.get("conversation_id")
         if not jid or "@" not in str(jid):
             return _skip_event(event, "message_new: gecerli jid yok")
@@ -952,6 +1001,11 @@ class WhatsAppEventOrchestrator:
                 await db.commit()
                 event["conversation_id"] = conv.id
                 event["message"] = serialize_message(canonical)
+                # Duplicate append: satir zaten var, ama yayin da YAPILMAMALI.
+                # `notify` ile gelen ayni mesaj bir kez yayinlandi; append'in
+                # onu ikinci kez yayinlamasi cift bildirim olurdu.
+                if is_append:
+                    event["_no_broadcast"] = True
                 return event  # dedup
 
         mtype_str = (msg.get("message_type") or "TEXT").upper()
@@ -1047,6 +1101,10 @@ class WhatsAppEventOrchestrator:
                     event,
                     f"message_new: yaris kaybedildi, kazanan satir bulunamadi ({jid_str})",
                 )
+            # Kurtarma yolu kazanan satiri yeniden yayinlar; append icin bu da
+            # yayin olmamali (gecmis mesaj canli bildirim uretmez).
+            if is_append:
+                recovered["_no_broadcast"] = True
             return recovered
         summary = build_last_message_summary(
             message_type=mtype_str,
@@ -1056,8 +1114,17 @@ class WhatsAppEventOrchestrator:
             direction=direction.value,
         )
         msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or utc_now_naive()
-        apply_last_message(conv, msg_dt, summary)
-        if direction == MessageDirection.INBOUND:
+        # `append` gecmis bir mesajdir: sohbetin onizlemesini/son aktivitesini
+        # yalnizca GERCEKTEN daha yeni ise oynatabilir (`should_apply_last_message`
+        # `ts <= cur` durumunu zaten reddeder). Zaman damgasi yokken "simdi" gibi
+        # davranmak gecmisi listenin en ustune tasirdi; bu yuzden append + zaman
+        # damgasi yok -> onizlemeye hic dokunulmaz.
+        if not (is_append and not msg.get("created_at")):
+            apply_last_message(conv, msg_dt, summary)
+        if direction == MessageDirection.INBOUND and not is_append:
+            # `append` bir GECMIS mesajidir, yeni bir varis degil. Rozeti artirmak
+            # kullanicinin telefonunda coktan okudugu bir mesaji "yeni" sayar ve
+            # rozet WhatsApp'in kendi sayisiyla celisir.
             raw_uc = msg.get("unread_count") if msg.get("unread_count") is not None else event.get("unread_count")
             if raw_uc is not None:
                 conv.unread_count = max(0, int(raw_uc))
@@ -1128,6 +1195,12 @@ class WhatsAppEventOrchestrator:
         event["is_group"] = is_group_jid
         event["lead_phone"] = contact.phone_e164 if contact else None
         event["message"] = serialize_message(row, preview=preview_data)
+        # Kalici yazma TAMAM; canli yayin YAPILMAZ. `_skip` burada kullanilamiyor:
+        # o yol `db.commit()`'i yalnizca postgres + event_id varsa cagiriyor, yani
+        # SQLite/test yolunda persist'i commit'siz birakirdi. `_no_broadcast` ise
+        # commit'ten SONRA okunur (main.py) ve yalnizca yayini kapatir.
+        if is_append:
+            event["_no_broadcast"] = True
         return event
 
     async def _ingest_contact_synced(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -2796,6 +2869,14 @@ class WhatsAppEventOrchestrator:
                     result = await map_session_event(db, event)
                 elif evt in _PASSTHROUGH_EVENTS:
                     result = await passthrough_event(db, event)
+                elif evt in _ACKNOWLEDGED_IGNORE_EVENTS:
+                    # Known event, no tenant identity: acknowledge, do not
+                    # broadcast, and do not log an error. See the module-level
+                    # comment on `_ACKNOWLEDGED_IGNORE_EVENTS` for why forwarding
+                    # it is not an option.
+                    result = _acknowledge_without_broadcast(
+                        event, f"no_tenant_identity:{evt}"
+                    )
                 else:
                     logger.error("Bilinmeyen gateway olayi yayinlanmadi (event=%s)", evt)
                     return None
@@ -2869,7 +2950,12 @@ class WhatsAppEventOrchestrator:
                         )
 
                 # Dış Webhook Abonelerine Inbound WhatsApp mesajını bildir
-                if evt == "message_new" and isinstance(result, dict) and result.get("message"):
+                if (
+                    evt == "message_new"
+                    and isinstance(result, dict)
+                    and result.get("message")
+                    and not result.get("_no_broadcast")
+                ):
                     in_msg = result.get("message")
                     if in_msg.get("direction") == "INBOUND":
                         WebhookDispatcher.emit(

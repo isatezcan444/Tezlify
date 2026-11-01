@@ -2307,12 +2307,27 @@ export function createSessionManager({
       return event;
     },
 
-    async _ingestUpsertMessage(msg, sock, sessionId) {
+    async _ingestUpsertMessage(msg, sock, sessionId, { upsertType = 'notify' } = {}) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
       const { contacts, chats, messagesByChat } = store;
       const normalizeJid = (jid) => resolveJidKey(store, jid);
       const emitEvent = (event) => this._emit({ gateway_session_id: sessionId, ...event });
+
+      // Baileys `messages.upsert` tasidigi `type` iki farkli olayi anlatir:
+      //   notify → mesaj AZ ONCE geldi (canli)
+      //   append → mesaj GECMIS/senkron kapsaminda eklendi
+      // Ikisi ayni hatti paylasirsa gecmis bir mesaj yeni gelmis gibi rozet,
+      // onizleme ve canli yayin uretir. Bilinmeyen bir deger `notify` gibi
+      // islenir (mesaj kaybolmasin) ama sessizce yutulmaz.
+      const normalizedUpsertType = String(upsertType || 'notify').toLowerCase();
+      const isAppend = normalizedUpsertType === 'append';
+      if (normalizedUpsertType !== 'notify' && !isAppend) {
+        logger.debug(
+          { session_ref: sessionRef(sessionId), upsert_type: normalizedUpsertType },
+          'Bilinmeyen messages.upsert type; notify gibi islendi',
+        );
+      }
 
       const fromMe = Boolean(msg.key?.fromMe);
       const jid = msg.key?.remoteJid;
@@ -2557,7 +2572,7 @@ export function createSessionManager({
       const chatPreview =
         buildChatPreview(record, isGroup) ||
         normalizePreviewText('TEXT', systemContentMarker(msg) || '');
-      this._touchChat(session, key, chatPreview, record.created_at);
+      this._touchChat(session, key, chatPreview, record.created_at, { append: isAppend });
       // Only messages we actually PUBLISH may be counted. A held (LID) message
       // is not emitted at all, so counting it made this counter describe a
       // different set of messages than the rest of the system can ever see —
@@ -2567,18 +2582,22 @@ export function createSessionManager({
       // it is a second, contradictory one.
       if (!lidHold) {
         const chat = chats.get(key);
-        if (chat && !fromMe) {
+        // `append` bir GECMIS mesajidir, yeni bir varis degil. Saymak, kullanicinin
+        // telefonunda coktan okudugu bir mesaj icin rozeti artirir; rozet sonra
+        // WhatsApp'in kendi sayisiyla celisir ve bir daha sifirlanmaz.
+        if (chat && !fromMe && !isAppend) {
           if (chat._unreadUpdatedForId !== msg.key?.id) {
             chat.unread_count = (chat.unread_count || 0) + 1;
             chat._unreadUpdatedForId = msg.key?.id;
           }
         }
-        record.unread_count = chat?.unread_count ?? (fromMe ? 0 : 1);
+        record.unread_count = chat?.unread_count ?? (fromMe || isAppend ? 0 : 1);
         emitEvent({
           event: 'message_new',
           conversation_id: key,
           message: record,
           unread_count: record.unread_count,
+          upsert_type: normalizedUpsertType,
         });
       }
       return record;
@@ -2948,7 +2967,7 @@ export function createSessionManager({
       });
     },
 
-    _touchChat(session, jid, preview, timestamp) {
+    _touchChat(session, jid, preview, timestamp, { append = false } = {}) {
       session = this._sess(session);
       const store = this._storeOf(session);
       const { chats, contacts } = store;
@@ -2957,8 +2976,16 @@ export function createSessionManager({
       const contact = contacts.get(key);
       const newTs = timestamp || new Date().toISOString();
       const tsOlder = existing.last_message_at && String(newTs) < String(existing.last_message_at);
-      const nextPreview = preview && !tsOlder ? preview : existing.last_message_preview || '';
-      const nextTs = tsOlder ? existing.last_message_at : newTs;
+      // `append` (gecmis) bir mesaj sohbetin onizlemesini veya son aktivite
+      // damgasini OYNATAMAZ: yeni bir varis degildir. Yalnizca canli `notify`
+      // bunu yapabilir. Sohbet hic bilinmiyorsa yine de olusturulur ki mesajin
+      // duracak bir yeri olsun (ilk kez ogreniyoruz, `newTs` tek gercek veri).
+      const nextPreview = append
+        ? (existing.last_message_preview || '')
+        : (preview && !tsOlder ? preview : existing.last_message_preview || '');
+      const nextTs = append
+        ? (existing.last_message_at || newTs)
+        : (tsOlder ? existing.last_message_at : newTs);
       chats.set(key, {
         ...existing,
         id: key,
