@@ -2190,9 +2190,17 @@ async def _run_background_history_expansion(user_id: str, gateway_id: str) -> No
 # Bu olay daha önce "bilinmeyen olay" dalına düşüyor, ERROR olarak loglanıyor
 # ve yayınlanmıyordu — UI geçmiş senkronu bitince tazelenmiyordu.
 #
-# NOT: `gateway_connected` (whatsapp-gateway/src/events.js:88) burada YOKTUR:
-# o olay yalnızca gateway'e doğrudan bağlanan istemci soketlerine gönderilir,
-# backend köprüsünden (`/ws/gateway`) HİÇ geçmez.
+# NOT: `gateway_connected` burada YOKTUR — ama eskiden buraya yazılan gerekçe
+# YANLIŞTI ("backend köprüsünden HİÇ geçmez"). Olay `attachClient()` tarafından
+# gateway'in kendi WebSocket'ine bağlanan HER istemciye gönderilir
+# (whatsapp-gateway/src/events.js, `attachClient`); backend köprüsü de o
+# istemcilerden biridir, yani olay `/ws/gateway` üzerinden GERÇEKTEN gelir.
+# Yayınlanmamasının nedeni gelmemesi değil, TAŞIDIĞI KİMLİKTİR: payload'da
+# `gateway_session_id` yoktur ve `sessions_count` TÜM tenant'ların oturum
+# sayısıdır. Sahip çözülemediği için `ws_manager.broadcast` fail-closed reddeder;
+# tek bir tenant'a yollamak kiracılar arası sayı sızdırırdı. Bu yüzden olay
+# `_ACKNOWLEDGED_IGNORE_EVENTS` ile bilinçli olarak yutulur (bkz.
+# backend/app/services/whatsapp/orchestration/events.py).
 _PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({"history_sync_completed"})
 
 

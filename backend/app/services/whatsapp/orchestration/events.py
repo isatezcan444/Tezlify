@@ -113,6 +113,23 @@ logger = logging.getLogger(__name__)
 # Events that are intentionally not persisted but must reach the UI
 _PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({"history_sync_completed"})
 
+# Events the gateway emits that carry NO tenant identity and therefore must not
+# be forwarded to any tenant socket.
+#
+# `gateway_connected` is sent by `attachClient()` in whatsapp-gateway/src/events.js
+# to every client that opens the gateway's own WebSocket — and the backend bridge
+# is one of those clients. Its payload is `{event, sessions_count}`, where
+# `sessions_count` is `sessionManager.listSessions().length`: a count across ALL
+# tenants, not this tenant's sessions.
+#
+# It carries no `gateway_session_id`, so no owner can be resolved, and
+# `ConnectionManager.broadcast()` is fail-closed when the target is missing
+# (backend/app/api/v1/websocket.py). Forwarding it to one tenant would hand that
+# tenant a cross-tenant count; forwarding it to every tenant would be exactly the
+# wide broadcast that fail-closed contract exists to prevent. So the event is
+# acknowledged and dropped — deliberately, and without an ERROR line.
+_ACKNOWLEDGED_IGNORE_EVENTS: FrozenSet[str] = frozenset({"gateway_connected"})
+
 # Rate-limit suppression for orphan event logging to avoid log flood
 _orphan_suppressed: Dict[str, Dict[str, Any]] = {}
 
@@ -280,6 +297,26 @@ def _defer_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
     the true status.
     """
     logger.debug("Gateway olayi ertelendi: %s", reason)
+    event["_skip"] = reason
+    return event
+
+
+def _acknowledge_without_broadcast(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """Recognises a known event and deliberately does not forward it.
+
+    Distinct from the two other drop paths:
+    - `_skip_event` logs at WARNING because something was dropped and an
+      operator should look. That is wrong here: this outcome is expected on
+      every bridge connect, and a WARNING per reconnect is noise that hides
+      real drops.
+    - `_defer_event` means "buffered, re-applied later". Nothing re-applies this.
+
+    The `_skip` marker is reused on purpose: `_ingest_and_publish` (main.py)
+    ACKs an event that carries `_skip` instead of NACKing it, so if the gateway
+    ever attaches an `event_id` to this event the outbox will not redeliver an
+    event that can never succeed.
+    """
+    logger.debug("Gateway olayi bilincli olarak yayinlanmadi: %s", reason)
     event["_skip"] = reason
     return event
 
@@ -2796,6 +2833,14 @@ class WhatsAppEventOrchestrator:
                     result = await map_session_event(db, event)
                 elif evt in _PASSTHROUGH_EVENTS:
                     result = await passthrough_event(db, event)
+                elif evt in _ACKNOWLEDGED_IGNORE_EVENTS:
+                    # Known event, no tenant identity: acknowledge, do not
+                    # broadcast, and do not log an error. See the module-level
+                    # comment on `_ACKNOWLEDGED_IGNORE_EVENTS` for why forwarding
+                    # it is not an option.
+                    result = _acknowledge_without_broadcast(
+                        event, f"no_tenant_identity:{evt}"
+                    )
                 else:
                     logger.error("Bilinmeyen gateway olayi yayinlanmadi (event=%s)", evt)
                     return None

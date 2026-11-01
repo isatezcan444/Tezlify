@@ -540,17 +540,23 @@ export function buildConversationUpdatedPayload(
 //
 // Eskiden `useLiveMode` içinde `setInterval(probe, 30_000)` vardı; Network
 // sekmesinde kalıcı bir `GET /whatsapp/sessions` akışı üretiyordu. Oturum
-// yaşam döngüsü zaten `/ws` üzerinden gerçek olaylarla akıyor
-// (session_connected / session_disconnected / session_qr_updated /
-// session_sync_completed / gateway_connected). Yoklama yalnızca bu GERÇEK
-// sinyallerde ve WS yeniden bağlandığında tekrarlanır.
+// yaşam döngüsü zaten `/ws` üzerinden gerçek olaylarla akıyor. Yoklama yalnızca
+// bu GERÇEK sinyallerde ve WS yeniden bağlandığında tekrarlanır.
+//
+// `gateway_connected` BİLİNÇLİ OLARAK listede DEĞİL. O olay gateway'in kendi
+// soketine bağlanan her istemciye gider; backend köprüsü de o istemcilerden
+// biridir, yani olay köprüye gerçekten ulaşır. Ama içinde `gateway_session_id`
+// yoktur ve `sessions_count` TÜM tenant'ların toplamıdır — sahip çözülemediği
+// için backend onu yayınlamaz (bkz. backend events.py
+// `_ACKNOWLEDGED_IGNORE_EVENTS`). Tarayıcıya hiç ulaşmayan bir olayı beklemek
+// ölü bir tetikleyiciydi; yeniden bağlanma ihtiyacı zaten `tezlify:ws_connected`
+// ile karşılanıyor (App.tsx).
 const LIVE_SESSION_EVENTS = new Set([
   'session_connected',
   'session_disconnected',
   'session_deleted',
   'session_qr_updated',
   'session_sync_completed',
-  'gateway_connected',
 ]);
 
 export function useLiveMode(): { status: LiveModeStatus; probe: () => Promise<LiveModeStatus> } {

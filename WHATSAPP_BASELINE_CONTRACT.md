@@ -509,10 +509,11 @@ This section lists the behaviour that **MUST NOT REGRESS**. Each invariant state
   - SOURCE: `AGENTS.md`, `frontend/src/context/I18nContext.tsx`, all components in `frontend/src/features/whatsapp/components/`.
   - MUST NOT REGRESS: YES.
 
-- **INVARIANT: The `useLiveMode` hook does NOT poll. Re-probe happens only on `ws_connected` and `LIVE_SESSION_EVENTS` (`session_connected`/`session_disconnected`/`session_deleted`/`session_qr_updated`/`session_sync_completed`/`gateway_connected`).**
+- **INVARIANT: The `useLiveMode` hook does NOT poll. Re-probe happens only on `ws_connected` and `LIVE_SESSION_EVENTS` (`session_connected`/`session_disconnected`/`session_deleted`/`session_qr_updated`/`session_sync_completed`).**
   - CURRENT IMPLEMENTATION: `frontend/src/features/whatsapp/api/whatsappApi.ts::useLiveMode`.
   - SOURCE: `frontend/src/features/whatsapp/api/whatsappApi.ts` (lines 357–409).
   - MUST NOT REGRESS: YES. A `setInterval(probe, 30_000)` was a previous network-storm source.
+  - **AŞAMA 5.1:** `gateway_connected` is **not** a member and must not be re-added. It carries no tenant identity — no `gateway_session_id`, and `sessions_count` is a cross-tenant total — so the backend acknowledges and drops it (`_ACKNOWLEDGED_IGNORE_EVENTS` in `backend/app/services/whatsapp/orchestration/events.py`). It never reaches a browser socket, which made the old entry a listener that could never fire. `session_deleted` has no producer either (S-3 WITHDRAWN in `WHATSAPP_FORENSIC_AUDIT.md`); it is kept deliberately and pinned by `backend/tests/test_whatsapp_event_contract_parity.py`, which compares the gateway, backend and frontend event name sets and fails on drift.
 
 - **INVARIANT: A FAILED sync job banner is acknowledged in `sessionStorage` (`tezlify_wa_failed_sync_ack`) once shown. It does NOT re-render on every page load for the same `sync_id | finished_at`.**
   - CURRENT IMPLEMENTATION: `WhatsAppHubPage.tsx::acknowledgeFailedSync`.
