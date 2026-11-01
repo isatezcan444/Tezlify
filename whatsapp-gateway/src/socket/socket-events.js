@@ -610,7 +610,12 @@ export function bindSocketEvents({
     for (const msg of newMessages || []) {
       if (ignoreStaleSocketEvent('messages.upsert')) return;
       try {
-        await manager._ingestUpsertMessage(msg, sock, id);
+        // `type` is 'notify' (a message that just arrived) or 'append' (a
+        // message added by history/sync). Passing it through is the whole
+        // point: without it the gateway cannot tell a message the user just
+        // received from one that history replay merely added, and both take
+        // the live path — badge, preview and live broadcast included.
+        await manager._ingestUpsertMessage(msg, sock, id, { upsertType: type });
       } catch (err) {
         diagnostic('message_upsert_failed', {
           session_ref: sessionRef(id),

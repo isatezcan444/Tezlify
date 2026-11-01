@@ -891,6 +891,18 @@ class WhatsAppEventOrchestrator:
         upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
 
         msg = event.get("message") or {}
+        # `messages.upsert` tasidigi `type`: `notify` = canli mesaj, `append` =
+        # gecmis/senkron kapsaminda eklenen mesaj. Gateway bunu `upsert_type`
+        # olarak gonderir. Bilinmeyen bir deger `notify` gibi islenir (mesaj
+        # kaybolmasin) ama sessizce yutulmaz — log'da gorunur.
+        upsert_type = str(event.get("upsert_type") or "notify").strip().lower()
+        if upsert_type not in ("notify", "append"):
+            logger.warning(
+                "Bilinmeyen messages.upsert type=%r; notify gibi islendi (conversation=%s)",
+                upsert_type, event.get("conversation_id"),
+            )
+            upsert_type = "notify"
+        is_append = upsert_type == "append"
         jid = msg.get("conversation_id") or event.get("conversation_id")
         if not jid or "@" not in str(jid):
             return _skip_event(event, "message_new: gecerli jid yok")
@@ -989,6 +1001,11 @@ class WhatsAppEventOrchestrator:
                 await db.commit()
                 event["conversation_id"] = conv.id
                 event["message"] = serialize_message(canonical)
+                # Duplicate append: satir zaten var, ama yayin da YAPILMAMALI.
+                # `notify` ile gelen ayni mesaj bir kez yayinlandi; append'in
+                # onu ikinci kez yayinlamasi cift bildirim olurdu.
+                if is_append:
+                    event["_no_broadcast"] = True
                 return event  # dedup
 
         mtype_str = (msg.get("message_type") or "TEXT").upper()
@@ -1084,6 +1101,10 @@ class WhatsAppEventOrchestrator:
                     event,
                     f"message_new: yaris kaybedildi, kazanan satir bulunamadi ({jid_str})",
                 )
+            # Kurtarma yolu kazanan satiri yeniden yayinlar; append icin bu da
+            # yayin olmamali (gecmis mesaj canli bildirim uretmez).
+            if is_append:
+                recovered["_no_broadcast"] = True
             return recovered
         summary = build_last_message_summary(
             message_type=mtype_str,
@@ -1093,8 +1114,17 @@ class WhatsAppEventOrchestrator:
             direction=direction.value,
         )
         msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or utc_now_naive()
-        apply_last_message(conv, msg_dt, summary)
-        if direction == MessageDirection.INBOUND:
+        # `append` gecmis bir mesajdir: sohbetin onizlemesini/son aktivitesini
+        # yalnizca GERCEKTEN daha yeni ise oynatabilir (`should_apply_last_message`
+        # `ts <= cur` durumunu zaten reddeder). Zaman damgasi yokken "simdi" gibi
+        # davranmak gecmisi listenin en ustune tasirdi; bu yuzden append + zaman
+        # damgasi yok -> onizlemeye hic dokunulmaz.
+        if not (is_append and not msg.get("created_at")):
+            apply_last_message(conv, msg_dt, summary)
+        if direction == MessageDirection.INBOUND and not is_append:
+            # `append` bir GECMIS mesajidir, yeni bir varis degil. Rozeti artirmak
+            # kullanicinin telefonunda coktan okudugu bir mesaji "yeni" sayar ve
+            # rozet WhatsApp'in kendi sayisiyla celisir.
             raw_uc = msg.get("unread_count") if msg.get("unread_count") is not None else event.get("unread_count")
             if raw_uc is not None:
                 conv.unread_count = max(0, int(raw_uc))
@@ -1165,6 +1195,12 @@ class WhatsAppEventOrchestrator:
         event["is_group"] = is_group_jid
         event["lead_phone"] = contact.phone_e164 if contact else None
         event["message"] = serialize_message(row, preview=preview_data)
+        # Kalici yazma TAMAM; canli yayin YAPILMAZ. `_skip` burada kullanilamiyor:
+        # o yol `db.commit()`'i yalnizca postgres + event_id varsa cagiriyor, yani
+        # SQLite/test yolunda persist'i commit'siz birakirdi. `_no_broadcast` ise
+        # commit'ten SONRA okunur (main.py) ve yalnizca yayini kapatir.
+        if is_append:
+            event["_no_broadcast"] = True
         return event
 
     async def _ingest_contact_synced(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -2914,7 +2950,12 @@ class WhatsAppEventOrchestrator:
                         )
 
                 # Dış Webhook Abonelerine Inbound WhatsApp mesajını bildir
-                if evt == "message_new" and isinstance(result, dict) and result.get("message"):
+                if (
+                    evt == "message_new"
+                    and isinstance(result, dict)
+                    and result.get("message")
+                    and not result.get("_no_broadcast")
+                ):
                     in_msg = result.get("message")
                     if in_msg.get("direction") == "INBOUND":
                         WebhookDispatcher.emit(

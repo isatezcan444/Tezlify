@@ -768,6 +768,23 @@ async def gateway_websocket_endpoint(
             if persisted.get("_skip"):
                 counters["skipped"] += 1
             return
+        if persisted.get("_no_broadcast") is True:
+            # Persist edildi ama KASITLI olarak yayinlanmadi: gecmis bir `append`
+            # canli bir mesaj degildir. ACK edilir ki outbox DELIVERED isaretlesin
+            # ve yeniden teslim etmesin; hicbir sey onu yeniden uygulamaz.
+            event_id = event_data.get("event_id")
+            if event_id:
+                await websocket.send_json({
+                    "type": "gateway_event_ack",
+                    "event_id": str(event_id),
+                })
+                counters["acked"] += 1
+            counters["skipped"] += 1
+            logger.debug(
+                "[WS-GATEWAY] Persist edildi, yayinlanmadi (append): event=%s",
+                event_data.get("event"),
+            )
+            return
         await ws_manager.broadcast(persisted)
         counters["broadcast"] += 1
         event_id = event_data.get("event_id")
