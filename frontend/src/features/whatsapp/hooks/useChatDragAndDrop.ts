@@ -37,7 +37,7 @@ export function useChatDragAndDrop({
   const [isChatDragOver, setIsChatDragOver] = useState(false);
   const chatDragCounterRef = useRef(0);
   const lastDropTimestampRef = useRef(0);
-  const dragoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const dragoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const resetChatDragState = useCallback(() => {
     if (dragoverTimeoutRef.current) {
