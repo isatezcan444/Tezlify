@@ -1270,6 +1270,9 @@ async def delete_session(
 ) -> Dict[str, Any]:
     """Deletes session in gateway, purges its local conversation data, and deletes DB row."""
     row = await _get_session_or_404(db, user_id, session_id)
+    # Capture before `db.delete(row)` expires the instance: the post-commit
+    # broadcast below must not touch a detached row.
+    gw_id = row.gateway_id
     if on_cancel_sync:
         on_cancel_sync(user_id)
     gateway_ok = True
@@ -1289,6 +1292,26 @@ async def delete_session(
     purged = await purge_whatsapp_data(db, user_id, session_id=row.id)
     await db.delete(row)
     await db.commit()
+    # Multi-tab consistency: the tab that issued the DELETE learns from the REST
+    # response, but OTHER open tabs only have the WebSocket. This broadcast is
+    # deliberately placed AFTER the commit — a failed delete (exception above)
+    # must never tell other tabs the line is gone. `session_deleted` is NOT
+    # produced (backend owns deletion); the existing `session_disconnected`
+    # lifecycle signal is reused with `reason="DELETED"`, which the hub already
+    # handles by refetching the session list. Tenant-scoped (fail-closed).
+    try:
+        await ws_manager.broadcast(
+            {
+                "event": "session_disconnected",
+                "user_id": str(user_id),
+                "session_id": session_id,
+                "gateway_session_id": gw_id,
+                "reason": "DELETED",
+            },
+            target_user_id=str(user_id),
+        )
+    except Exception as ws_err:
+        logger.warning("[WhatsApp] delete_session broadcast ws error: %s", ws_err)
     logger.info(
         "WhatsApp oturumu silindi (user=%s session=%s): %s eşitleme temizlendi",
         user_id,

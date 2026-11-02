@@ -896,13 +896,17 @@ class WhatsAppEventOrchestrator:
         # olarak gonderir. Bilinmeyen bir deger `notify` gibi islenir (mesaj
         # kaybolmasin) ama sessizce yutulmaz — log'da gorunur.
         upsert_type = str(event.get("upsert_type") or "notify").strip().lower()
-        if upsert_type not in ("notify", "append"):
+        if upsert_type not in ("notify", "append", "replace", "update"):
             logger.warning(
                 "Bilinmeyen messages.upsert type=%r; notify gibi islendi (conversation=%s)",
                 upsert_type, event.get("conversation_id"),
             )
             upsert_type = "notify"
         is_append = upsert_type == "append"
+        # `replace`/`update` = mevcut bir mesajin ICERIGI degisti (retry decrypt
+        # / edit). Yayinlanir ama YENI VARIS sayilmaz: rozet artmaz ve zamansiz
+        # bir guncelleme onizlemeyi "simdi" gibi oynatmaz.
+        is_update = upsert_type in ("replace", "update")
         jid = msg.get("conversation_id") or event.get("conversation_id")
         if not jid or "@" not in str(jid):
             return _skip_event(event, "message_new: gecerli jid yok")
@@ -969,7 +973,14 @@ class WhatsAppEventOrchestrator:
                 # Upgrade empty/placeholder body and message_type if new content arrived (e.g. retry decrypt, contact, location)
                 body_incoming = (msg.get("body") or "").strip()
                 canonical_body_empty = not (canonical.body and canonical.body.strip())
-                if body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("["))):
+                body_before = canonical.body
+                media_before = canonical.media_id
+                # `replace` acik bir ICERIK guncellemesidir: `notify`'nin aksine
+                # gercek bir govdeyi de degistirebilir. `append` yer tutucu
+                # kuralini korur.
+                if is_update and body_incoming:
+                    canonical.body = msg.get("body")
+                elif body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("["))):
                     canonical.body = msg.get("body")
 
                 if msg.get("message_type") and (canonical.message_type == MessageType.TEXT or canonical_body_empty):
@@ -987,16 +998,21 @@ class WhatsAppEventOrchestrator:
                 if msg.get("is_view_once") and not getattr(canonical, "is_view_once", False):
                     canonical.is_view_once = True
 
-                if body_incoming or msg.get("media_id"):
-                    summary = build_last_message_summary(
-                        message_type=canonical.message_type.value,
-                        body=canonical.body or "",
-                        sender_name=canonical.sender_name,
-                        is_group=is_group_jid,
-                        direction=canonical.direction.value,
-                    )
-                    msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or canonical.external_timestamp or canonical.created_at or utc_now_naive()
-                    apply_last_message(conv, msg_dt, summary)
+                content_changed = (canonical.body != body_before) or (canonical.media_id != media_before)
+                # A no-op replace must not touch the preview. A timeless update
+                # has no "newer than" evidence, so it must not move the chat to
+                # the top either (same trap as append).
+                if (body_incoming or msg.get("media_id")) and not (is_update and not content_changed):
+                    if not (is_update and not msg.get("created_at")):
+                        summary = build_last_message_summary(
+                            message_type=canonical.message_type.value,
+                            body=canonical.body or "",
+                            sender_name=canonical.sender_name,
+                            is_group=is_group_jid,
+                            direction=canonical.direction.value,
+                        )
+                        msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or canonical.external_timestamp or canonical.created_at or utc_now_naive()
+                        apply_last_message(conv, msg_dt, summary)
 
                 await db.commit()
                 event["conversation_id"] = conv.id
@@ -1005,6 +1021,9 @@ class WhatsAppEventOrchestrator:
                 # `notify` ile gelen ayni mesaj bir kez yayinlandi; append'in
                 # onu ikinci kez yayinlamasi cift bildirim olurdu.
                 if is_append:
+                    event["_no_broadcast"] = True
+                elif is_update and not content_changed:
+                    # A replace that carried no real change must not re-broadcast.
                     event["_no_broadcast"] = True
                 return event  # dedup
 
@@ -1119,9 +1138,9 @@ class WhatsAppEventOrchestrator:
         # `ts <= cur` durumunu zaten reddeder). Zaman damgasi yokken "simdi" gibi
         # davranmak gecmisi listenin en ustune tasirdi; bu yuzden append + zaman
         # damgasi yok -> onizlemeye hic dokunulmaz.
-        if not (is_append and not msg.get("created_at")):
+        if not ((is_append or is_update) and not msg.get("created_at")):
             apply_last_message(conv, msg_dt, summary)
-        if direction == MessageDirection.INBOUND and not is_append:
+        if direction == MessageDirection.INBOUND and not is_append and not is_update:
             # `append` bir GECMIS mesajidir, yeni bir varis degil. Rozeti artirmak
             # kullanicinin telefonunda coktan okudugu bir mesaji "yeni" sayar ve
             # rozet WhatsApp'in kendi sayisiyla celisir.

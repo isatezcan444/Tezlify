@@ -1234,13 +1234,18 @@ export function bindSocketEvents({
       }
       if (update?.message) {
         try {
+          // `messages.update` içeriği (retry decrypt / edit) YENİ bir mesaj
+          // değildir. Açık `replace` semantiği ile taşınır: mevcut kayıt
+          // güncellenir, rozet artmaz, zaman damgası yoksa kaydın kendi
+          // damgası korunur. `messageTimestamp` burada `Date.now()`'a
+          // DÜŞÜRÜLMEZ — yoksa eski bir mesaj listenin en üstüne taşınır.
           const msg = {
             key,
             message: update.message,
-            messageTimestamp: update.messageTimestamp || Math.floor(Date.now() / 1000),
+            messageTimestamp: update.messageTimestamp ?? undefined,
             pushName: update.pushName,
           };
-          await manager._ingestUpsertMessage(msg, sock, id);
+          await manager._ingestUpsertMessage(msg, sock, id, { upsertType: 'replace' });
         } catch (uErr) {
           logger.debug({ uErr, key }, 'Failed to ingest updated message on retry/edit');
         }

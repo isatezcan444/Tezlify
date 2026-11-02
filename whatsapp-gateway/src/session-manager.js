@@ -2322,7 +2322,11 @@ export function createSessionManager({
       // islenir (mesaj kaybolmasin) ama sessizce yutulmaz.
       const normalizedUpsertType = String(upsertType || 'notify').toLowerCase();
       const isAppend = normalizedUpsertType === 'append';
-      if (normalizedUpsertType !== 'notify' && !isAppend) {
+      // `replace` = mevcut bir mesajın içeriği değişti (retry decrypt / edit).
+      // `notify` gibi YAYINLANIR ama YENİ VARIS gibi sayılmaz: rozet artmaz ve
+      // eski/zamansız güncelleme sohbeti listenin üstüne taşımaz.
+      const isReplace = normalizedUpsertType === 'replace' || normalizedUpsertType === 'update';
+      if (normalizedUpsertType !== 'notify' && !isAppend && !isReplace) {
         logger.debug(
           { session_ref: sessionRef(sessionId), upsert_type: normalizedUpsertType },
           'Bilinmeyen messages.upsert type; notify gibi islendi',
@@ -2521,8 +2525,21 @@ export function createSessionManager({
         }
       }
 
-      const ts = messageTimestampMs(msg.messageTimestamp);
-      const timestampSeconds = Number(msg.messageTimestamp);
+      // `replace` bir güncellemedir ve zaman damgası TAŞIMAYABİLİR. Böyle bir
+      // durumda `messageTimestampMs(undefined)` `Date.now()` döndürür; bu da
+      // ESKİ bir mesajı "şimdi" gibi gösterip sohbeti listenin en üstüne
+      // taşırdı. Kayıt zaten varsa kendi orijinal damgasını koruruz.
+      const incomingTsSeconds = Number(msg.messageTimestamp);
+      const hasIncomingTs = Number.isFinite(incomingTsSeconds) && incomingTsSeconds > 0;
+      const existingTsMs = isReplace && existingRecord?.created_at
+        ? Date.parse(existingRecord.created_at)
+        : NaN;
+      const ts = hasIncomingTs
+        ? messageTimestampMs(msg.messageTimestamp)
+        : (Number.isFinite(existingTsMs) ? existingTsMs : messageTimestampMs(msg.messageTimestamp));
+      const timestampSeconds = hasIncomingTs
+        ? incomingTsSeconds
+        : (Number.isFinite(existingTsMs) ? Math.floor(existingTsMs / 1000) : Number(msg.messageTimestamp));
       const record = {
         id: ts,
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
@@ -2557,6 +2574,14 @@ export function createSessionManager({
       // Upgrading a media-less placeholder (see the duplicate check above):
       // drop the synthetic row so the chat keeps ONE record per wa_message_id
       // and the real media-bearing one takes its place.
+      //
+      // `replace` (explicit content update) removes the PREVIOUS record
+      // regardless of media: the placeholder-only rule below would leave a
+      // media-bearing edit as a second row with the same wa_message_id.
+      if (isReplace && existingRecord) {
+        const prevAt = chatMsgs.indexOf(existingRecord);
+        if (prevAt !== -1) chatMsgs.splice(prevAt, 1);
+      }
       if (msg.key?.id) {
         const placeholderAt = chatMsgs.findIndex(
           (m) => m.wa_message_id === msg.key.id && !m.media_id
@@ -2585,13 +2610,13 @@ export function createSessionManager({
         // `append` bir GECMIS mesajidir, yeni bir varis degil. Saymak, kullanicinin
         // telefonunda coktan okudugu bir mesaj icin rozeti artirir; rozet sonra
         // WhatsApp'in kendi sayisiyla celisir ve bir daha sifirlanmaz.
-        if (chat && !fromMe && !isAppend) {
+        if (chat && !fromMe && !isAppend && !isReplace) {
           if (chat._unreadUpdatedForId !== msg.key?.id) {
             chat.unread_count = (chat.unread_count || 0) + 1;
             chat._unreadUpdatedForId = msg.key?.id;
           }
         }
-        record.unread_count = chat?.unread_count ?? (fromMe || isAppend ? 0 : 1);
+        record.unread_count = chat?.unread_count ?? (fromMe || isAppend || isReplace ? 0 : 1);
         emitEvent({
           event: 'message_new',
           conversation_id: key,

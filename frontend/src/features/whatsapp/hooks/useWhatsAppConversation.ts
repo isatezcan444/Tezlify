@@ -436,14 +436,38 @@ export function useWhatsAppConversation({
         const raw = eventData.message && typeof eventData.message === 'object' ? eventData.message : eventData;
         if (!raw || typeof raw !== 'object') return;
         const incoming = mapMessageItem(raw as any, (conversationId ?? conversationRef.current?.id) as number);
+        // `replace` = aynı mesajın içeriği değişti (retry decrypt / edit).
+        // Yeni bir balon DEĞİL; mevcut kaydın içeriği güncellenmelidir. Aksi
+        // halde `message_new` dedup'ı güncellemeyi sessizce yutar ve düzenlenen
+        // metin açık sohbette eski hâliyle kalır.
+        const isReplace = eventData.upsert_type === 'replace' || eventData.upsert_type === 'update';
         setConversation((prev) => {
           if (!prev) return prev;
-          const exists = prev.messages.some((m) => {
+          const idx = prev.messages.findIndex((m) => {
             if (incoming.wa_message_id && m.wa_message_id === incoming.wa_message_id) return true;
             if (incoming.client_message_id && m.client_message_id === incoming.client_message_id) return true;
             return typeof incoming.id === 'number' && m.id === incoming.id;
           });
-          if (exists) return prev;
+          if (idx !== -1) {
+            if (!isReplace) return prev;
+            const messages = [...prev.messages];
+            const previous = prev.messages[idx];
+            const merged: Message = { ...previous, ...incoming };
+            // `mapMessageItem` her zaman `created_at` üretir (`m.created_at || ''`).
+            // Payload zaman damgası taşımıyorsa bu boş string, bilinen değeri
+            // EZERDİ: satır yerinde kalır ama `getMessageTimestampMs` 0 döner ve
+            // bir SONRAKİ sıralamada (notify/append/loadOlderMessages) mesaj
+            // listenin en üstüne zıplar. Kısmi payload bilinen durumu silmez —
+            // `mapConversation`'daki aynı kural.
+            if (!incoming.created_at && previous.created_at) {
+              merged.created_at = previous.created_at;
+            }
+            if (!incoming.external_timestamp && previous.external_timestamp) {
+              merged.external_timestamp = previous.external_timestamp;
+            }
+            messages[idx] = merged;
+            return { ...prev, messages };
+          }
           const messages = [...prev.messages, incoming].sort(compareMessagesChronological);
           return { ...prev, messages };
         });
