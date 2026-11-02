@@ -14,6 +14,7 @@ Run: PYTHONPATH=. pytest backend/tests/test_admin_ops_security.py -v
 """
 import asyncio
 import inspect
+import typing
 
 import pytest
 
@@ -328,8 +329,18 @@ def test_health_check_probes_more_than_container_state():
 
 def test_http_probe_distinguishes_unreachable_from_unhealthy():
     """'could not check' must never be rendered to the operator as 'broken'."""
-    ann = str(inspect.signature(ops._http_probe).return_annotation)
-    assert "bool" in ann and "None" in ann, ann
+    # Assert the CONTRACT, not the spelling of the annotation. `str()` of
+    # `Optional[bool]` is "typing.Optional[bool]" — it contains no "None", so
+    # a textual check rejects a perfectly correct annotation while a textual
+    # check would equally accept a wrong one that merely spelled "None"
+    # somewhere. `get_type_hints` resolves the annotation instead, and the
+    # union must offer exactly two alternatives: `bool` and `NoneType`.
+    ret = typing.get_type_hints(ops._http_probe)["return"]
+    alternatives = set(typing.get_args(ret))
+    assert alternatives == {bool, type(None)}, (
+        f"_http_probe must return bool | None, got {ret!r}. 'could not check' "
+        "(None) has to stay distinguishable from 'broken' (False)."
+    )
 
     async def _boom(*a, **k):
         raise FileNotFoundError()
