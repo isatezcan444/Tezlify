@@ -13,6 +13,9 @@ import {
   OpsLogsResponse,
   OpsOperation,
   OpsStatusResponse,
+  EscrowStatusResponse,
+  EscrowStepUpStartResponse,
+  EscrowRevealResponse,
 } from '../types/admin';
 
 export class AdminApi {
@@ -204,5 +207,72 @@ export class OpsApi {
     });
     await OpsApi.guard(res, 'Operasyon başlatılamadı');
     return res.json();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Encryption Key Escrow (Asama 3.9.19-B)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Escrow panelinin HTTP istemcisi.
+ *
+ * Anahtar hakkinda uc kural:
+ * 1. `reveal()` disinda hicbir cagri anahtar tasimaz.
+ * 2. Donen anahtar cagirana aittir; burada `localStorage`, `sessionStorage`,
+ *    `console` veya analytics'e YAZILMAZ.
+ * 3. `cache: 'no-store'` her istekte aciktir: anahtar bir HTTP onbelleginde
+ *    kalmamali.
+ */
+export class EscrowApi {
+  private static async guard(res: Response, fallback: string): Promise<void> {
+    if (res.ok) return;
+    if (res.status === 403) throw new Error('SUPER_ADMIN_REQUIRED');
+    if (res.status === 404) throw new Error('PANEL_DISABLED');
+    if (res.status === 429) throw new Error('RATE_LIMITED');
+    const detail = await parseError(res, fallback);
+    throw new Error(detail);
+  }
+
+  static async getStatus(): Promise<EscrowStatusResponse> {
+    const res = await authFetch(`${API_BASE}/admin/escrow/status`, { cache: 'no-store' });
+    await EscrowApi.guard(res, 'Escrow durumu alinamadi');
+    return res.json();
+  }
+
+  /** Google `prompt=login` URL'i uretir; tarayici oraya yonlendirilir. */
+  static async startStepUp(): Promise<EscrowStepUpStartResponse> {
+    const res = await authFetch(`${API_BASE}/admin/escrow/step-up/start`, {
+      method: 'POST',
+      cache: 'no-store',
+    });
+    await EscrowApi.guard(res, 'Yeniden dogrulama baslatilamadi');
+    return res.json();
+  }
+
+  /**
+   * Anahtari TEK KEZ getirir. Grant HttpOnly cerezde tasindigi icin burada
+   * `credentials: 'same-origin'` acikca belirtilir.
+   */
+  static async reveal(confirm: boolean): Promise<EscrowRevealResponse> {
+    const res = await authFetch(`${API_BASE}/admin/escrow/reveal`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm }),
+    });
+    await EscrowApi.guard(res, 'Anahtar goruntulenemedi');
+    return res.json();
+  }
+
+  static async attestCopy(copy: 'A' | 'B', anchor8: string, note = ''): Promise<void> {
+    const res = await authFetch(`${API_BASE}/admin/escrow/copies/attest`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ copy, anchor8, note }),
+    });
+    await EscrowApi.guard(res, 'Kopya beyani kaydedilemedi');
   }
 }

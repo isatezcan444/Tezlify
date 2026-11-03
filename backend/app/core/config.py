@@ -115,6 +115,87 @@ class Settings(BaseSettings):
             return [str(e).strip().lower() for e in v if str(e).strip()]
         return []
 
+    # --- Felaket Kurtarma / Encryption Key Escrow paneli (Asama 3.9.19-B) ---
+    #
+    # NEDEN VARSAYILAN KAPALI: bu panel, WhatsApp snapshot'larinin TAMAMINI
+    # acan ana anahtari HTTP uzerinden erisilebilir hale getirir. Panelin
+    # "yanlislikla acik" olmasi, tek bir XSS veya ele gecirilmis admin
+    # oturumunun tum arsivi cozmesi demektir. Bu yuzden yokluk = KAPALI;
+    # acmak icin acikca `true` veya `1` gerekir (3.8.1'de ogrenilen kural:
+    # "yokluk bir guvenlik karari degildir").
+    ESCROW_PANEL_ENABLED: bool = False
+
+    # Super Admin listesi. `ADMIN_EMAILS`'ten AYRI ve bilerek DARDIR:
+    # mevcut bir admin, adi burada yazmadikca bu paneli goremez. Bos liste =
+    # kimse erisemez (fail-closed), "herkes" degil.
+    ESCROW_SUPER_ADMIN_EMAILS: Union[List[str], str] = Field(
+        default_factory=list,
+        description="Escrow panelini gorebilecek Super Admin e-postalari.",
+    )
+
+    # Anahtar dosyasi. SALT OKUNUR kullanilir: bu servis dosyayi asla yazmaz,
+    # tasimaz, yeniden uretmez veya silmez.
+    ESCROW_KEY_PATH: str = "/var/backups/tezlify-ram/.key-escrow-v2"
+    # Fiziksel kopya beyanlari (makine dogrulamasi DEGIL, operator beyani).
+    ESCROW_ATTESTATION_PATH: str = "/opt/tezlify/backups/escrow-attestation.json"
+
+    # Tek kullanimlik goruntuleme grant'inin omru ve step-up penceresi.
+    ESCROW_REVEAL_TTL_SECONDS: int = 60
+    ESCROW_STEPUP_TTL_SECONDS: int = 300
+    # Kaba kuvvet / kazara tekrar korumasi (kayan pencere, saatlik).
+    ESCROW_REVEAL_MAX_PER_HOUR: int = 5
+    ESCROW_STEPUP_MAX_PER_HOUR: int = 20
+
+    @field_validator("ESCROW_SUPER_ADMIN_EMAILS", mode="before")
+    @classmethod
+    def assemble_escrow_super_admin_emails(cls, v: object) -> List[str]:
+        """`ADMIN_EMAILS` ile ayni cozumleme; tek fark ayri bir listedir."""
+        if not v:
+            return []
+        if isinstance(v, str):
+            v_str = v.strip()
+            if not v_str:
+                return []
+            if v_str.startswith("["):
+                import json
+
+                try:
+                    parsed = json.loads(v_str)
+                    if isinstance(parsed, list):
+                        return [str(e).strip().lower() for e in parsed if str(e).strip()]
+                except Exception:
+                    pass
+            return [e.strip().lower() for e in v_str.split(",") if e.strip()]
+        if isinstance(v, (list, set, tuple)):
+            return [str(e).strip().lower() for e in v if str(e).strip()]
+        return []
+
+    @field_validator("ESCROW_PANEL_ENABLED", mode="before")
+    @classmethod
+    def _escrow_panel_fail_closed(cls, value: object) -> bool:
+        """Yalnizca acikca `true`/`1` paneli acar; cozulemeyen her deger kapalidir.
+
+        `WHATSAPP_MEMORY_PERSIST_ENABLED` ile ayni gerekce: cozulemeyen bir
+        deger `ValidationError` firlatirsa uygulamanin TAMAMI acilmaz; istenen
+        yalnizca panelin kapali kalmasi. `yes`/`on`/`y`/`t` bilerek sayilmaz —
+        yetki veren bir yazim hatasi, sessizce yetki veren bir yazim olurdu.
+        """
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().strip('"').strip("'").strip().lower()
+        if text in {"1", "true"}:
+            return True
+        if text in {"0", "false", "no", "off", "n", "f", ""}:
+            return False
+
+        logging.getLogger(__name__).warning(
+            "ESCROW_PANEL_ENABLED cozulemedi; guvenli tarafta KAPALI kabul "
+            "edildi (fail-closed). Yalnizca `true` veya `1` acar."
+        )
+        return False
+
     # Operations & Monitoring paths
     TEZLIFY_RUNTIME_DIR: str = "/opt/tezlify/runtime/whatsapp-reliability"
     TEZLIFY_MONITORING_DIR: str = "/opt/tezlify/monitoring"

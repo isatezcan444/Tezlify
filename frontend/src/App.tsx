@@ -37,6 +37,7 @@ const AdminBackupsPage = lazy(() => import('./pages/admin/AdminBackupsPage').the
 const AdminOperationsPage = lazy(() => import('./pages/admin/AdminOperationsPage').then((m) => ({ default: m.AdminOperationsPage })));
 const AdminDeploymentPage = lazy(() => import('./pages/admin/AdminDeploymentPage').then((m) => ({ default: m.AdminDeploymentPage })));
 const AdminSecurityPage = lazy(() => import('./pages/admin/AdminSecurityPage').then((m) => ({ default: m.AdminSecurityPage })));
+const AdminEscrowPage = lazy(() => import('./pages/admin/AdminEscrowPage').then((m) => ({ default: m.AdminEscrowPage })));
 
 /**
  * Keep the active section in the URL.
@@ -88,6 +89,7 @@ const VALID_TABS = new Set([
   'admin-operations',
   'admin-deployment',
   'admin-security',
+  'admin-escrow',
 ]);
 
 function readTabFromUrl(fallback: string): string {
@@ -370,6 +372,8 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
         return t('titles.adminDeployment');
       case 'admin-security':
         return t('titles.adminSecurity');
+      case 'admin-escrow':
+        return t('titles.adminEscrow');
       default:
         return 'Tezlify';
     }
@@ -407,6 +411,8 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
         return t('titles.adminDeploymentSub');
       case 'admin-security':
         return t('titles.adminSecuritySub');
+      case 'admin-escrow':
+        return t('titles.adminEscrowSub');
       default:
         return undefined;
     }
@@ -514,6 +520,9 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
           )}
           {activeTab === 'admin-security' && (
             <AdminSecurityPage onNavigate={handleNavigate} />
+          )}
+          {activeTab === 'admin-escrow' && (
+            <AdminEscrowPage onNavigate={handleNavigate} />
           )}
           </Suspense>
         </main>

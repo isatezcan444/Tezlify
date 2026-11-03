@@ -212,6 +212,44 @@ async def require_admin(
     return current_user
 
 
+async def require_super_admin(
+    current_user: AuthUser = Depends(get_current_user_unified),
+) -> AuthUser:
+    """Encryption Key Escrow paneli icin ikinci, DAHA DAR yetki kapisi.
+
+    `require_admin`'den farki bilinclidir:
+
+    - **Ayri liste.** `ESCROW_SUPER_ADMIN_EMAILS` dolu degilse bu panel
+      KIMSEYE acik degildir. Mevcut bir admin, adi burada yazmadikca
+      ana anahtari goremez. "Admin ise gorebilir" varsayimi burada gecerli
+      degildir; panelin yetkisi adminligin yan urunu olamaz.
+    - **Panel kapaliysa 404.** `ESCROW_PANEL_ENABLED` cozulemeyen/yok bir
+      deger oldugunda uç nokta "yetkin yok" (403) demez, "boyle bir sey yok"
+      (404) der. Boylece kapali bir ozellik, varligini disariya sizdirmaz.
+    """
+    from backend.app.core.config import settings
+
+    if not getattr(settings, "ESCROW_PANEL_ENABLED", False):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Bulunamadi (Not Found)",
+        )
+
+    allowed = {
+        str(e).strip().lower()
+        for e in (settings.ESCROW_SUPER_ADMIN_EMAILS or [])
+        if str(e).strip()
+    }
+    user_email = (current_user.email or "").strip().lower()
+
+    if not allowed or not user_email or user_email not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bu islem icin Super Admin yetkisi gerekiyor (Super Admin authorization required)",
+        )
+    return current_user
+
+
 async def get_current_user_or_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),

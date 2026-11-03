@@ -494,3 +494,51 @@ export interface OpsRealtimeEvent {
   event: string;
   operation: OpsOperation;
 }
+
+/* ------------------------------------------------------------------ *
+ * Encryption Key Escrow (Asama 3.9.19-B)
+ * ------------------------------------------------------------------ */
+
+/**
+ * `UNREACHABLE` ile `MISSING` bilerek ayridir: dosya var ama konteyner
+ * goremiyor olabilir (compose mount'u eksik). Ikisini ayni etiketle
+ * gostermek, "anahtar yok" gibi YANLIS bir alarm uretirdi.
+ */
+export type EscrowState = 'PRESENT' | 'MISSING' | 'INVALID' | 'UNREACHABLE';
+
+/** Operator beyani. Makine dogrulamasi degildir: sistem kagidi goremez. */
+export interface EscrowCopyAttestation {
+  anchor8: string;
+  attested_at: string;
+  attested_by: string;
+  note: string;
+}
+
+export interface EscrowStatusResponse {
+  state: EscrowState;
+  path: string;
+  key_len: number | null;
+  anchor8: string | null;
+  mode: string | null;
+  mtime: string | null;
+  file_sha256_12: string | null;
+  reason: string | null;
+  panel_enabled: boolean;
+  copies: { A: EscrowCopyAttestation | null; B: EscrowCopyAttestation | null };
+  last_reveal: { at: string; by: string } | null;
+  reveal_ttl_seconds: number;
+  stepup_ttl_seconds: number;
+}
+
+export interface EscrowStepUpStartResponse {
+  authorization_url: string;
+  state: string;
+  expires_in: number;
+}
+
+export interface EscrowRevealResponse {
+  key: string;
+  anchor8: string;
+  key_len: number;
+  expires_in: number;
+}

@@ -17,6 +17,7 @@ from backend.app.api.v1.endpoints import (
     public_api,
     billing,
     tasks,
+    escrow,
 )
 
 api_router = APIRouter()
@@ -42,5 +43,11 @@ api_router.include_router(tasks.router, prefix="/tasks", tags=["Task Queue"])
 # guarantee and the mutating surface stay visibly separate. Every route here
 # is behind `require_admin` and can only start allowlisted operations.
 api_router.include_router(ops_admin.router, prefix="/admin/ops", tags=["Admin Ops"])
+
+# Encryption Key Escrow (Asama 3.9.19-B). Ayri bir router ve AYRI bir yetki
+# kapisi (`require_super_admin`): bu uç noktalar ana sifreleme anahtarini
+# dondurebilir, dolayisiyla `admin` router'inin "salt okunur / dusuk risk"
+# sozlesmesine dahil edilmemistir.
+api_router.include_router(escrow.router, prefix="/admin/escrow", tags=["Admin Escrow"])
 
 

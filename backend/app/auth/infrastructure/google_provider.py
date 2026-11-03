@@ -26,7 +26,14 @@ class GoogleOAuthProvider:
         self.redirect_uri = redirect_uri
         self._http_client = http_client
 
-    def get_authorization_url(self, state: str) -> str:
+    def get_authorization_url(self, state: str, prompt: str = "consent") -> str:
+        """Yetkilendirme URL'i uretir.
+
+        `prompt` bilerek parametrelestirildi: escrow panelinin adim-yukari
+        (step-up) akisi `login` ister — Google'in oturum cerezine guvenip
+        sifre sormadan geri donmesi, "yeniden kimlik dogrulama" sayilmaz.
+        Varsayilan `consent` korunur; mevcut cagiranlarin davranisi DEGISMEZ.
+        """
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
@@ -34,7 +41,7 @@ class GoogleOAuthProvider:
             "scope": "openid email profile",
             "state": state,
             "access_type": "offline",
-            "prompt": "consent",
+            "prompt": prompt,
         }
         return f"{self.AUTH_URL}?{urllib.parse.urlencode(params)}"
 

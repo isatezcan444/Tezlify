@@ -18,6 +18,7 @@ import {
   Server,
   Wrench,
   Lock,
+  KeyRound,
   Globe,
   X
 } from 'lucide-react';
@@ -88,6 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'admin-backups', label: t('nav.adminBackups'), icon: Database, badge: null },
         { id: 'admin-deployment', label: t('nav.adminDeployment'), icon: Server, badge: null },
         { id: 'admin-security', label: t('nav.adminSecurity'), icon: Lock, badge: null },
+        { id: 'admin-escrow', label: t('nav.adminEscrow'), icon: KeyRound, badge: null },
       ]
     });
   }
