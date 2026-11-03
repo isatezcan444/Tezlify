@@ -22,6 +22,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { requireGatewayToken, verifyWsToken } from './security/gateway-auth.js';
+import { registerMediaRoutes } from './media/media-routes.js';
 import { createPostgresAuthRepository } from './auth/postgres-auth-repository.js';
 import { createPostgresEventOutbox } from './outbox/postgres-event-outbox.js';
 import { createGatewayPostgresPool } from './database/postgres-pool.js';
@@ -215,6 +216,10 @@ app.get('/health', async (_req, res) => {
     // alanların hiçbiri değişmedi, yalnızca yeni bir anahtar eklendi.
     // Mesaj kimliği / gövdesi / telefon numarası YOKTUR — yalnızca sayımlar.
     capacity: sessionManager.ramCapacitySummary(),
+    // Medya diski gözlemlenebilirliği: dosya/sidecar sayıları, boyut ve boş
+    // alan. Bu blok yalnızca okuma amaçlıdır; hiçbir silme kararı üretmez.
+    // İçerik, dosya adı veya yol bilgisi yoktur — yalnızca sayımlar.
+    media_capacity: await sessionManager.mediaCapacitySummary(),
   });
 });
 
@@ -756,38 +761,12 @@ app.delete('/sessions/:sessionId/conversations/:jid', withSession(async (req, re
   res.json(result);
 }));
 
-// Download media by media_id or wa_message_id (with on-demand fallback)
-app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sessionId) => {
-  const preferPreview = req.query.preview === 'true';
-  const retry = Boolean(req.query._retry || req.query.retry || req.query.force);
-  const jid = req.query.jid ? String(req.query.jid) : null;
-  const fromMe = req.query.from_me === 'true' || req.query.from_me === '1';
-  let filePath = sessionManager.getMediaPath(sessionId, req.params.mediaId);
-  if (!filePath || !fs.existsSync(filePath)) {
-    filePath = await sessionManager.downloadMediaOnDemand(sessionId, req.params.mediaId, { preferPreview, retry, jid, fromMe });
-  }
-  if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found', code: 'MEDIA_EXPIRED' });
-  res.sendFile(filePath);
-}));
-
-// Unscoped media route for authorized callers
-app.get('/media/:mediaId', async (req, res) => {
-  const authHeader = req.headers['authorization'] || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '') || req.headers['x-gateway-secret'] || '';
-  if (!process.env.WHATSAPP_GATEWAY_SECRET || token !== process.env.WHATSAPP_GATEWAY_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const preferPreview = req.query.preview === 'true';
-  const retry = Boolean(req.query._retry || req.query.retry || req.query.force);
-  const jid = req.query.jid ? String(req.query.jid) : null;
-  const fromMe = req.query.from_me === 'true' || req.query.from_me === '1';
-  let filePath = sessionManager.getMediaPath(null, req.params.mediaId);
-  if (!filePath || !fs.existsSync(filePath)) {
-    filePath = await sessionManager.downloadMediaOnDemand(null, req.params.mediaId, { preferPreview, retry, jid, fromMe });
-  }
-  if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found', code: 'MEDIA_EXPIRED' });
-  res.sendFile(filePath);
-});
+// ---------------------------------------------------------------------------
+// Media serving: verification and the response body share ONE open file
+// descriptor (see media/media-routes.js). Path/file names are never put in
+// responses or logs — only HTTP status codes and stable error codes.
+// ---------------------------------------------------------------------------
+registerMediaRoutes(app, { sessionManager, logger });
 
 // ---------------------------------------------------------------------------
 // WebSocket — realtime events to connected clients (FastAPI backend)

@@ -2231,10 +2231,27 @@ export function createSessionManager({
       return mediaStore.getMediaPath(sessionId, mediaId);
     },
 
+    async resolveMediaPath(sessionId, mediaId) {
+      return mediaStore.resolveMediaPath(sessionId, mediaId);
+    },
+
+    async verifyMediaIntegrity(mediaId, filePath) {
+      return mediaStore.verifyMediaIntegrity(mediaId, filePath);
+    },
+
+    // Dogrulama ve gonderim AYNI acik dosya tanimlayicisi uzerinden yapilir.
+    async openVerifiedMedia(mediaId, filePath) {
+      return mediaStore.openVerifiedMedia(mediaId, filePath);
+    },
+
+    mediaCapacitySummary() {
+      return mediaStore.mediaCapacitySummary();
+    },
+
     async downloadMediaOnDemand(sessionId, mediaIdOrWaId, options = {}) {
       if (!mediaIdOrWaId) return null;
-      let filePath = mediaStore.getMediaPath(sessionId, mediaIdOrWaId);
-      if (filePath && fs.existsSync(filePath)) return filePath;
+      let filePath = await mediaStore.resolveMediaPath(sessionId, mediaIdOrWaId);
+      if (filePath) return filePath;
 
       let strId = String(mediaIdOrWaId);
       const meta = mediaStore.mediaIndex?.get(strId);
@@ -2321,8 +2338,8 @@ export function createSessionManager({
                     fromMe = Boolean(found.direction === 'OUTBOUND' || found.from_me);
                   }
                   if (found.media_id) {
-                    const p = mediaStore.getMediaPath(session.id, found.media_id);
-                    if (p && fs.existsSync(p)) {
+                    const p = await mediaStore.resolveMediaPath(session.id, found.media_id);
+                    if (p) {
                       this._failedMediaCache?.delete(inFlightKey);
                       return p;
                     }
@@ -2340,7 +2357,7 @@ export function createSessionManager({
             const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
             if (stored?.media_id) {
               this._failedMediaCache?.delete(inFlightKey);
-              return mediaStore.getMediaPath(session.id, stored.media_id);
+              return mediaStore.resolveMediaPath(session.id, stored.media_id);
             }
           } else if (!foundRaw && foundJid && session.sock && !session.sock.isClosed && typeof session.sock.requestPlaceholderResend === 'function') {
             try {
@@ -2370,7 +2387,7 @@ export function createSessionManager({
                 const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
                 if (stored?.media_id) {
                   this._failedMediaCache?.delete(inFlightKey);
-                  return mediaStore.getMediaPath(session.id, stored.media_id);
+                  return mediaStore.resolveMediaPath(session.id, stored.media_id);
                 }
               }
             }
