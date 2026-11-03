@@ -848,3 +848,172 @@ doğrula** — git'te olması yetmez. `install-ram-snapshot-timer.sh`'in kendisi
 
 Doğru okuma: `_iter_json_objects()` ile tüm üst düzey nesneleri tara, **son** nesneyi al.
 `ls` alt komutu `list` değil — `inventory|probe|upload|verify|ls|download`.
+
+## Aşama 4.14 — push öncesi üretim ölçümleri (2026-10-31 09:17–09:30Z, salt okunur)
+
+### P0-1 — yayındaki gateway `afterSeq` okumuyor (kaynak + runtime)
+
+| Kanıt | Değer |
+|---|---|
+| `docker exec tezlify-gateway grep -c afterSeq /app/src/index.js` | **0** |
+| `… grep -c seqEpoch /app/src/session-manager.js` | **0** |
+| `/app/src/index.js:564` | `const { limit, offset, since, perChatLimit, jids } = req.query;` |
+| `listAllMessages` imzası (`session-manager.js:1156`) | `{ limit, offset, since, perChatLimit, jids }` — `afterSeq` yok |
+| `?limit=1` vs `?limit=1&afterSeq=1&seqEpoch=probe` | **birebir aynı**: total 9163, aynı `first_id`, anahtarlar `{limit,messages,offset,total}` |
+| yanıtta `pagination` anahtarı | **yok** ⇒ backend `reported_mode=""` görüp `mode="offset"`e düşer |
+| mesaj yükünde `_seq`/`seq` | **yok** ⇒ değer-tabanlı imleç hiç üretilmiyor |
+
+Fallback (`memory_persistence.py:434-451`, `2236cae`): `mode="offset"`, `offset = start_offset` — imleç
+**sıfırlanmaz** (bilinçli). Silent-safe; eviction kayması sürer ⇒ **P0-1 açık**.
+
+**Gateway yarısı hiçbir commit'te yok:** `git log --all -S'afterSeq' -- whatsapp-gateway/src/session-manager.js`
+**boş**, `git show HEAD:… | grep -c afterSeq` = **0**, ama çalışma ağacında 5 M + 1 ?? (`+448/−22`,
+`scripts/test-bulk-seq-pagination.mjs`). `host-release.sh` hedef ref'in ağacından build eder ⇒ bu kod hiçbir
+deploy ile üretime gidemez; `main`'den tam deploy da taşımaz.
+
+**Soy tuzağı:** `git log cbe4f509..origin/main -- whatsapp-gateway/` **boş**, ama `git diff` **8 dosya
++604/−13** verir — `b5f7605`/`9754143`/`0d909ab` `cbe4f509`'un **atası**, gateway dizini `cbe4f509`'un
+ağacında geri alınmış. "Log boş ⇒ fark yok" yanlış; blob karşılaştır.
+
+### RAM/DB reconciliation (tam kimlik farkı)
+
+| Metrik | Değer |
+|---|---|
+| RAM (API görünür) | 9163 (10 sayfa × 1000, `perChatLimit=1000000`, 9163 benzersiz kimlik) |
+| DB `messages` | 9246 · sohbet 126 · kontak 1538 |
+| Kesişim / **RAM_ONLY** / **DB_ONLY** | 9163 / **0** / **83** |
+| DB_ONLY açıklaması | conv 38289 = 2051 (**+51**), conv 38291 = 2032 (**+32**) → 51+32 = **83** ✓ |
+
+**Tavan:** manifest `chats[].collected` max = **2000** (2 sohbet tam 2000'de, `shortfall_total=0`) ⇒ 9163
+*tavan altında* ölçülmüş sayıdır; mutlak RAM büyüklüğü değildir. `RAM_ONLY=0` tavan-içi görünür küme içindir.
+`RAM_ONLY=0` **persistence loop'un ürünü değil** (`runs=0`) — canlı ingest senkron yazıyor, RAM önbellek.
+
+### Persistence kill-switch (canlı)
+
+`WHATSAPP_MEMORY_PERSIST_ENABLED` konteyner env'inde **tanımsız**, compose'da **yok**, varsayılan `False`
+(`config.py:211`, `_memory_persist_fail_closed`). `/health.whatsapp_memory_persistence`:
+`enabled=null, runs=0, inserted_total=0, config_enabled=false, task_running=false, cursor_count=0`.
+
+### Snapshot durumu
+
+| Alan | Değer |
+|---|---|
+| `…T070158Z` `.rsnap` | 7.216.260 B · SHA256 `fa01aa3ba9e8ecdb83d77edb1a6af9ec482ef57f7d8cba53a12a0fa8de049bdf` (host'ta yeniden hesaplandı, `snapshot.jsonl` ile aynı) |
+| manifest SHA256 | `7ebff873aebbf0e0d3cbf175ee33de2c91a6b48af38c1bf1592ef412a9489d10` |
+| `record_count` / `chat_count` | 9163 / 100 |
+| `remote_verified` / `upload_status` | **true** / **UPLOADED** (`status=OK`, `exit_code=0`, 13,1 s) |
+| en taze | `…T090040Z` (09:00:40Z) SHA256 `7a9ff7e35ea54db4d081463e7a3ef233160623429d3ec362ff2562f36fd19c41` |
+| timer | `tezlify-ram-snapshot.timer` **kurulu**, saatlik, sıradaki 10:01:05Z |
+| dizin | 32 `.rsnap` + 32 manifest, **221 MB**, retention yok |
+
+**İki tuzak:** (1) `remote_verified` **manifestte yok** — doğruluk kaynağı `/var/backups/tezlify-ram/snapshot.jsonl`.
+(2) `source_container_id = ce2e901b6619` **backend** konteyneridir (snapshot backend'den çalışır), gateway değil
+(canlı gateway `5b867095d376…`, `restarts=0`).
+
+### Rollback kimlikleri (ölçüldü)
+
+| Etiket | Imaj | Anlam |
+|---|---|---|
+| `tezlify-gateway:pre-20261029T214629Z` | `sha256:a1ba2572…` | **canlı gateway ile aynı** ⇒ `--rollback-to` faydasız RAM kaybı |
+| `tezlify-gateway:latest` | `sha256:a1ba2572…` | aynı |
+| `tezlify-backend:pre-20261029T214629Z` | `sha256:a5c35492…` | gerçek geri dönüş hedefi |
+| `tezlify-backend:latest` | `sha256:06ce4fe1…` | canlı |
+
+### DB bütünlüğü (canlı)
+
+çift kopya 0 · `wa_message_id IS NULL` 0 · yetim mesaj 0 · mesajsız sohbet 26 (yapısal) · hayalet LID kontağı
+**1** (`whatsapp_identity_quarantine` **0** — süpürme boot'ta; sıradaki boot silmez, yazar) ·
+**`processed_events` ve `outbox` tabloları YOK** (`to_regclass`→NULL; "0 satır" değil **N/A**) ·
+havuz 5/100 (backend 3, gateway 1, yerel 1) · `messages.created_at` = `timestamp without time zone`.
+
+---
+
+## Aşama 5.3.9–5.3.17 — kontrollü commit hattı (2026-11-02, `release/backend-only-seq-safety`)
+
+Worktree `/private/tmp/tz429-release`. Bu bölüm index'ten taşındı; index yalnızca tek satır headline tutar.
+
+### 5.3.9 + 5.3.10 — semantik + regresyon kurtarma (önce `3ac26a9` üzerinde, sonra commit)
+
+Update semantics (`replace`) + oturum silme çok-sekmeli broadcast, ardından regresyon kurtarma.
+5 üretim dosyası (+119/−23) + 7 test dosyası. **Kayıp 5 test dosyasının 5'i de KURTARILDI**; 4.34 e2e ve
+tz428 **byte-exact**: sha256 `da9a2641…` / `5f053cb5…`, 5.3.6'da kaydedilen değerlerle birebir.
+5.3.10-F1 gerçek ürün hatası: kısmi `replace` payload'ı `created_at`'i boşalttı (`mapMessage` → `|| ''`) ⇒
+sonraki sıralama mesajı en üste fırlattı; hook'ta guard eklendi. Yeni: `verify-conversation-replace-semantics.mjs`
+(12 kontrol), `verify-session-deleted-multitab.mjs` (8 kontrol) — ikisi de mutasyonla kanıtlandı.
+
+**İşe yarayan kurtarma yöntemi:** untracked dosyalar `git fsck`'e görünmez; kaynak oturum transcript'leri
+(`~/.workbuddy-ai/projects/*/*.jsonl`, `function_call.arguments` JSON *string*) Write→Edit olarak replay
+edildi, artı `docs/audits/` içine bırakılmış `git diff --no-index` patch'i. **Untracked bir test için her
+zaman patch export et.**
+
+### 5.3.11 — zincir entegrasyonu
+
+Gateway `scripts.test` **36→40** link (4 eklendi, hiçbiri yeniden sıralanmadı; HEAD'in 36'sı birebir korundu;
+lockfile dokunulmadı). `MANDATORY_TESTS` **8→10**. `npm test` rc=0 / 202 PASS satırı; runner **10/10 PASS,
+164 test, exit 0**; frontend 12/12 + 8/8 + build rc=0. Değişmezlik 3 yolla kanıtlandı: 5 üretim dosyasının
+sha256'sı değişmedi, `120/24 − 1/1 = 119/23`, ve runner'ın eklenen 2 satırı çıkarılınca
+`a81270ab0fb33aa2…` **byte-exact** elde ediliyor.
+
+### 5.3.12 — kontrollü staging
+
+21 dosya stage edildi (20 allowlist + rapor): `5209/24`; üretim kısmı hâlâ `119/23`.
+`test-upsert-notify-append.mjs` stage edilmedi (tracked + temiz — stage edilecek bir şey yok).
+Kapsam kanıtı sayı değil **küme eşitliği**: worktree'nin 20 kirli girdisi tam olarak allowlist'ti, yani
+kapsam dışı bir yol yoktu. Staged blob'lar incelenen dosyalarla byte-identical (`git show :path | shasum`).
+`main` `e7f1077`/87 dokunulmadı.
+
+### 5.3.13 — kontrollü commit
+
+`5f29d9e` (parent `3ac26a9`), 21 dosya `5209/24`, mesaj
+`feat(whatsapp): harden update semantics and integrate regression contracts`.
+Pre-commit kapısı **küme eşitliği**ydi (iki yönlü `comm`, ikisi de boş), sayı değil.
+`post-commit` hook = Qoder tracker (`|| true`, push yok) — çalıştı; `pre-commit`/`commit-msg` yok.
+Sonrası: parent/diff-tree/mesaj/blob hash'leri doğrulandı; `git status --porcelain` 0. **Push yok, deploy yok.**
+
+### 5.3.14 — push kapısı (BLOCKED)
+
+Remote `origin` = `github.com/isatezcan444/Tezlify`; remote `release/backend-only-seq-safety` = **`0b795ea6`**
+(deploy edilmiş commit) ve `5f29d9e`'nin **atası** ⇒ temiz fast-forward, 2 commit, 0 kayıp.
+Push geri çekildi: backend kapısı **FAIL** (`2122 passed, 1 failed, 4 skipped`), gateway PASS (40/40, 202 PASS),
+frontend PASS (`tsc && vite build` rc=0).
+
+### 5.3.14'in kırmızısı — `test_http_probe_distinguishes_unreachable_from_unhealthy`
+
+`"None" in str(inspect.signature(ops._http_probe).return_annotation)` iddiası; anotasyon `Optional[bool]` ⇒
+`typing.Optional[bool]` render eder, içinde `"None"` **hiç** geçmez. Test anotasyonun *yazımını* ölçüyor,
+davranışını değil. Bizim olmadığı kanıtlandı: test + `ops_service.py` blob'ları **HEAD / HEAD^ / remote
+`0b795ea6` üçünde de aynı** (yani deploy edilmiş commit'te de kırmızı), tek başına da düşüyor
+(`1 failed, 33 passed`), `pytest_randomly` kurulu değil yani sıralama sabit.
+**Bu branch'te her tam backend koşusunda bu kırmızıyı bekle** — regresyon sanma; kendi düzeltme aşaması gerekir.
+
+### 5.3.15 — o kırmızının onarımı
+
+Yalnızca `backend/tests/test_admin_ops_security.py` değişti (`+13/−2`); `ops_service.py` dokunulmadı.
+Metinsel `str(annotation)` kontrolü yerine
+`set(typing.get_args(typing.get_type_hints(fn)["return"])) == {bool, type(None)}` — yazımdan bağımsız, ve
+küme **eşitliği** olduğu için daraltılmış `bool` veya yanlış `str | None` reddedilir (7 vakalık negatif
+kontrol, 5'i reddedildi). Dosya **34 passed**; tam suite **2123 passed / 4 skipped / 0 failed / 0 error / exit 0**.
+Blob'lar: `HEAD:` = `6e055e8d477101a55f79dbd066090a619e5c604b` (kırık), worktree = `39a2a66`.
+
+### 5.3.16 — push kapısı yeniden doğrulama (PASS)
+
+Üç kapı da `5f29d9e` üzerinde tazelendi: backend `2123 passed / 4 skipped / 0 failed / 0 error / exit 0`
+(194 s); gateway `npm test` exit 0, 40/40 link, 202 PASS; frontend `npm run build` exit 0 (`✓ built in 13.92s`,
+0 TS hatası). Remote ilişkisi değişmedi: local `5f29d9e`, remote `0b795ea6`, **2 commit**, 0 kayıp,
+**fast-forward**, force yok.
+
+### Kalıcı tuzak — tam backend suite `node_modules` symlink'lerini ister
+
+İki backend testi bir Node harness'ına shell out ediyor
+(`whatsapp-gateway/tests/phase2a-group-hydration.test.mjs`); worktree'nin `node_modules` symlink'leri yoksa
+`ERR_MODULE_NOT_FOUND: 'uuid'` ile düşerler ve **2 setup error** olarak ürün kırılması gibi görünürler.
+Suite'ten önce üç symlink'i (root / gateway / frontend) yeniden kur.
+
+### Açık kalanlar (2026-11-02 itibarıyla)
+
+- 7 frontend script **önceden kırmızı** (`Avatar.tsx`/`ChatBubble.tsx` dokunulmadı — HEAD'de yeniden koşularak kanıtlandı).
+- `frontend/scripts/verify-*.mjs` **hiçbir zincirde değil** — elle koşuluyor (5.3.11 yalnız gateway + backend kapsamındaydı).
+- 5.3.13–5.3.17 raporları **untracked**; 5.3.15 test düzeltmesi 5.3.17'de commit edilene kadar **uncommitted**dı.
+- **Push ayrı kullanıcı onayı ister.**
+- `.workbuddy-ai/memory/*` tracked ve kirli — `git add -A` bunu release commit'ine sokar; açık dosya listesiyle stage et.
+- 5.2.3–5.2.6 işi artık `main` `e7f1077a` içinde commit'li; eski "uncommitted phase work (as of 5.2.5)" listesi geçersiz.

@@ -55,3 +55,45 @@ lookup scoped by tenant. `NULL` must stay non-unique (multiple rows legitimately
 
 Migration order matters: create the new index **first**, drop the old global one **only if that succeeded**,
 both inside **one** transaction. Procedure: `non-destructive-schema-constraint-migration`.
+
+## X5. "Persist but don't broadcast" — three mechanisms, two of them are the WRONG tool
+
+Written in Turkish in the original session, kept verbatim because the naming is the point:
+
+**"Persist et ama yayınla-ma" — üç mekanizma, ikisi YANLIŞ araç:** gateway `_internal_only`
+(`events.js:337`) olayı backend'e **hiç göndermez** — history-sync için doğru, DB'ye yazılacak şey için
+ölümcül. `_skip` (`events.py:2851`) `db.commit()`'i yalnızca postgres+event_id varsa çağırır ⇒ SQLite/test
+yolunda persist commit'siz kalır. Doğru araç **`_no_broadcast`**: commit'ten SONRA okunur (`main.py:771`),
+ACK eder, broadcast etmez. Eklerken **üç dönüş yolunu da** kapat: normal persist, pre-flight
+`return event # dedup`, `IntegrityError` kurtarma.
+
+## X6. A discriminator on the wire is worthless unless it is THREADED end-to-end
+
+`messages.upsert` `type` (`notify`/`append`) `socket-events.js:613`'ten `_ingestUpsertMessage`'a
+**geçirilmek zorunda**; geçmezse append canlı mesaj gibi rozet/önizleme/yayın üretir. **`messages.update`
+artık açık `upsertType:'replace'` (5.3.9)**: aynı `wa_message_id` yerinde güncellenir, rozet artmaz,
+zamansız güncellemede kaydın `created_at`'i korunur (asla `Date.now()`), gerçek içerik değişikliği
+yayınlanır, no-op yayınlanmaz.
+
+Append önizleme tuzağı: `should_apply_last_message` `ts <= cur`'u reddeder, AMA
+`msg_dt = ... or utc_now_naive()` fallback'i zamansız geçmişi "şimdi" yapar ⇒ append + `created_at` yoksa
+`apply_last_message` **hiç çağrılmamalı**. Gateway `_touchChat` de aynı tuzakta.
+
+## X7. A cleanup key must come from the SAME function the writer uses
+
+`_upsert_contact` writes `contact_phone_for_jid(jid)` (`identity.py:164`: `@g.us` → `jid:<jid>`, else
+`jid_to_phone() or jid:<jid>`). `jid_to_phone` returns **`None`** for `@g.us` *and* `@lid` ⇒
+`WHERE phone_e164 = NULL` silently deletes nothing while the test stays green. **Fixing one copy isn't
+enough** — the group test carried an inline duplicate with the same wrong key, so patching `_purge` alone
+left the leak intact (measured).
+
+## X8. Tracked ≠ runs, and a counter must match the output dialect it counts
+
+**Tracked ≠ runs.** `test-upsert-notify-append.mjs` was committed at HEAD yet absent from `scripts.test`
+(0 occurrences) — a committed test that never executed for 4 stages. Check *chain membership*, not file
+existence; a test's own presence proves nothing. Corollary: **a green chain exit is not proof the new link
+ran** — match each script's distinctive output marker in the log, exactly once.
+
+**A counter must match the output format it counts.** `test-tz428-…` prints `ok - …` + `PASS (N checks)`,
+not `  PASS …`; a `^  PASS` grep reports **0** for a fully green script. Two scripts can be green with
+different dialects — verify the dialect before trusting a count.
