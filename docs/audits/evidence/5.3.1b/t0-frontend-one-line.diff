@@ -1,0 +1,12 @@
+diff --git a/frontend/src/features/whatsapp/api/whatsappApi.ts b/frontend/src/features/whatsapp/api/whatsappApi.ts
+index ebf2b07..d66ce93 100644
+--- a/frontend/src/features/whatsapp/api/whatsappApi.ts
++++ b/frontend/src/features/whatsapp/api/whatsappApi.ts
+@@ -550,7 +550,6 @@ const LIVE_SESSION_EVENTS = new Set([
+   'session_deleted',
+   'session_qr_updated',
+   'session_sync_completed',
+-  'gateway_connected',
+ ]);
+ 
+ export function useLiveMode(): { status: LiveModeStatus; probe: () => Promise<LiveModeStatus> } {

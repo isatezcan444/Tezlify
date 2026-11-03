@@ -111,6 +111,11 @@ async def _acquire_send_lock(conv_id: int, client_msg_id: str):
                     del _send_locks[key]
 
 
+def _same_tenant(left: Any, right: Any) -> bool:
+    """Tenant kimliklerini tire ve buyuk/kucuk harf farkindan bagimsiz karsilastirir."""
+    return str(left).replace("-", "").strip().lower() == str(right).replace("-", "").strip().lower()
+
+
 def _validated_send_result(raw: Any) -> Dict[str, Any]:
     parsed = extract_send_result(raw)
     wa_message_id = parsed.get("wa_message_id")
@@ -1355,7 +1360,15 @@ class WhatsAppMessagingOrchestrator:
         preview: bool = False,
         retry: bool = False,
     ) -> Tuple[bytes, Optional[str], Optional[str]]:
-        """Kullaniciya ait bir mesaja ait medyayi gateway'den proxy'ler."""
+        """Kullaniciya ait bir mesaja ait medyayi gateway'den proxy'ler.
+
+        Tenant siniri sunucu tarafinda kurulur: `media_id` once cagiran kullanicinin
+        mesajina cozulmelidir. Cozulemezse istek reddedilir; gateway'de baytlar
+        bulunsa bile tenant'siz (global) bir yol denenmez.
+        """
+        if not user_id or not str(user_id).strip():
+            raise LookupError("Medya bulunamadi")
+
         conversation_gateway_id = self._get_helper("_conversation_gateway_id", _conversation_gateway_id)
         gateway_client = self._get_helper("gw", gw)
 
@@ -1370,28 +1383,16 @@ class WhatsAppMessagingOrchestrator:
         )
         row = res.scalars().first()
         if row is None:
-            fetch_unscoped = getattr(gateway_client, "fetch_media_unscoped", None)
-            if fetch_unscoped:
-                try:
-                    data = await fetch_unscoped(media_id, preview=preview, retry=retry)
-                    mime = None
-                    if data.startswith(b"\xff\xd8\xff"):
-                        mime = "image/jpeg"
-                    elif data.startswith(b"\x89PNG"):
-                        mime = "image/png"
-                    elif data.startswith(b"OggS"):
-                        mime = "audio/ogg; codecs=opus"
-                    elif len(data) >= 8 and (data[4:8] == b"ftyp" or data[:4] == b"\x00\x00\x00\x18"):
-                        mime = "video/mp4"
-                    elif data.startswith(b"%PDF"):
-                        mime = "application/pdf"
-                    return data, mime, None
-                except Exception:
-                    pass
-            raise LookupError(f"Medya bulunamadi: {media_id}")
+            raise LookupError("Medya bulunamadi")
+        # get_user_filter, pytest altinda legacy NULL sahipli satirlara izin verir;
+        # burada acik esitlik ile yabanci bir satirin sizmadigini ikinci kez dogrula.
+        if row.user_id is not None and not _same_tenant(row.user_id, user_id):
+            raise LookupError("Medya bulunamadi")
         conv = await db.get(Conversation, row.conversation_id)
         if conv is None:
-            raise LookupError(f"Medya bulunamadi: {media_id}")
+            raise LookupError("Medya bulunamadi")
+        if conv.user_id is not None and not _same_tenant(conv.user_id, user_id):
+            raise LookupError("Medya bulunamadi")
         gateway_id = await conversation_gateway_id(db, user_id, conv)
         target_id = row.media_id or media_id
         wa_msg_id = row.wa_message_id

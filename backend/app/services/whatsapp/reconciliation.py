@@ -361,6 +361,11 @@ async def candidate_lid_split_pairs(
     Yalnızca her iki ucu da kanıtlanmış çiftler döner: eşleme tablosunda kaydı
     olmayan bir LID aday DEĞİLDİR (kimliği tahmin etmek yerine atlarız).
 
+    Her aday KENDİ WhatsApp oturumu (`conversations.session_id`) ile döner.
+    Aynı kişinin iki hattaki bölünmesi iki AYRI adaydır; çağıran birleştirmeyi
+    o oturumun `session_id`'si ile yapmak zorundadır. `None` (eski, hattı
+    bilinmeyen satırlar) tek başına bir kapsamdır ve başka oturuma genişlemez.
+
     Arşivlenmiş LID sohbeti (`archived=False` iken) aday DEĞİLDİR: birleştirme
     onu arşivler, ikinci bir koşu aynı satırı yeniden "birleştirilmiş" diye
     raporlamamalıdır. Idempotans bu filtreden gelir; onsuz her boot aynı 200
@@ -408,7 +413,8 @@ async def candidate_lid_split_pairs(
                        lm.phone_jid,
                        c.user_id,
                        MIN(c.id) AS lid_contact_id,
-                       MIN(cv.id) AS lid_conversation_id
+                       MIN(cv.id) AS lid_conversation_id,
+                       cv.session_id AS conversation_session_id
                 FROM {_lid_table(postgres)} lm
                 JOIN {_public_table(postgres, "contacts")} c
                   ON c.phone_e164 = 'jid:' || lm.lid_jid
@@ -419,8 +425,8 @@ async def candidate_lid_split_pairs(
                 WHERE lm.phone_jid IS NOT NULL AND lm.phone_jid <> ''
                   AND lm.lid_jid LIKE '%@lid'
                   {where_user}
-                GROUP BY lm.lid_jid, lm.phone_jid, c.user_id
-                ORDER BY lm.lid_jid
+                GROUP BY lm.lid_jid, lm.phone_jid, c.user_id, cv.session_id
+                ORDER BY lm.lid_jid, cv.session_id
                 LIMIT :lim
                 """
             ),
@@ -429,7 +435,14 @@ async def candidate_lid_split_pairs(
     ).all()
 
     pairs: List[Dict[str, Any]] = []
-    for lid_jid, phone_jid, owner, lid_contact_id, lid_conversation_id in rows:
+    for (
+        lid_jid,
+        phone_jid,
+        owner,
+        lid_contact_id,
+        lid_conversation_id,
+        conversation_session_id,
+    ) in rows:
         pairs.append(
             {
                 "user_id": str(owner),
@@ -437,6 +450,7 @@ async def candidate_lid_split_pairs(
                 "phone_jid": str(phone_jid),
                 "lid_contact_id": lid_contact_id,
                 "lid_conversation_id": lid_conversation_id,
+                "session_id": conversation_session_id,
             }
         )
     return pairs
@@ -616,18 +630,40 @@ async def _merge_under_lease(
         canonical_contact.custom_attributes = dict(canon_attrs)
         await db.flush()
 
+    # P0-2: bir LID eşleştirmesi YALNIZCA kendi oturumunun sohbetlerini
+    # etkileyebilir. `session_id` verilmişse sorgu o hatla sınırlıdır. Verilmemişse
+    # (eski/belirsiz kayıt) eşleşen sohbetlerin TÜMÜ aynı kapsamda olmalıdır;
+    # birden çok oturum görülürse hiçbir şey taşınmaz (fail-closed).
+    scope_filters = [
+        Conversation.contact_id.in_([lid_contact.id, canonical_contact.id]),
+        get_user_filter(Conversation.user_id, user_id),
+    ]
+    if session_id is not None:
+        scope_filters.append(Conversation.session_id == session_id)
     conv_res = await db.execute(
-        select(Conversation).where(
-            Conversation.contact_id.in_([lid_contact.id, canonical_contact.id]),
-            get_user_filter(Conversation.user_id, user_id),
-            *(
-                [Conversation.session_id == session_id]
-                if session_id is not None
-                else []
-            ),
-        )
+        select(Conversation).where(*scope_filters).order_by(Conversation.id.asc())
     )
-    convs = {c.contact_id: c for c in conv_res.scalars().all()}
+    conv_rows = list(conv_res.scalars().all())
+    if session_id is not None:
+        effective_session_id = session_id
+    else:
+        scopes = {conv.session_id for conv in conv_rows}
+        if len(scopes) > 1:
+            if result_info is not None:
+                result_info["skipped_reason"] = "ambiguous_session_scope"
+            logger.warning(
+                "[lid_merge] Oturum kapsamı belirsiz; birleştirme YAPILMADI "
+                "(lid=%s, owner=%s, sessions=%s).",
+                lid_phone,
+                user_id,
+                sorted(str(scope) for scope in scopes),
+            )
+            return None
+        effective_session_id = next(iter(scopes), None)
+    # Aynı kişi+oturum için birden çok satır (veri anomalisi) varsa en küçük id.
+    convs: Dict[Any, Conversation] = {}
+    for conv in conv_rows:
+        convs.setdefault(conv.contact_id, conv)
     legacy_conv = convs.get(lid_contact.id)
     canonical_conv = convs.get(canonical_contact.id)
 
@@ -643,8 +679,21 @@ async def _merge_under_lease(
             await db.commit()
             return None
         canonical_conv = await ensure_conversation(
-            db, user_id, phone_jid, session_id=legacy_conv.session_id
+            db, user_id, phone_jid, session_id=effective_session_id
         )
+        # Sağlayıcı oturum filtresini yok sayıp başka hattın sohbetini
+        # döndürürse taşıma YAPILMAZ: yanlış hatta mesaj yazmaktansa iş ertelenir.
+        if getattr(canonical_conv, "session_id", None) != effective_session_id:
+            if result_info is not None:
+                result_info["skipped_reason"] = "ambiguous_session_scope"
+            logger.warning(
+                "[lid_merge] Kanonik sohbet farklı oturumda (%s != %s); "
+                "birleştirme YAPILMADI (lid=%s).",
+                getattr(canonical_conv, "session_id", None),
+                effective_session_id,
+                lid_phone,
+            )
+            return None
 
     if legacy_conv.id == canonical_conv.id:
         return canonical_conv
@@ -769,7 +818,7 @@ async def _merge_under_lease(
             event=_data_audit.EVENT_IDENTITY_MERGE,
             source="sweep",
             user_id=user_id,
-            session_id=session_id,
+            session_id=effective_session_id,
             outcome="committed",
             reason=("stranded_after_merge" if stranded else "merged"),
             conversation_ids=[int(legacy_conv.id), int(canonical_conv.id)],
@@ -855,7 +904,7 @@ async def merge_deferred_lid_ghosts(
                         pair["user_id"],
                         pair["lid_jid"],
                         pair["phone_jid"],
-                        session_id=None,
+                        session_id=pair.get("session_id"),
                         # Boot uzun bekleyemez: kilitliyse bir sonraki süpürme
                         # devralır, burada startup geciktirilmez.
                         lock_wait_seconds=5.0,
@@ -936,11 +985,21 @@ async def merge_deferred_lid_ghosts(
 
 
 async def _canonical_conversation_id(
-    db: AsyncSession, user_id: str, phone_jid: str
+    db: AsyncSession,
+    user_id: str,
+    phone_jid: str,
+    session_id: Optional[int] = None,
 ) -> Optional[int]:
     canonical_phone = contact_phone_for_jid(phone_jid)
     if not canonical_phone:
         return None
+    # Kanonik taraf da AYNI oturumda aranır. `None` "hatsız eski kayıt"
+    # kapsamıdır; başka oturumun sohbeti sahipsiz-mesaj hesabına karışmaz.
+    session_filter = (
+        Conversation.session_id.is_(None)
+        if session_id is None
+        else Conversation.session_id == session_id
+    )
     return await db.scalar(
         select(Conversation.id)
         .join(Contact, Contact.id == Conversation.contact_id)
@@ -948,6 +1007,7 @@ async def _canonical_conversation_id(
             Contact.phone_e164 == canonical_phone,
             get_user_filter(Conversation.user_id, user_id),
             Conversation.is_archived.is_(False),
+            session_filter,
         )
         .order_by(Conversation.id.asc())
     )
@@ -985,7 +1045,7 @@ async def candidate_stranded_lid_conversations(
             ).scalars().all()
         )
         canonical_id = await _canonical_conversation_id(
-            db, pair["user_id"], pair["phone_jid"]
+            db, pair["user_id"], pair["phone_jid"], session_id=pair.get("session_id")
         )
         canonical_ids = (
             set(
@@ -1051,7 +1111,7 @@ async def collect_stranded_lid_messages(
                         pair["user_id"],
                         pair["lid_jid"],
                         pair["phone_jid"],
-                        session_id=None,
+                        session_id=pair.get("session_id"),
                         lock_wait_seconds=5.0,
                         result_info=info,
                     )

@@ -303,11 +303,34 @@ class CampaignRunner:
                     logger.warning("[SequenceRunner] No connected session for Campaign #%s sequence step %s", campaign.id, step_number)
                     continue
 
-                # Prepare media payload if step specifies media
+                user_id_str = str(campaign.user_id) if campaign.user_id else None
+
+                # Prepare media payload if step specifies media. Yetkilendirme
+                # bayt okunmadan ÖNCE yapılır; kanıtlanamazsa adım durdurulur.
                 media_payload = None
                 if step_media_url:
-                    from backend.app.services.campaign_media_service import CampaignMediaService
-                    base64_data = CampaignMediaService.get_campaign_media_base64(step_media_url)
+                    from backend.app.services.campaign_media_service import (
+                        CampaignMediaAccessDenied,
+                        CampaignMediaService,
+                    )
+                    try:
+                        base64_data = await CampaignMediaService.get_authorized_campaign_media_base64(
+                            db, step_media_url, user_id_str
+                        )
+                    except CampaignMediaAccessDenied:
+                        logger.warning(
+                            "[SequenceRunner] Campaign #%s step %s medya sahipliği "
+                            "doğrulanamadı; lead #%s için sekans durduruldu.",
+                            campaign.id,
+                            step_number,
+                            lead.id,
+                        )
+                        seq_lead.status = SequenceLeadStatus.FAILED
+                        seq_lead.stopped_at = now
+                        seq_lead.stop_reason = "MEDIA_UNAUTHORIZED"
+                        seq_lead.next_step_at = None
+                        await db.commit()
+                        continue
                     if base64_data or step_media_url.startswith(("http://", "https://")):
                         media_payload = {
                             "media_type": (step_media_type or "DOCUMENT").lower(),
@@ -317,7 +340,6 @@ class CampaignRunner:
                             "caption": rendered_msg,
                         }
 
-                user_id_str = str(campaign.user_id) if campaign.user_id else None
                 try:
                     result = await whatsapp_service.start_conversation(
                         db=db,

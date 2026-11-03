@@ -298,25 +298,53 @@ def schedule_unfurl(
 async def lookup_preview_for_proxy(
     db: AsyncSession, digest: str
 ) -> Optional[LinkPreview]:
-    """Gorsel proxy'si icin kayit. Hash yoksa None — URL kabul EDILMEZ."""
+    """Gorsel proxy'si icin kayit. Hash yoksa None — URL kabul EDILMEZ.
+
+    NOT: `LinkPreview` tablosu URL hash'i uzerinde GLOBAL tekildir; satirda
+    tenant sutunu yoktur. Bu yuzden bu fonksiyon tek basina bir yetki karari
+    DEGILDIR. Dahili medya yolu donduren satirlar icin tenant siniri
+    `get_preview_image_bytes` icinde kurulur.
+    """
     return await db.scalar(
         select(LinkPreview).where(LinkPreview.url_hash == digest)
     )
 
 
-async def get_preview_image_bytes(db: AsyncSession, digest: str) -> tuple[bytes, str]:
+def _same_tenant(left: Any, right: Any) -> bool:
+    """Tenant kimliklerini tire ve buyuk/kucuk harf farkindan bagimsiz karsilastirir."""
+    if left is None or right is None:
+        return False
+    return str(left).replace("-", "").strip().lower() == str(right).replace("-", "").strip().lower()
+
+
+async def get_preview_image_bytes(
+    db: AsyncSession, digest: str, user_id: Any
+) -> tuple[bytes, str]:
     """Onbellekteki bir kaydin kapak gorselini indirir.
 
     Istemci URL DEGIL hash gonderir. Bu, proxy'yi acik bir aktarima donusmekten
     kurtarir: cekilecek adres yalnizca bu tabloda, yani dogrulamadan gecmis
     kayitlarda bulunur.
+
+    Tenant siniri
+    -------------
+    `LinkPreview` kaydi global oldugu icin hash'i bilmek tek basina yetki
+    vermez. Dahili WhatsApp medyasini (`/api/v1/whatsapp/media/...`) isaret eden
+    satirlarda medya SAHIPLIGI ayrica dogrulanir: `Message.media_id` sorgusu
+    cagiran kullaniciya kapsamlanir ve sohbet sahipligi ikinci kez kontrol
+    edilir. Kullanici kimligi yoksa ya da sahiplik cozulemezse istek fail-closed
+    olarak reddedilir; oturumsuz/global bir yol DENENMEZ.
     """
     from backend.app.services.link_preview.unfurl import fetch_image_bytes
+
+    if not user_id or not str(user_id).strip():
+        raise LookupError("Medyaya ulasilamadi.")
 
     row = await lookup_preview_for_proxy(db, digest)
     if row is None or not row.image_url:
         raise LookupError("Bu onizleme icin gorsel yok.")
     if row.image_url.startswith("/api/v1/whatsapp/media/"):
+        from backend.app.core.auth import get_user_filter
         from backend.app.models.message import Message
         from backend.app.models.conversation import Conversation
         from backend.app.services.whatsapp.repositories.sessions import (
@@ -324,15 +352,32 @@ async def get_preview_image_bytes(db: AsyncSession, digest: str) -> tuple[bytes,
         )
         from backend.app.services import whatsapp_gateway as gw
 
-        media_id = row.image_url.split("/")[-1]
-        msg_row = await db.scalar(select(Message).where(Message.media_id == media_id))
-        if msg_row:
-            conv = await db.get(Conversation, msg_row.conversation_id)
-            if conv:
-                gid = await _conversation_gateway_id(db, msg_row.user_id, conv)
-                data = await gw.fetch_media(gid, media_id)
-                return data, msg_row.media_mime_type or "image/jpeg"
-        raise LookupError("Medyaya ulasilamadi.")
+        media_id = row.image_url.rstrip("/").split("/")[-1]
+        if not media_id:
+            raise LookupError("Medyaya ulasilamadi.")
+        msg_row = await db.scalar(
+            select(Message).where(
+                Message.media_id == media_id,
+                get_user_filter(Message.user_id, user_id),
+            )
+        )
+        if msg_row is None:
+            raise LookupError("Medyaya ulasilamadi.")
+        # get_user_filter pytest altinda legacy NULL sahipli satirlara izin
+        # verir; yabanci bir satirin sizmadigini acik esitlikle ikinci kez
+        # dogrula.
+        if msg_row.user_id is not None and not _same_tenant(msg_row.user_id, user_id):
+            raise LookupError("Medyaya ulasilamadi.")
+        conv = await db.get(Conversation, msg_row.conversation_id)
+        if conv is None:
+            raise LookupError("Medyaya ulasilamadi.")
+        if conv.user_id is not None and not _same_tenant(conv.user_id, user_id):
+            raise LookupError("Medyaya ulasilamadi.")
+        # Oturum cozumunu de cagiran kullaniciya kapsamla: `msg_row.user_id`
+        # yerine dogrulanmis `user_id` kullanilir.
+        gid = await _conversation_gateway_id(db, user_id, conv)
+        data = await gw.fetch_media(gid, media_id)
+        return data, msg_row.media_mime_type or "image/jpeg"
     return await fetch_image_bytes(row.image_url)
 
 

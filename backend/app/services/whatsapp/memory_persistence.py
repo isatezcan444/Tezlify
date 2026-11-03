@@ -440,6 +440,16 @@ async def drain_gateway_memory_once(
                 _STATE["epoch_resets_total"] = (
                     int(_STATE.get("epoch_resets_total") or 0) + 1
                 )
+                # AŞAMA 4.27 (P1): epoch değiştiyse gateway bu turu SIFIRDAN
+                # taradı. İmleç de sıfırlanmazsa aşağıdaki ilerleme muhafızı
+                # (`next_after <= after_seq`) ESKİ epoch'un değeriyle
+                # karşılaştırma yapar; yeni depo eski imleçten küçükse
+                # `next_after` her zaman küçük çıkar ve tur SAHTE bir
+                # `PaginationStalled` ile biter. O durumda imleç, YENİ epoch
+                # ile ESKİ değeri birlikte kaydedilir — yani tutarsız bir
+                # (epoch, after_seq) çifti. Yerel imleci gateway'in gerçekten
+                # kullandığı değere (0) çekmek bunu kökten kapatır.
+                after_seq = 0
         else:
             if mode == "seq":
                 # İlk sayfa seq beklentisiyle çağrıldı ama gateway offset

@@ -107,6 +107,36 @@ _SYNC_CHAT_PAGE_SIZE = 40     # conversation snapshot page size
 _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
 
 
+def _bulk_chunks(
+    jids: List[str], page_size: int, per_chat_limit: Optional[int]
+) -> List[List[str]]:
+    """Initial sync jid listesini TEK SAYFALIK isteklere böler (AŞAMA 4.28, F2).
+
+    NEDEN: gateway `perChatLimit` kırpmasını **her istekte** yeniden uygular
+    (`session-manager.js` → `slice(-N)`), sonra id'ye göre sıralayıp
+    `[offset, offset+limit)` dilimini döner. Sayfalar arasında bir sohbete yeni
+    mesaj gelirse o sohbetin penceresi ilerler, global dizi SOLA kayar ve sabit
+    `offset` bir kaydı **hiçbir sayfada döndürmeden** atlar (kanıt:
+    `whatsapp-gateway/scripts/test-tz428-initial-sync-front-trim.mjs`).
+
+    ÇÖZÜM: parça boyu `page_size // per_chat_limit` seçilirse bir istekte
+    `total <= parça * per_chat_limit <= page_size` olur; istek **ilk sayfada**
+    biter (`offset + limit >= total`) ve sayfalar arası offset hiç oluşmaz.
+    Böylece kayma fiziksel olarak imkânsız hâle gelir.
+
+    Maliyet: istek SAYISI değişmez —
+    `ceil(sohbet / parça) == ceil(sohbet * per_chat_limit / page_size)`.
+    `per_chat_limit` yoksa/sıfırsa davranış ESKİSİYLE aynıdır (tek istek).
+    """
+    ordered = list(jids)
+    per = int(per_chat_limit or 0)
+    size = int(page_size or 0)
+    if per <= 0 or size <= 0 or not ordered:
+        return [ordered] if ordered else []
+    chunk = max(1, size // per)
+    return [ordered[i: i + chunk] for i in range(0, len(ordered), chunk)]
+
+
 def _column_scalar_default(column) -> Any:
     """The column's scalar Python-side default, or None when it has none.
 
@@ -1693,9 +1723,34 @@ class WhatsAppSyncOrchestrator:
             if not request_jids:
                 return
 
+        # AŞAMA 4.28 (F2): offset sayfalaması yerine jid PARÇALAMA. Her istek
+        # `page_size // per_chat_limit` sohbetle sınırlandığı için `total`
+        # daima `page_size`'ı aşmaz ve istek ilk sayfada biter; sayfalar arası
+        # offset hiç oluşmaz, dolayısıyla front-trim sırasında kayma da oluşmaz.
+        target_jids = (
+            request_jids if request_jids is not None else list(conv_by_jid.keys())
+        )
+        chunks = _bulk_chunks(target_jids, _SYNC_BULK_PAGE_SIZE, _SYNC_PER_CHAT_LIMIT)
+        if not chunks:
+            return
+
+        chunk_idx = 0
+        expected_total = 0
         offset = 0
-        first_page = True
+        chunk_total = None
+
+        def _next_chunk() -> bool:
+            """Bir sonraki parçaya geç (offset sıfırlanır); parça yoksa False."""
+            nonlocal chunk_idx, offset, chunk_total
+            chunk_idx += 1
+            if chunk_idx >= len(chunks):
+                return False
+            offset = 0
+            chunk_total = None
+            return True
+
         while True:
+            chunk_jids = chunks[chunk_idx]
             if ws_session is not None and gateway_op_or_mark_relink is not None:
                 page = await gateway_op_or_mark_relink(
                     db,
@@ -1706,7 +1761,7 @@ class WhatsAppSyncOrchestrator:
                         offset=offset,
                         since=since_epoch,
                         per_chat_limit=_SYNC_PER_CHAT_LIMIT,
-                        jids=request_jids,
+                        jids=chunk_jids,
                     ),
                 )
             else:
@@ -1716,18 +1771,23 @@ class WhatsAppSyncOrchestrator:
                     offset=offset,
                     since=since_epoch,
                     per_chat_limit=_SYNC_PER_CHAT_LIMIT,
-                    jids=request_jids,
+                    jids=chunk_jids,
                 )
             msgs = page.get("messages", []) if isinstance(page, dict) else []
             total = int(page.get("total") or 0) if isinstance(page, dict) else 0
-            if first_page:
-                # Geri doldurma turu ilerleme sayaclarini EZMEZ: kullanicinin
-                # gordugu "mesajlar" ilerlemesi gercek ilk senkronu anlatmali.
+            # Geri doldurma turu ilerleme sayaclarini EZMEZ: kullanicinin
+            # gordugu "mesajlar" ilerlemesi gercek ilk senkronu anlatmali.
+            # Parçalı turda `total` PARÇA başına gelir → parça başına BİR kez
+            # kümülatif topla (iç sayfalamada aynı değer tekrar gelir).
+            if chunk_total is None:
+                chunk_total = total
+                expected_total += total
                 if not recovery_pass:
-                    job.messages_total = total
-                first_page = False
+                    job.messages_total = expected_total
             if not msgs:
-                break
+                if not _next_chunk():
+                    break
+                continue
             pending: Dict[int, List[Dict[str, Any]]] = {}
             for gm in msgs:
                 jid_str = str(gm.get("conversation_id") or "")
@@ -1923,7 +1983,10 @@ class WhatsAppSyncOrchestrator:
             )
             offset += len(msgs)
             if offset >= total:
-                break
+                # Bu parça bitti → sonraki parça KENDİ offset=0'ıyla başlar.
+                if not _next_chunk():
+                    break
+                continue
             if job.cancel_requested:
                 raise asyncio.CancelledError()
 

@@ -156,11 +156,25 @@ class OutreachManager:
 
         try:
             from backend.app.services import whatsapp_service
-            from backend.app.services.campaign_media_service import CampaignMediaService
+            from backend.app.services.campaign_media_service import (
+                CampaignMediaAccessDenied,
+                CampaignMediaService,
+            )
 
             media_payload = None
             if getattr(campaign, "media_url", None):
-                base64_data = CampaignMediaService.get_campaign_media_base64(campaign.media_url)
+                try:
+                    base64_data = await CampaignMediaService.get_authorized_campaign_media_base64(
+                        db, campaign.media_url, user_id_str
+                    )
+                except CampaignMediaAccessDenied:
+                    # Sahiplik kanıtlanamadı: baytlar okunmadı, gönderim de
+                    # yapılmaz. Metne sessizce düşmek veya başarı yazmak yok.
+                    logger.warning(
+                        f"[OutreachManager] Campaign #{campaign.id} medya sahipliği "
+                        f"doğrulanamadı; gönderim durduruldu."
+                    )
+                    return False, "Medya sahipliği doğrulanamadı; gönderim durduruldu.", None
                 if base64_data or campaign.media_url.startswith(("http://", "https://")):
                     media_payload = {
                         "media_type": (campaign.media_type or "DOCUMENT").lower(),

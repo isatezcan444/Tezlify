@@ -94,27 +94,35 @@ export async function createSocketForSession({
   const rawSaveCreds = authLoaded.saveCreds;
 
   const diskSaveCreds = async () => {
-    try {
-      if (typeof rawSaveCreds === 'function') {
-        await rawSaveCreds();
-      } else if (state.creds) {
-        fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(state.creds, BufferJSON.replacer));
-      }
-    } catch { /* best-effort disk write */ }
+    if (typeof rawSaveCreds === 'function') {
+      await rawSaveCreds();
+    } else if (state.creds) {
+      fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(state.creds, BufferJSON.replacer));
+    }
   };
 
   const saveCreds = async () => {
-    if (authRepository && !session.ephemeral) {
-      try {
+    try {
+      if (authRepository && !session.ephemeral) {
+        // The repository serializes writes per session and applies bounded
+        // retries. Any final failure MUST reach the creds.update handler:
+        // swallowing it here made an unpersisted credential look durable.
         await authRepository.saveCredentials(id, state.creds);
-      } catch (err) {
-        logger.warn({ err: err?.message, session_ref: sessionRef(id) }, 'Failed to persist credentials to PostgreSQL');
+      } else {
+        await diskSaveCreds();
       }
-      await diskSaveCreds();
-    } else {
-      await diskSaveCreds();
+      session._credentialsDurable = true;
+      session._credentialWriteError = null;
+    } catch (err) {
+      session._credentialsDurable = false;
+      session._credentialWriteError = err?.message || String(err);
+      throw err;
     }
   };
+  // The self-heal paths in the session manager call `session.saveCreds()` after
+  // repairing `myAppStateKeyId`; without this assignment those writes silently
+  // did nothing and the repaired credential was never persisted.
+  session.saveCreds = saveCreds;
   latency('auth_state_load_ms', authLoadStarted, id);
 
   if (state?.keys?.set) {

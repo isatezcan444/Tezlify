@@ -642,7 +642,14 @@ async def fetch_media(
     if res.status_code == 404:
         raise LookupError(f"Medya bulunamadı: {media_id}")
     if res.status_code >= 400:
-        raise WhatsAppGatewayError(f"Medya indirilemedi (HTTP {res.status_code})")
+        # Status code is preserved so callers can map integrity failures (422)
+        # distinctly from an unreachable gateway (5xx). Body is diagnostic only,
+        # never surfaced to end users.
+        raise WhatsAppGatewayError(
+            f"Medya indirilemedi (HTTP {res.status_code})",
+            status_code=res.status_code,
+            response_body=(res.text[:300] if res.text else None),
+        )
     return res.content
 
 
@@ -653,7 +660,11 @@ async def fetch_media_unscoped(
     jid: Optional[str] = None,
     from_me: Optional[bool] = None,
 ) -> bytes:
-    """Gateway'den oturumsuz doğrudan medya indirir. Yalnızca 2xx bayt döner."""
+    """Gateway'den oturumsuz doğrudan medya indirir. Yalnızca 2xx bayt döner.
+
+    UYARI: Tenant filtresi YOKTUR. Kullanıcıya medya sunan hiçbir akışta
+    kullanılmamalıdır; tenant sınırı `get_media_bytes` içinde kurulur.
+    """
     params = []
     if preview:
         params.append("preview=true")
@@ -673,6 +684,13 @@ async def fetch_media_unscoped(
     if res.status_code == 404:
         raise LookupError(f"Medya bulunamadı: {media_id}")
     if res.status_code >= 400:
-        raise WhatsAppGatewayError(f"Medya indirilemedi (HTTP {res.status_code})")
+        # Status code is preserved so callers can map integrity failures (422)
+        # distinctly from an unreachable gateway (5xx). Body is diagnostic only,
+        # never surfaced to end users.
+        raise WhatsAppGatewayError(
+            f"Medya indirilemedi (HTTP {res.status_code})",
+            status_code=res.status_code,
+            response_body=(res.text[:300] if res.text else None),
+        )
     return res.content
 

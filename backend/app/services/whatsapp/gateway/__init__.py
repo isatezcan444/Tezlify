@@ -6,6 +6,7 @@ Contains deterministic payload builders, response normalizers, and error classif
 from backend.app.services.whatsapp.gateway.errors import (
     classify_gateway_error,
     format_safe_gateway_error,
+    gateway_logout_local_status,
     is_gateway_session_missing,
     is_gateway_timeout,
     is_gateway_unavailable,

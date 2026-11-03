@@ -401,17 +401,32 @@ async def test_chunk_replay_is_idempotent():
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_partial_failure_survives_and_retry_dedups():
-    jid = generic_jid()
+    """Kısmi başarısızlık: parça 1 commit edilir, parça 2 patlar, resume dedup eder.
+
+    AŞAMA 4.28 notu: initial sync artık sayfalar arası offset kullanmıyor; her
+    istek `page_size // per_chat_limit` = 20 sohbetlik bir PARÇA. İki istek
+    üretebilmek için 21 sohbet gerekir; kastedilen davranış (parça 1 kalır,
+    parça 2 hata verir, resume dedup eder) birebir korunur.
+    """
     t = datetime.now(timezone.utc) - timedelta(minutes=5)
     orch = WhatsAppSyncOrchestrator()
+    jids = [generic_jid() for _ in range(21)]
     async with AsyncSessionLocal() as db:
         _out, jid_by_conv = await orch._persist_chat_snapshot(
-            db, U1, [{"jid": jid, "name": "Partial", "last_message_at": None, "last_message_preview": None}]
+            db,
+            U1,
+            [
+                {"jid": j, "name": f"Partial {i}", "last_message_at": None, "last_message_preview": None}
+                for i, j in enumerate(jids)
+            ],
         )
-    conv = await conv_row(jid)
+    # Parça 1 = ilk 20 sohbet, parça 2 = 21.
+    jid_a, jid_b = jids[0], jids[20]
+    conv_a = await conv_row(jid_a)
+    conv_b = await conv_row(jid_b)
     wa1, wa2 = f"wa-{_uuid.uuid4().hex[:12]}", f"wa-{_uuid.uuid4().hex[:12]}"
 
-    def gm(wa_id, body):
+    def gm(jid, wa_id, body):
         return {
             "conversation_id": jid,
             "wa_message_id": wa_id,
@@ -421,20 +436,33 @@ async def test_partial_failure_survives_and_retry_dedups():
             "created_at": iso(t),
         }
 
-    # Chunk 1 OK, chunk 2 fails (gateway error), chunk 3 never processed.
+    # Parça 1 OK, parça 2 gateway hatası verir.
     boom = RuntimeError("gateway socket closed mid-sync")
     with pytest.raises(RuntimeError):
-        await run_bulk_sync(jid_by_conv, [bulk_page([gm(wa1, "chunk one")], total=3), boom])
-    # Chunk 1's committed batch survives.
-    conv_id = conv.id
+        await run_bulk_sync(
+            jid_by_conv,
+            [bulk_page([gm(jid_a, wa1, "chunk one")], total=1), boom],
+        )
+    # Parça 1'in commit edilmiş partisi hayatta kalır.
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(select(Message).where(Message.conversation_id == conv_id))).scalars().all()
+        rows = (await db.execute(
+            select(Message).where(Message.conversation_id == conv_a.id)
+        )).scalars().all()
         assert [r.wa_message_id for r in rows] == [wa1], "chunk 1 data must survive the partial failure"
-    # Resume (retry): provider replays chunk 1 + 2 (dedup) — no duplication.
-    job = await run_bulk_sync(jid_by_conv, [bulk_page([gm(wa1, "chunk one"), gm(wa2, "chunk two")], total=2)])
+
+    # Resume (retry): parça 1 tekrar oynatılır (dedup) + parça 2 gelir.
+    job = await run_bulk_sync(
+        jid_by_conv,
+        [
+            bulk_page([gm(jid_a, wa1, "chunk one")], total=1),
+            bulk_page([gm(jid_b, wa2, "chunk two")], total=1),
+        ],
+    )
     assert job.messages_synced == 1, "retry must insert only the missing chunk-2 message"
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(select(Message).where(Message.conversation_id == conv_id))).scalars().all()
+        rows = (await db.execute(
+            select(Message).where(Message.conversation_id.in_([conv_a.id, conv_b.id]))
+        )).scalars().all()
         assert sorted(r.wa_message_id for r in rows) == sorted([wa1, wa2]), "resume without duplicates"
 
 

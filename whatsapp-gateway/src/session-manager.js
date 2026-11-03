@@ -82,13 +82,13 @@ import {
   lookupRawMessage,
   messageTimestampMs,
   boundMessagesByChat,
-  countCachedMessages,
   ramCapacitySnapshot,
   stampMessageSeq,
   ensureMessageSeq,
   messageSeqOf,
   storeSeqEpoch,
   trimChatMessages,
+  countCachedMessages,
 } from './messages/message-store.js';
 
 import { createMediaStore } from './media/media-store.js';
@@ -97,6 +97,8 @@ import { transcodeToOggOpus } from './media/audio-transcoder.js';
 // Lease & LID
 import { createLeaseCoordinator } from './lease/lease-coordinator.js';
 import { createLidRepository, lidScopeSessionIds } from './lid/lid-repository.js';
+import { createPendingLidRepository, pendingLidEventId } from './lid/pending-lid-repository.js';
+import { createEncryptedCodec } from './auth/encrypted-codec.js';
 import { createContactRepository } from './contacts/contact-repository.js';
 
 // Socket
@@ -429,6 +431,13 @@ export function createSessionManager({
 
   const mediaStore = createMediaStore({ mediaDir, logger });
   const leaseCoordinator = createLeaseCoordinator({ leaseRepository, instanceId, logger });
+  // `sessionManager` is declared below; orphan callbacks can only fire after a
+  // session exists, so resolving the manager lazily is safe and avoids the
+  // previous reference to a never-declared `manager` identifier.
+  let sessionManagerRef = null;
+  const reportOrphaned = (sessionId, detail) => {
+    try { sessionManagerRef?.markOrphaned(sessionId, detail); } catch { /* reporting only */ }
+  };
   const lidRepository = createLidRepository({
     pool,
     sessionsDir,
@@ -436,7 +445,21 @@ export function createSessionManager({
     // A LID write failing on a missing session row is the same orphan as an
     // outbox write failing: the whatsapp_sessions row is gone. Flag the session
     // so the UI can say the session is connected but not being stored.
-    onOrphaned: (sessionId) => { manager.markOrphaned(sessionId, 'lid_mapping'); },
+    onOrphaned: (sessionId) => reportOrphaned(sessionId, 'lid_mapping'),
+  });
+  let pendingLidCodec = null;
+  try {
+    pendingLidCodec = createEncryptedCodec(aesKey);
+  } catch {
+    // Test/dev managers may pass a non-Buffer key. Durability is then disabled
+    // loudly at the first held message instead of crashing session creation.
+    pendingLidCodec = null;
+  }
+  const pendingLidRepository = createPendingLidRepository({
+    pool,
+    codec: pendingLidCodec,
+    logger,
+    onOrphaned: (sessionId) => reportOrphaned(sessionId, 'lid_pending_message'),
   });
   const contactRepository = createContactRepository({ pool, logger });
 
@@ -464,6 +487,57 @@ export function createSessionManager({
     const cache = msgRetryCounterCaches.get(String(sessionId));
     cache?.close();
     msgRetryCounterCaches.delete(String(sessionId));
+  }
+
+  // Bounded provider logout. A hung `sock.logout()` must not leave the session
+  // looking connected (or block local teardown) indefinitely.
+  const PROVIDER_LOGOUT_TIMEOUT_MS = 10_000;
+
+  function logoutProviderWithTimeout(socket, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      const settle = (fn) => (value) => {
+        if (timer !== null) clearTimeout(timer);
+        fn(value);
+      };
+      timer = setTimeout(() => {
+        timer = null;
+        const err = new Error(`WhatsApp provider logout timed out after ${timeoutMs}ms`);
+        err.code = 'PROVIDER_LOGOUT_TIMEOUT';
+        reject(err);
+      }, timeoutMs);
+      Promise.resolve()
+        .then(() => socket.logout())
+        .then(settle(resolve), settle(reject));
+    });
+  }
+
+  function buildLogoutError({ providerError, cleanupErrors, localStatus = 'DISCONNECTED' }) {
+    const providerMessage = providerError
+      ? (providerError.message || String(providerError))
+      : null;
+    const cleanupMessage = cleanupErrors.length
+      ? cleanupErrors
+        .map((entry) => `${entry.step}: ${entry.error?.message || entry.error}`)
+        .join('; ')
+      : null;
+    let message;
+    if (cleanupMessage) {
+      message = providerMessage
+        ? `WhatsApp provider logout failed: ${providerMessage}; local cleanup also failed: ${cleanupMessage}`
+        : `WhatsApp logout cleanup failed: ${cleanupMessage}`;
+    } else {
+      message = `WhatsApp provider logout failed: ${providerMessage}`;
+    }
+    const err = new Error(message);
+    // `reason` lets callers distinguish a provider-side failure from a local
+    // cleanup failure; `localStatus` states what actually happened to the
+    // local session (so a failure is never reported as a successful logout).
+    err.logoutReason = cleanupMessage ? 'cleanup' : 'provider';
+    err.localStatus = localStatus;
+    err.providerError = providerMessage;
+    err.cleanupErrors = cleanupMessage;
+    return err;
   }
 
   async function deactivatePersistentSession(sessionId) {
@@ -498,12 +572,31 @@ export function createSessionManager({
     _emit(event) {
       const gwSid = event && (event.gateway_session_id || event.session_id);
       if (gwSid && !sessions.has(String(gwSid)) && !String(event.event || '').startsWith('session_deleted')) {
-        return;
+        return undefined;
       }
       const sanitized = sanitizeOutboundEvent(event);
+      const asyncResults = [];
       for (const listener of this._listeners) {
-        try { listener(sanitized); } catch (err) { logger.warn({ err }, 'Event listener error'); }
+        try {
+          const result = listener(sanitized);
+          // The event bridge returns a promise that resolves only after the
+          // event was written to the durable outbox (or intentionally sent over
+          // the non-durable path). Callers that need that proof await this
+          // aggregate; every existing caller ignores it and keeps the old
+          // fire-and-forget behaviour.
+          if (result && typeof result.then === 'function') {
+            asyncResults.push(result.catch((err) => {
+              try { logger.warn({ err }, 'Event listener promise rejected'); } catch { /* ignore */ }
+              return undefined;
+            }));
+          }
+        } catch (err) { logger.warn({ err }, 'Event listener error'); }
       }
+      // `allSettled` keeps the per-listener outcome visible to callers that
+      // need proof of durable enqueue; `all` would flatten it to bare values
+      // and make a fulfilled `{durable:false}` indistinguishable from a
+      // dropped listener.
+      return asyncResults.length ? Promise.allSettled(asyncResults) : undefined;
     },
 
     onEvent(listener) {
@@ -513,9 +606,15 @@ export function createSessionManager({
 
     async shutdown() {
       const leaseReleases = [];
+      const credentialFlushes = [];
       for (const session of sessions.values()) {
         session._shuttingDown = true;
         session.lifecycle.invalidate();
+        // Drain queued credential writes before the pool closes; otherwise a
+        // creds.update already accepted by the handler is lost on restart.
+        if (typeof authRepository?.flushCredentialWrites === 'function') {
+          credentialFlushes.push(authRepository.flushCredentialWrites(session.id));
+        }
         if (session._historyQuietTimer) {
           clearTimeout(session._historyQuietTimer);
           session._historyQuietTimer = null;
@@ -533,7 +632,7 @@ export function createSessionManager({
         try { session.store?.contactCache?.flush(); } catch (err) { /* ignore */ }
         if (leaseRepository) leaseReleases.push(leaseCoordinator.releaseLease(session));
       }
-      await Promise.allSettled(leaseReleases);
+      await Promise.allSettled([...leaseReleases, ...credentialFlushes]);
       diagnostic('session_registry_shutdown', { sessions: sessions.size });
     },
 
@@ -691,6 +790,30 @@ export function createSessionManager({
       // An ephemeral pairing must not write LID mappings to PostgreSQL before
       // its gateway_sessions row exists (the FK would reject it).
       await lidRepository.loadLidMappingsFromDb(id, session.store, undefined, { persist: !ephemeral });
+      // Unknown-LID messages persisted by a previous gateway run are loaded
+      // BEFORE the socket starts so an inbound message carrying the same id can
+      // reuse their deterministic event id instead of racing a release.
+      if (!ephemeral && pendingLidRepository.enabled) {
+        try {
+          const pendingRows = await pendingLidRepository.listPendingIndex(id);
+          if (pendingRows.length > 0) {
+            session.store._pendingLidMessages = new Map(
+              pendingRows.map((row) => [row.waMessageId, row]),
+            );
+            logger.warn(
+              { session_ref: sessionRef(id), count: pendingRows.length },
+              'Durable LID pending messages loaded; release resumes when their mapping is known',
+            );
+          }
+        } catch (err) {
+          // The rows are durable. Failing to read them must not turn into
+          // "nothing was pending"; it only delays release to the next attempt.
+          logger.error(
+            { err, session_ref: sessionRef(id) },
+            'Durable LID pending messages could not be loaded; rows remain durable',
+          );
+        }
+      }
       // The backend `contacts` table is the durable record of the names this
       // gateway learned earlier. Without this the store starts empty on every
       // restart and sender labels degrade to raw phone numbers.
@@ -805,30 +928,67 @@ export function createSessionManager({
       return { pairing_code: pairingCode, phone: session.phone_number };
     },
 
-    async logoutSession(id, { force = false } = {}) {
+    async logoutSession(id, { force = false, providerLogoutTimeoutMs = PROVIDER_LOGOUT_TIMEOUT_MS } = {}) {
       const session = sessions.get(id);
       if (!session) throw new Error('Session not found');
-      session.lifecycle.invalidate();
-      await leaseCoordinator.releaseLease(session);
-      let providerError = null;
-      try {
-        if (session.sock) {
-          await session.sock.logout();
-          session.sock.end(undefined);
+
+      // Idempotency: concurrent callers share one teardown. A later forced call
+      // may downgrade a provider-only failure to success, but a cleanup failure
+      // is never hidden.
+      if (session._logoutInFlight) {
+        try {
+          return await session._logoutInFlight;
+        } catch (err) {
+          if (force && err?.logoutReason === 'provider' && err?.localStatus === 'DISCONNECTED') {
+            return this.getSession(id);
+          }
+          throw err;
         }
-      } catch (err) {
-        providerError = err;
-        logger.warn({ err: err?.message, session_ref: sessionRef(id) }, 'Logout provider error');
       }
-      if (providerError && !force) {
-        throw new Error(`WhatsApp provider logout failed: ${providerError.message || providerError}`);
+
+      const op = this._logoutSessionOnce(session, { force, providerLogoutTimeoutMs });
+      session._logoutInFlight = op;
+      try {
+        return await op;
+      } finally {
+        if (session._logoutInFlight === op) session._logoutInFlight = null;
       }
+    },
+
+    async _logoutSessionOnce(session, { force, providerLogoutTimeoutMs }) {
+      const id = session.id;
+      // A completed logout is a terminal local state until a new connection
+      // attempt begins (see `_connectSocket`). Repeating it must not re-run
+      // teardown or report a provider failure as success.
+      if (session._logoutCompleted) {
+        if (session._logoutProviderError && !force) {
+          throw buildLogoutError({
+            providerError: session._logoutProviderError,
+            cleanupErrors: [],
+          });
+        }
+        return this.getSession(id);
+      }
+      const cleanupErrors = [];
+      session.lifecycle.invalidate();
+      const logoutGeneration = session.lifecycle.generation;
+      const targetSocket = session.sock;
+      session.sock = null;
+      const superseded = () => (
+        session._deleted
+        || !sessions.has(id)
+        || session.lifecycle.generation !== logoutGeneration
+      );
+
+      // Leave CONNECTED before the provider await: a hung or failed provider
+      // call must never leave a ghost "connected" session behind.
       session.status = 'DISCONNECTED';
       session.is_active = false;
       session.is_phone_online = false;
       session._pairingPhone = null;
       session._pairingRequestedAt = 0;
       session._pairingSocket = null;
+      session.updated_at = new Date().toISOString();
       if (session._historyQuietTimer) {
         clearTimeout(session._historyQuietTimer);
         session._historyQuietTimer = null;
@@ -837,24 +997,98 @@ export function createSessionManager({
         clearInterval(session._presenceKeepaliveTimer);
         session._presenceKeepaliveTimer = null;
       }
-      session.updated_at = new Date().toISOString();
-      // Logout means the next link may be a different WhatsApp account, so the
-      // cached names must not survive onto it.
-      session.store?.contactCache?.clear();
-      session.store = createSessionStore({
-        sessionDir: getSessionDir(sessionsDir, id),
-        logger,
-      });
-      mediaStore.clearSessionMedia(id);
-      clearSessionHistoryFetches(id);
-      resetRetryCounterCache(id);
-      if (authRepository) {
-        await authRepository.clearAuth(id);
-        await authRepository.setSessionActive(id, false);
+
+      try {
+        await leaseCoordinator.releaseLease(session);
+      } catch (err) {
+        cleanupErrors.push({ step: 'lease_release', error: err });
+        logger.warn({ err: err?.message, session_ref: sessionRef(id) }, 'Logout lease release failed');
       }
-      const dir = getSessionDir(sessionsDir, id);
-      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-      this._emit({ event: 'session_disconnected', session_id: id, session_name: session.session_name });
+
+      let providerError = null;
+      if (targetSocket) {
+        try {
+          await logoutProviderWithTimeout(targetSocket, providerLogoutTimeoutMs);
+        } catch (err) {
+          providerError = err;
+          logger.warn(
+            {
+              err: err?.message,
+              session_ref: sessionRef(id),
+              timed_out: err?.code === 'PROVIDER_LOGOUT_TIMEOUT',
+            },
+            'Logout provider error',
+          );
+        }
+        // The old socket is torn down locally even when the provider call fails
+        // or times out: leaving it attached is what produced the orphan
+        // CONNECTED session.
+        try {
+          targetSocket.ev?.removeAllListeners();
+        } catch (err) {
+          cleanupErrors.push({ step: 'socket_listeners', error: err });
+        }
+        try {
+          targetSocket.end(undefined);
+        } catch (err) {
+          cleanupErrors.push({ step: 'socket_end', error: err });
+        }
+      }
+
+      // A reconnect/refresh that started while the provider call was in flight
+      // owns the shared session state now; the old logout must not clear the new
+      // credentials, media, or session directory.
+      if (!superseded()) {
+        this._clearPendingLidState(session);
+        // Logout means the next link may be a different WhatsApp account, so the
+        // cached names must not survive onto it.
+        session.store?.contactCache?.clear();
+        session.store = createSessionStore({
+          sessionDir: getSessionDir(sessionsDir, id),
+          logger,
+        });
+        mediaStore.clearSessionMedia(id);
+        clearSessionHistoryFetches(id);
+        resetRetryCounterCache(id);
+      }
+      if (!superseded() && authRepository) {
+        try {
+          await authRepository.clearAuth(id);
+        } catch (err) {
+          cleanupErrors.push({ step: 'clear_auth', error: err });
+        }
+        if (!superseded()) {
+          try {
+            await authRepository.setSessionActive(id, false);
+          } catch (err) {
+            cleanupErrors.push({ step: 'set_session_inactive', error: err });
+          }
+        }
+      }
+      if (!superseded()) {
+        const dir = getSessionDir(sessionsDir, id);
+        try {
+          if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+        } catch (err) {
+          cleanupErrors.push({ step: 'remove_session_dir', error: err });
+        }
+      }
+      if (!superseded()) {
+        this._emit({ event: 'session_disconnected', session_id: id, session_name: session.session_name });
+      }
+
+      if (cleanupErrors.length > 0) {
+        throw buildLogoutError({ providerError, cleanupErrors });
+      }
+      if (!superseded()) {
+        // Local teardown finished. A provider-only failure stays observable on
+        // repeated (non-forced) logout calls; `force` explicitly accepts it.
+        session._logoutCompleted = true;
+        session._logoutProviderError = force ? null : (providerError || null);
+      }
+      if (providerError && !force) {
+        throw buildLogoutError({ providerError, cleanupErrors });
+      }
       return this.getSession(id);
     },
 
@@ -915,6 +1149,7 @@ export function createSessionManager({
         await authRepository.clearAuth(id);
         await authRepository.setSessionActive(id, false);
       }
+      if (session) this._clearPendingLidState(session);
       sessions.delete(id);
       resetRetryCounterCache(id);
       if (session) session.store = null;
@@ -2046,7 +2281,12 @@ export function createSessionManager({
           session.sock.authState.creds.myAppStateKeyId = recoveredKeyId;
           try {
             if (typeof session.saveCreds === 'function') await session.saveCreds();
-          } catch { /* best-effort */ }
+          } catch (err) {
+            logger.warn(
+              { err: err?.message, session_ref: sessionRef(sessionId) },
+              'Credential write after app-state self-heal failed'
+            );
+          }
           logger.info(
             { session_ref: sessionRef(sessionId), myAppStateKeyId: recoveredKeyId },
             'Self-healed missing myAppStateKeyId before deleteConversationRemote'
@@ -2066,7 +2306,12 @@ export function createSessionManager({
             session.sock.authState.creds.myAppStateKeyId = recovered;
             try {
               if (typeof session.saveCreds === 'function') await session.saveCreds();
-            } catch { /* best-effort */ }
+            } catch (err) {
+              logger.warn(
+                { err: err?.message, session_ref: sessionRef(sessionId) },
+                'Credential write after app-state self-heal failed'
+              );
+            }
             try {
               await session.sock.chatModify({ delete: true, lastMessages }, key);
               providerOk = true;
@@ -2144,10 +2389,27 @@ export function createSessionManager({
       return mediaStore.getMediaPath(sessionId, mediaId);
     },
 
+    async resolveMediaPath(sessionId, mediaId) {
+      return mediaStore.resolveMediaPath(sessionId, mediaId);
+    },
+
+    async verifyMediaIntegrity(mediaId, filePath) {
+      return mediaStore.verifyMediaIntegrity(mediaId, filePath);
+    },
+
+    // Dogrulama ve gonderim AYNI acik dosya tanimlayicisi uzerinden yapilir.
+    async openVerifiedMedia(mediaId, filePath) {
+      return mediaStore.openVerifiedMedia(mediaId, filePath);
+    },
+
+    mediaCapacitySummary() {
+      return mediaStore.mediaCapacitySummary();
+    },
+
     async downloadMediaOnDemand(sessionId, mediaIdOrWaId, options = {}) {
       if (!mediaIdOrWaId) return null;
-      let filePath = mediaStore.getMediaPath(sessionId, mediaIdOrWaId);
-      if (filePath && fs.existsSync(filePath)) return filePath;
+      let filePath = await mediaStore.resolveMediaPath(sessionId, mediaIdOrWaId);
+      if (filePath) return filePath;
 
       let strId = String(mediaIdOrWaId);
       const meta = mediaStore.mediaIndex?.get(strId);
@@ -2234,8 +2496,8 @@ export function createSessionManager({
                     fromMe = Boolean(found.direction === 'OUTBOUND' || found.from_me);
                   }
                   if (found.media_id) {
-                    const p = mediaStore.getMediaPath(session.id, found.media_id);
-                    if (p && fs.existsSync(p)) {
+                    const p = await mediaStore.resolveMediaPath(session.id, found.media_id);
+                    if (p) {
                       this._failedMediaCache?.delete(inFlightKey);
                       return p;
                     }
@@ -2253,7 +2515,7 @@ export function createSessionManager({
             const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
             if (stored?.media_id) {
               this._failedMediaCache?.delete(inFlightKey);
-              return mediaStore.getMediaPath(session.id, stored.media_id);
+              return mediaStore.resolveMediaPath(session.id, stored.media_id);
             }
           } else if (!foundRaw && foundJid && session.sock && !session.sock.isClosed && typeof session.sock.requestPlaceholderResend === 'function') {
             try {
@@ -2283,7 +2545,7 @@ export function createSessionManager({
                 const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
                 if (stored?.media_id) {
                   this._failedMediaCache?.delete(inFlightKey);
-                  return mediaStore.getMediaPath(session.id, stored.media_id);
+                  return mediaStore.resolveMediaPath(session.id, stored.media_id);
                 }
               }
             }
@@ -2465,12 +2727,41 @@ export function createSessionManager({
       return event;
     },
 
-    async _ingestUpsertMessage(msg, sock, sessionId, { upsertType = 'notify' } = {}) {
+    async _ingestUpsertMessage(msg, sock, sessionId, options = {}) {
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      const waMessageId = msg?.key?.id ? String(msg.key.id) : null;
+      const pendingEntry = waMessageId ? store._pendingLidMessages?.get(waMessageId) || null : null;
+      // A live delivery and a durable release may race for the same message id.
+      // The first path claims it; the second becomes a no-op. The claim must be
+      // held only for the duration of THIS ingestion: leaving it behind would
+      // delay the release sweep by its full expiry after a harmless duplicate.
+      const claimed = Boolean(pendingEntry && !options.pendingEventId);
+      if (claimed && !this._claimPendingLid(session, waMessageId)) return null;
+      try {
+        return await this._ingestUpsertMessageInner(msg, sock, sessionId, options);
+      } finally {
+        if (claimed) this._releasePendingLidClaim(session, waMessageId);
+      }
+    },
+
+    async _ingestUpsertMessageInner(msg, sock, sessionId, {
+      upsertType = 'notify',
+      pendingEventId = null,
+      pendingLidJid: explicitPendingLidJid = null,
+      pendingWaMessageId: explicitPendingWaMessageId = null,
+    } = {}) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
       const { contacts, chats, messagesByChat } = store;
       const normalizeJid = (jid) => resolveJidKey(store, jid);
       const emitEvent = (event) => this._emit({ gateway_session_id: sessionId, ...event });
+
+      const waMessageId = msg.key?.id ? String(msg.key.id) : null;
+      const pendingEntry = waMessageId ? store._pendingLidMessages?.get(waMessageId) || null : null;
+      const pendingRowLid = explicitPendingLidJid || pendingEntry?.lidJid || null;
+      const pendingRowWaId = explicitPendingWaMessageId || pendingEntry?.waMessageId || null;
+      const pendingEventIdForRow = pendingEventId || pendingEntry?.eventId || null;
 
       // Baileys `messages.upsert` tasidigi `type` iki farkli olayi anlatir:
       //   notify → mesaj AZ ONCE geldi (canli)
@@ -2480,7 +2771,11 @@ export function createSessionManager({
       // islenir (mesaj kaybolmasin) ama sessizce yutulmaz.
       const normalizedUpsertType = String(upsertType || 'notify').toLowerCase();
       const isAppend = normalizedUpsertType === 'append';
-      if (normalizedUpsertType !== 'notify' && !isAppend) {
+      // `replace` = mevcut bir mesajın içeriği değişti (retry decrypt / edit).
+      // `notify` gibi YAYINLANIR ama YENİ VARIS gibi sayılmaz: rozet artmaz ve
+      // eski/zamansız güncelleme sohbeti listenin üstüne taşımaz.
+      const isReplace = normalizedUpsertType === 'replace' || normalizedUpsertType === 'update';
+      if (normalizedUpsertType !== 'notify' && !isAppend && !isReplace) {
         logger.debug(
           { session_ref: sessionRef(sessionId), upsert_type: normalizedUpsertType },
           'Bilinmeyen messages.upsert type; notify gibi islendi',
@@ -2597,6 +2892,24 @@ export function createSessionManager({
       }
       if (!hasRecognizedContent(unwrapped) && !text) return null;
 
+      // Persist BEFORE the RAM push below. A held LID message must already have
+      // a durable copy by the time it becomes invisible to the rest of the
+      // system; otherwise a restart or the per-chat cap can erase the only
+      // record of it before the mapping is ever learned.
+      let pendingPersist = null;
+      if (lidHold) {
+        if (pendingEntry?.eventId) {
+          pendingPersist = { persisted: true, eventId: pendingEntry.eventId, lidJid: pendingEntry.lidJid };
+        } else if (waMessageId) {
+          pendingPersist = await this._persistPendingLidMessage(session, {
+            lidJid: key,
+            waMessageId,
+            upsertType: normalizedUpsertType,
+            message: msg,
+          });
+        }
+      }
+
       const existingRecord = msg.key?.id
         ? (messagesByChat.get(key) || []).find((m) => m.wa_message_id && m.wa_message_id === msg.key.id)
         : null;
@@ -2611,7 +2924,22 @@ export function createSessionManager({
         const incomingHasText = Boolean(text && text.trim().length > 0);
         const hasContentChange = incomingHasText && text !== existingRecord.body;
         const hasMediaUpgrade = incomingHasMedia && !existingRecord.media_id;
-        if (!placeholder && !hasContentChange && !hasMediaUpgrade) return null;
+        if (!placeholder && !hasContentChange && !hasMediaUpgrade) {
+          // A release replay may find that the record already exists (for
+          // example a duplicate arrived while its mapping was being learned).
+          // Its delivery is not yet proven durable, so emit that exact record
+          // once under the row's deterministic id. While the key is still a
+          // raw LID there is no correct conversation to publish it under.
+          if (pendingEventIdForRow && !lidHold && existingRecord._lid_pending_emitted !== true) {
+            await this._emitPendingRecordDurably(session, key, existingRecord, {
+              lidJid: pendingRowLid,
+              waMessageId: pendingRowWaId,
+              upsertType: normalizedUpsertType,
+              eventId: pendingEventIdForRow,
+            });
+          }
+          return null;
+        }
         // Fall through: the incoming record replaces the placeholder below.
       }
       let mediaInfo = null;
@@ -2679,8 +3007,21 @@ export function createSessionManager({
         }
       }
 
-      const ts = messageTimestampMs(msg.messageTimestamp);
-      const timestampSeconds = Number(msg.messageTimestamp);
+      // `replace` bir güncellemedir ve zaman damgası TAŞIMAYABİLİR. Böyle bir
+      // durumda `messageTimestampMs(undefined)` `Date.now()` döndürür; bu da
+      // ESKİ bir mesajı "şimdi" gibi gösterip sohbeti listenin en üstüne
+      // taşırdı. Kayıt zaten varsa kendi orijinal damgasını koruruz.
+      const incomingTsSeconds = Number(msg.messageTimestamp);
+      const hasIncomingTs = Number.isFinite(incomingTsSeconds) && incomingTsSeconds > 0;
+      const existingTsMs = isReplace && existingRecord?.created_at
+        ? Date.parse(existingRecord.created_at)
+        : NaN;
+      const ts = hasIncomingTs
+        ? messageTimestampMs(msg.messageTimestamp)
+        : (Number.isFinite(existingTsMs) ? existingTsMs : messageTimestampMs(msg.messageTimestamp));
+      const timestampSeconds = hasIncomingTs
+        ? incomingTsSeconds
+        : (Number.isFinite(existingTsMs) ? Math.floor(existingTsMs / 1000) : Number(msg.messageTimestamp));
       const record = {
         id: ts,
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
@@ -2715,6 +3056,14 @@ export function createSessionManager({
       // Upgrading a media-less placeholder (see the duplicate check above):
       // drop the synthetic row so the chat keeps ONE record per wa_message_id
       // and the real media-bearing one takes its place.
+      //
+      // `replace` (explicit content update) removes the PREVIOUS record
+      // regardless of media: the placeholder-only rule below would leave a
+      // media-bearing edit as a second row with the same wa_message_id.
+      if (isReplace && existingRecord) {
+        const prevAt = chatMsgs.indexOf(existingRecord);
+        if (prevAt !== -1) chatMsgs.splice(prevAt, 1);
+      }
       if (msg.key?.id) {
         const placeholderAt = chatMsgs.findIndex(
           (m) => m.wa_message_id === msg.key.id && !m.media_id
@@ -2743,20 +3092,47 @@ export function createSessionManager({
         // `append` bir GECMIS mesajidir, yeni bir varis degil. Saymak, kullanicinin
         // telefonunda coktan okudugu bir mesaj icin rozeti artirir; rozet sonra
         // WhatsApp'in kendi sayisiyla celisir ve bir daha sifirlanmaz.
-        if (chat && !fromMe && !isAppend) {
+        if (chat && !fromMe && !isAppend && !isReplace) {
           if (chat._unreadUpdatedForId !== msg.key?.id) {
             chat.unread_count = (chat.unread_count || 0) + 1;
             chat._unreadUpdatedForId = msg.key?.id;
           }
         }
-        record.unread_count = chat?.unread_count ?? (fromMe || isAppend ? 0 : 1);
-        emitEvent({
+        record.unread_count = chat?.unread_count ?? (fromMe || isAppend || isReplace ? 0 : 1);
+        const emission = emitEvent({
           event: 'message_new',
           conversation_id: key,
           message: record,
           unread_count: record.unread_count,
           upsert_type: normalizedUpsertType,
+          ...(pendingEventIdForRow ? { event_id: pendingEventIdForRow } : {}),
         });
+        if (pendingEventIdForRow) {
+          const durable = await this._awaitDurableEmission(emission);
+          record._lid_pending_emitted = durable;
+          if (durable && pendingRowLid && pendingRowWaId) {
+            await this._markPendingLidProcessed(session, {
+              lidJid: pendingRowLid,
+              waMessageId: pendingRowWaId,
+            });
+          } else if (!durable) {
+            // The row is retained. A later replay reuses the SAME event id, so
+            // the outbox/backend deduplicate it if this attempt did reach them.
+            logger.error(
+              {
+                session_ref: sessionRef(sessionId),
+                lid_present: Boolean(pendingRowLid),
+                message_id: pendingRowWaId,
+              },
+              'LID pending message could not be durably delivered; durable row retained',
+            );
+          }
+        }
+      } else if (pendingPersist?.persisted) {
+        // The message is durable but must not be published under a raw LID.
+        // Its release replays the stored payload under the mapped phone JID.
+        record._lid_pending_event_id = pendingPersist.eventId;
+        record._lid_pending_emitted = false;
       }
       return record;
     },
@@ -3004,12 +3380,353 @@ export function createSessionManager({
       return msg?.user_receipts ? Object.values(msg.user_receipts) : [];
     },
 
+    // -----------------------------------------------------------------------
+    // Durable pending LID messages
+    // -----------------------------------------------------------------------
+
+    _claimPendingLid(session, waMessageId) {
+      if (!session || !waMessageId) return true;
+      if (!session._pendingLidClaims) session._pendingLidClaims = new Map();
+      if (session._pendingLidClaims.has(waMessageId)) return false;
+      session._pendingLidClaims.set(waMessageId, Date.now());
+      // A claim only serializes concurrent handlers; it is never the source of
+      // truth. Expiring it guarantees an early-return path cannot wedge an id.
+      const timer = setTimeout(() => {
+        try { session._pendingLidClaims?.delete(waMessageId); } catch { /* ignore */ }
+      }, 60_000);
+      timer.unref?.();
+      return true;
+    },
+
+    _releasePendingLidClaim(session, waMessageId) {
+      if (!session || !waMessageId) return;
+      try { session._pendingLidClaims?.delete(waMessageId); } catch { /* ignore */ }
+    },
+
+    _indexPendingLidMessage(store, entry) {
+      if (!store || !entry?.waMessageId) return;
+      if (!store._pendingLidMessages) store._pendingLidMessages = new Map();
+      store._pendingLidMessages.set(entry.waMessageId, {
+        lidJid: entry.lidJid,
+        waMessageId: entry.waMessageId,
+        eventId: entry.eventId,
+      });
+    },
+
+    _hasPendingLidForLid(store, lid) {
+      if (!store?._pendingLidMessages?.size) return false;
+      const canonical = String(lid || '')
+        .replace(/^jid:/, '')
+        .trim()
+        .replace(/(:\d+)?(@.*)$/, '$2');
+      for (const entry of store._pendingLidMessages.values()) {
+        if (entry.lidJid === canonical) return true;
+      }
+      return false;
+    },
+
+    async _awaitDurableEmission(result) {
+      if (!result || typeof result.then !== 'function') return false;
+      try {
+        const settled = await result;
+        if (!Array.isArray(settled)) return false;
+        return settled.some((entry) => entry && entry.status === 'fulfilled'
+          && entry.value && entry.value.durable === true);
+      } catch {
+        return false;
+      }
+    },
+
+    async _persistPendingLidMessage(session, { lidJid, waMessageId, upsertType, message }) {
+      const store = this._storeOf(session);
+      const eventId = pendingLidEventId(session.id, lidJid, waMessageId);
+      if (session.ephemeral) {
+        // No gateway_sessions row yet: the FK would reject the write. Keep the
+        // payload in RAM and retry once promotion makes the row exist.
+        this._queuePendingLidRetry(session, { lidJid, waMessageId, upsertType, message });
+        return { persisted: false, reason: 'ephemeral', eventId };
+      }
+      try {
+        const result = await pendingLidRepository.persistPendingMessage({
+          sessionId: session.id,
+          lidJid,
+          waMessageId,
+          upsertType,
+          message,
+        });
+        if (result.persisted) {
+          this._indexPendingLidMessage(store, {
+            lidJid,
+            waMessageId,
+            eventId: result.eventId,
+          });
+          return result;
+        }
+        if (result.reason === 'disabled') {
+          if (!session._pendingLidDurabilityWarned) {
+            session._pendingLidDurabilityWarned = true;
+            logger.warn(
+              { session_ref: sessionRef(session.id) },
+              'LID pending-message durability is disabled (no PostgreSQL pool or encryption key); unknown-LID messages stay in RAM only',
+            );
+          }
+          return result;
+        }
+        if (result.reason === 'orphaned') {
+          // The session row is gone. No retry can make the write succeed; the
+          // message is still held in RAM for this process.
+          logger.error(
+            { session_ref: sessionRef(session.id), message_id: waMessageId },
+            'LID pending message could not be stored durably: gateway session row no longer exists; message is RAM-only',
+          );
+          return result;
+        }
+        this._queuePendingLidRetry(session, { lidJid, waMessageId, upsertType, message });
+        return result;
+      } catch (err) {
+        logger.error(
+          { err, session_ref: sessionRef(session.id), message_id: waMessageId },
+          'LID pending message durable write FAILED; message is held in RAM and a retry was scheduled',
+        );
+        this._queuePendingLidRetry(session, { lidJid, waMessageId, upsertType, message });
+        return { persisted: false, reason: 'error', eventId };
+      }
+    },
+
+    _queuePendingLidRetry(session, entry) {
+      if (!session || session._deleted || !entry?.waMessageId) return;
+      if (!session._pendingLidRetry) session._pendingLidRetry = new Map();
+      const previous = session._pendingLidRetry.get(entry.waMessageId);
+      session._pendingLidRetry.set(entry.waMessageId, {
+        ...entry,
+        attempts: (previous?.attempts || 0) + 1,
+      });
+      if (!previous) {
+        logger.warn(
+          {
+            session_ref: sessionRef(session.id),
+            message_id: entry.waMessageId,
+            pending_retry_count: session._pendingLidRetry.size,
+          },
+          'LID pending message queued for durable-write retry',
+        );
+      }
+      this._schedulePendingLidRetryFlush(session);
+    },
+
+    _schedulePendingLidRetryFlush(session) {
+      if (!session || session._deleted || session._pendingLidRetryTimer) return;
+      const delay = Math.min(300_000, session._pendingLidRetryDelay || 5_000);
+      session._pendingLidRetryDelay = Math.min(300_000, delay * 2);
+      session._pendingLidRetryTimer = setTimeout(() => {
+        session._pendingLidRetryTimer = null;
+        void this._flushPendingLidRetries(session);
+      }, delay);
+      session._pendingLidRetryTimer.unref?.();
+    },
+
+    async _flushPendingLidRetries(session) {
+      if (!session || session._deleted) return;
+      const queue = session._pendingLidRetry;
+      if (!queue || queue.size === 0) return;
+      const store = this._storeOf(session);
+      let remaining = 0;
+      for (const [waId, entry] of [...queue.entries()]) {
+        if (session._deleted) return;
+        if (session.ephemeral) { remaining += 1; continue; }
+        const resolved = resolveJidKey(store, entry.lidJid);
+        if (resolved !== entry.lidJid) {
+          // The mapping was learned while the write was failing. The RAM
+          // migration already emitted this message, so there is nothing left
+          // to make durable.
+          queue.delete(waId);
+          continue;
+        }
+        try {
+          const result = await pendingLidRepository.persistPendingMessage({
+            sessionId: session.id,
+            lidJid: entry.lidJid,
+            waMessageId: entry.waMessageId,
+            upsertType: entry.upsertType,
+            message: entry.message,
+          });
+          if (result.persisted) {
+            this._indexPendingLidMessage(store, {
+              lidJid: entry.lidJid,
+              waMessageId: entry.waMessageId,
+              eventId: result.eventId,
+            });
+            const record = (store.messagesByChat.get(entry.lidJid) || [])
+              .find((m) => m.wa_message_id === entry.waMessageId);
+            if (record) {
+              record._lid_pending_event_id = result.eventId;
+              record._lid_pending_emitted = false;
+            }
+            queue.delete(waId);
+            logger.info(
+              { session_ref: sessionRef(session.id), message_id: entry.waMessageId },
+              'Retried LID pending-message durable write succeeded',
+            );
+          } else if (result.reason === 'disabled' || result.reason === 'orphaned') {
+            queue.delete(waId);
+          } else {
+            remaining += 1;
+          }
+        } catch (err) {
+          remaining += 1;
+          logger.error(
+            { err, session_ref: sessionRef(session.id), message_id: entry.waMessageId },
+            'Retried LID pending-message durable write failed; will retry',
+          );
+        }
+      }
+      if (remaining > 0) {
+        this._schedulePendingLidRetryFlush(session);
+      } else {
+        session._pendingLidRetryDelay = 5_000;
+      }
+    },
+
+    async _markPendingLidProcessed(session, { lidJid, waMessageId }) {
+      try {
+        await pendingLidRepository.markPendingMessageProcessed(session.id, lidJid, waMessageId);
+        this._storeOf(session)._pendingLidMessages?.delete(waMessageId);
+        return true;
+      } catch (err) {
+        // Keeping the row is safe: a replay reuses the deterministic event id,
+        // which the durable outbox and the backend deduplicate.
+        logger.error(
+          { err, session_ref: sessionRef(session.id), message_id: waMessageId },
+          'Released LID pending message could not be deleted; row retained',
+        );
+        return false;
+      }
+    },
+
+    async _emitPendingRecordDurably(session, conversationId, record, row) {
+      const durable = await this._awaitDurableEmission(this._emit({
+        gateway_session_id: session.id,
+        event: 'message_new',
+        conversation_id: conversationId,
+        message: record,
+        unread_count: record.unread_count ?? 0,
+        upsert_type: row.upsertType || 'notify',
+        event_id: row.eventId,
+      }));
+      if (!durable) {
+        logger.error(
+          { session_ref: sessionRef(session.id), message_id: row.waMessageId },
+          'Existing pending-LID record could not be durably re-emitted; durable row retained',
+        );
+        return false;
+      }
+      record._lid_pending_emitted = true;
+      await this._markPendingLidProcessed(session, row);
+      return true;
+    },
+
+    _clearPendingLidState(session) {
+      if (!session) return;
+      if (session._pendingLidRetryTimer) {
+        try { clearTimeout(session._pendingLidRetryTimer); } catch { /* ignore */ }
+        session._pendingLidRetryTimer = null;
+      }
+      try { session._pendingLidRetry?.clear(); } catch { /* ignore */ }
+      try { session._pendingLidClaims?.clear(); } catch { /* ignore */ }
+      session._pendingLidRetryDelay = 5_000;
+      session._pendingLidReleaseAgain = false;
+      session._pendingLidReleaseInFlight = false;
+    },
+
+    /**
+     * Re-ingest durable unknown-LID messages whose mapping is now known.
+     *
+     * Serialized per session: a second trigger while a sweep is running is
+     * coalesced into one more pass. Rows stay in the table unless delivery was
+     * proven durable, so a crash or an outage only delays the release.
+     */
+    async _releasePendingLidMessages(sessionOrId) {
+      let session;
+      try { session = this._sess(sessionOrId); } catch { return; }
+      if (!session || session._deleted || session.ephemeral) return;
+      if (!pendingLidRepository.enabled) return;
+      if (session._pendingLidReleaseInFlight) {
+        session._pendingLidReleaseAgain = true;
+        return;
+      }
+      session._pendingLidReleaseInFlight = true;
+      const store = this._storeOf(session);
+      try {
+        const rows = await pendingLidRepository.listPendingMessages(session.id);
+        for (const row of rows) {
+          if (session._deleted) break;
+          const resolved = resolveJidKey(store, row.lidJid);
+          if (resolved === row.lidJid) continue; // mapping still unknown
+          if (!this._claimPendingLid(session, row.waMessageId)) continue;
+          try {
+            const existing = (store.messagesByChat.get(resolved) || [])
+              .find((m) => m.wa_message_id === row.waMessageId);
+            if (existing) {
+              if (existing._lid_pending_emitted === true) {
+                await this._markPendingLidProcessed(session, row);
+                continue;
+              }
+              await this._emitPendingRecordDurably(session, resolved, existing, row);
+              continue;
+            }
+            const record = await this._ingestUpsertMessage(row.message, session.sock, session.id, {
+              upsertType: row.upsertType,
+              pendingEventId: row.eventId,
+              pendingLidJid: row.lidJid,
+              pendingWaMessageId: row.waMessageId,
+            });
+            if (!record) {
+              logger.warn(
+                { session_ref: sessionRef(session.id), message_id: row.waMessageId },
+                'Pending LID message replay produced no record; durable row retained',
+              );
+            }
+          } catch (err) {
+            logger.error(
+              { err, session_ref: sessionRef(session.id), message_id: row.waMessageId },
+              'Pending LID message release failed; durable row retained',
+            );
+          } finally {
+            this._releasePendingLidClaim(session, row.waMessageId);
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { err, session_ref: sessionRef(session.id) },
+          'Durable LID pending messages could not be read; rows remain durable',
+        );
+      } finally {
+        session._pendingLidReleaseInFlight = false;
+        if (session._pendingLidReleaseAgain && !session._deleted) {
+          session._pendingLidReleaseAgain = false;
+          void this._releasePendingLidMessages(session);
+        }
+      }
+    },
+
+    releasePendingLidMessages(sessionOrId) {
+      return this._releasePendingLidMessages(sessionOrId);
+    },
+
     _applyLidMapping(session, lid, phoneJid, { isHistorySync = false } = {}) {
       session = this._sess(session);
       const store = this._storeOf(session);
       const { contacts, chats, messagesByChat } = store;
       const emitEvent = (event) => this._emit({ gateway_session_id: session.id, ...event });
-      if (!rememberLidPair(store, lid, phoneJid)) return;
+      if (!rememberLidPair(store, lid, phoneJid)) {
+        // The mapping was already known. Any durable row for this LID may have
+        // been waiting for a previous process or a failed release; retry it
+        // without paying a database round-trip when nothing is pending.
+        if (this._hasPendingLidForLid(store, lid)) {
+          void this._releasePendingLidMessages(session);
+        }
+        return;
+      }
       // No-Create ephemeral sessions have no gateway_sessions row yet, so the
       // lid_mappings FK would reject the write. The pair is already remembered
       // in memory; persistence resumes once the pairing promotes the session.
@@ -3093,6 +3810,11 @@ export function createSessionManager({
         const phoneStr = jidToPhone(phoneKey) || phoneKey;
         const migratedContact = contacts.get(phoneKey);
         for (const m of lidMsgs) {
+          // A durable pending row owns this message's delivery. The release
+          // path re-ingests the original payload under phoneKey with the row's
+          // deterministic event id; emitting the RAM copy here would create a
+          // second, unproven delivery. The copy is deliberately dropped.
+          if (m._lid_pending_event_id) continue;
           if (m.wa_message_id && seen.has(m.wa_message_id)) continue;
           m.conversation_id = phoneKey;
           if (typeof m.sender_phone === 'string' && m.sender_phone.endsWith('@lid')) m.sender_phone = phoneStr;
@@ -3123,6 +3845,11 @@ export function createSessionManager({
         gateway_session_id: session.id,
         ...(isHistorySync ? { _internal_only: true } : {}),
       });
+      // Release durable messages that were waiting for THIS mapping. The sweep
+      // is serialized per session and reuses the normal ingestion chain.
+      if (pendingLidRepository.enabled) {
+        void this._releasePendingLidMessages(session);
+      }
     },
 
     _touchChat(session, jid, preview, timestamp, { append = false } = {}) {
@@ -4387,6 +5114,10 @@ export function createSessionManager({
       }
       const generation = session.lifecycle.beginAttempt();
       session._diagnosticSocketGeneration = generation;
+      // A new attempt supersedes any completed logout: the next logout must run
+      // a real teardown against the new socket, not replay the old outcome.
+      session._logoutCompleted = false;
+      session._logoutProviderError = null;
       leaseCoordinator.clearLeaseTimers(session);
 
       // On-contended callback: the lease-coordinator will retry after 5–6s. By
@@ -4553,5 +5284,6 @@ export function createSessionManager({
     },
   };
 
+  sessionManagerRef = sessionManager;
   return sessionManager;
 }

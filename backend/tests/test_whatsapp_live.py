@@ -1097,6 +1097,102 @@ async def test_media_proxy_endpoint(auth_headers, mock_gateway):
         assert "no-store" in res404.headers.get("cache-control", "")
 
 
+def _fake_gateway_client(status_code: int, text: str = ""):
+    """Minimal httpx.AsyncClient replacement for gateway contract tests."""
+
+    class _Resp:
+        def __init__(self) -> None:
+            self.status_code = status_code
+            self.text = text
+            self.content = b""
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+        async def get(self, *args: Any, **kwargs: Any) -> _Resp:
+            return _Resp()
+
+    return _Client
+
+
+@pytest.mark.asyncio
+async def test_fetch_media_preserves_gateway_status_code():
+    """Gateway HTTP status is preserved so 422 is distinguishable from 5xx."""
+    from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
+
+    with patch("backend.app.services.whatsapp_gateway.gateway_auth_headers", return_value={}):
+        with patch("backend.app.services.whatsapp_gateway.httpx.AsyncClient", _fake_gateway_client(422, '{"code":"MEDIA_CORRUPTED"}')):
+            with pytest.raises(WhatsAppGatewayError) as corrupted:
+                await gw.fetch_media("gw-id", "media-1")
+        assert corrupted.value.status_code == 422
+        assert "422" in str(corrupted.value)
+
+        with patch("backend.app.services.whatsapp_gateway.httpx.AsyncClient", _fake_gateway_client(503)):
+            with pytest.raises(WhatsAppGatewayError) as unavailable:
+                await gw.fetch_media_unscoped("media-1")
+        assert unavailable.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_media_integrity_failure_maps_to_422_not_502(auth_headers, mock_gateway):
+    """Gateway 422 (hash mismatch / corrupt sidecar) is NOT reported as 502."""
+    from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
+
+    conv_id = await _make_conv()
+    async with AsyncSessionLocal() as db:
+        db.add(Message(
+            user_id=TEST_USER, conversation_id=conv_id,
+            direction=MessageDirection.INBOUND, message_type=MessageType.IMAGE,
+            status=ConversationMessageStatus.RECEIVED,
+            media_id="media-corrupt-422", media_mime_type="image/png",
+            sender_phone=MOCK_PHONE, recipient_phone="ME",
+        ))
+        await db.commit()
+
+    mock_gateway.fetch_media.side_effect = WhatsAppGatewayError(
+        "Medya indirilemedi (HTTP 422)", status_code=422
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/v1/whatsapp/media/media-corrupt-422", headers=auth_headers)
+        assert res.status_code == 422
+        assert res.status_code != 502
+        assert "bütünlük" in res.json()["detail"].lower()
+        assert "no-store" in res.headers.get("cache-control", "")
+
+
+@pytest.mark.asyncio
+async def test_gateway_5xx_still_maps_to_502(auth_headers, mock_gateway):
+    """A genuine gateway failure keeps the bad-gateway mapping."""
+    from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
+
+    conv_id = await _make_conv()
+    async with AsyncSessionLocal() as db:
+        db.add(Message(
+            user_id=TEST_USER, conversation_id=conv_id,
+            direction=MessageDirection.INBOUND, message_type=MessageType.IMAGE,
+            status=ConversationMessageStatus.RECEIVED,
+            media_id="media-gateway-500", media_mime_type="image/png",
+            sender_phone=MOCK_PHONE, recipient_phone="ME",
+        ))
+        await db.commit()
+
+    mock_gateway.fetch_media.side_effect = WhatsAppGatewayError(
+        "Medya indirilemedi (HTTP 500)", status_code=500
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/v1/whatsapp/media/media-gateway-500", headers=auth_headers)
+        assert res.status_code == 502
+
+
 @pytest.mark.asyncio
 async def test_serialize_message_exposes_media_proxy_url():
     """Incoming media messages serialize with a /api/v1/whatsapp/media/{id} URL."""
