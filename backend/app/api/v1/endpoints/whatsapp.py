@@ -78,6 +78,7 @@ from backend.app.services.link_preview.service import (
     get_preview_image_bytes as _get_preview_image_bytes,
 )
 from backend.app.services.whatsapp.exceptions import PairingPromotionRefused
+from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
 from backend.app.services.whatsapp_service import NoWhatsAppSession, WhatsAppRelinkRequired
 
 router = APIRouter()
@@ -1182,6 +1183,17 @@ async def get_media(
             detail=str(exc),
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         ) from exc
+    except WhatsAppGatewayError as exc:
+        # Gateway 422 means the stored bytes failed integrity verification
+        # (hash mismatch / corrupt sidecar). Reporting 502 ("bad gateway")
+        # would wrongly suggest the gateway is unreachable and invite retries.
+        if exc.status_code == 422:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Medya bütünlük doğrulaması başarısız (dosya bozuk veya değişmiş)",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            ) from exc
+        raise _bad_gateway(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     headers = {}
@@ -1224,7 +1236,7 @@ async def get_link_preview_image(
     ortak onbellege alinmamalidir.
     """
     try:
-        data, mime = await _get_preview_image_bytes(db, u)
+        data, mime = await _get_preview_image_bytes(db, u, current_user.id)
     except LookupError as exc:
         raise _not_found(exc) from exc
     except Exception as exc:

@@ -107,6 +107,9 @@ async def create_campaign(
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
+    await _validate_campaign_media_references(
+        db, current_user.id, campaign_in.media_url, campaign_in.sequence_steps
+    )
     campaign_dict = campaign_in.model_dump()
     initial_status = CampaignStatus.DRAFT
     sched_dt = campaign_in.scheduled_at
@@ -147,6 +150,12 @@ async def update_campaign(
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
 
     update_data = campaign_in.model_dump(exclude_unset=True)
+    await _validate_campaign_media_references(
+        db,
+        current_user.id,
+        update_data.get("media_url"),
+        update_data.get("sequence_steps"),
+    )
     for key, value in update_data.items():
         setattr(campaign, key, value)
 
@@ -361,8 +370,81 @@ async def upload_campaign_media(
     return await CampaignMediaService.save_uploaded_media(file, current_user.id)
 
 
+def _collect_campaign_media_references(
+    media_url: Optional[str], sequence_steps: Optional[List[dict]]
+) -> List[str]:
+    """Kampanya ana medyası ve sekans adımlarındaki yerel medya referanslarını toplar."""
+    refs: List[str] = []
+    if media_url:
+        refs.append(str(media_url))
+    for step in sequence_steps or []:
+        if isinstance(step, dict) and step.get("media_url"):
+            refs.append(str(step["media_url"]))
+    return refs
+
+
+async def _validate_campaign_media_references(
+    db: AsyncSession,
+    user_id: str,
+    media_url: Optional[str],
+    sequence_steps: Optional[List[dict]],
+) -> None:
+    """Yeni medya referanslarının çağırana ait olduğunu YAZMA anında doğrular.
+
+    Yerel medya referansı YALNIZCA tam kanonik biçimde kabul edilir. Yerel
+    depoyu hedeflemeye çalışan ama kanonik olmayan her referans (host'lu mutlak
+    URL, şemasız yol, `..` traversal, yüzde-kodlama, query/fragment, çıplak
+    kimlik) fail-closed reddedilir; aksi hâlde bu tür bir dize sahiplik
+    sorgusunda referans sayılırdı. Bu depoyu hedeflemeyen sıradan harici
+    URL'ler serbesttir ve sahiplik kanıtı SAYILMAZ.
+
+    Sahiplik, yükleme anındaki yan dosyadan veya ÖNCEDEN VAR OLAN tek
+    tenant'lı kanonik legacy referanstan kanıtlanmalıdır. Yeni bir referans
+    sahiplik ÜRETMEZ.
+    """
+    from backend.app.services.campaign_media_service import (
+        CampaignMediaService,
+        extract_local_file_id,
+        looks_like_local_media_reference,
+    )
+
+    for ref in _collect_campaign_media_references(media_url, sequence_steps):
+        file_id = extract_local_file_id(ref)
+        if file_id:
+            if not await CampaignMediaService.authorize_media_reference(
+                db, file_id, user_id
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Medya referansı doğrulanamadı veya bu hesaba ait değil.",
+                )
+            continue
+        if looks_like_local_media_reference(ref):
+            raise HTTPException(
+                status_code=400,
+                detail="Medya referansı doğrulanamadı veya bu hesaba ait değil.",
+            )
+
+
+async def _authorize_campaign_media(
+    db: AsyncSession, user_id: str, file_id: str
+) -> bool:
+    """GET uç noktası için merkezî sahiplik kontrolü.
+
+    Kural tek yerde (``CampaignMediaService``) tutulur; GET, dispatch ve yazma
+    doğrulaması aynı modeli kullanır ki biri diğerinden sapmasın.
+    """
+    from backend.app.services.campaign_media_service import CampaignMediaService
+
+    return await CampaignMediaService.authorize_media_reference(db, file_id, user_id)
+
+
 @router.get("/media/{file_id}")
-async def get_campaign_media(file_id: str):
+async def get_campaign_media(
+    file_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     """
     Serves uploaded campaign media — as the BYTES say it is, never as the name
     claims.
@@ -385,6 +467,9 @@ async def get_campaign_media(file_id: str):
         CampaignMediaService,
         inline_safe,
     )
+    if not await _authorize_campaign_media(db, current_user.id, file_id):
+        # 404 seçildi: yetkisiz çağırana dosyanın var olup olmadığını sızdırma.
+        raise HTTPException(status_code=404, detail="Medya dosyası bulunamadı.")
     res = CampaignMediaService.get_media_file_info(file_id)
     if not res:
         raise HTTPException(status_code=404, detail="Medya dosyası bulunamadı.")

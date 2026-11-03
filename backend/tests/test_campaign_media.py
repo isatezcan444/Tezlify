@@ -1,11 +1,14 @@
 import base64
+import json
 
 import pytest
 from httpx import AsyncClient, ASGITransport
 
 from backend.app.main import app
 from backend.app.core.auth import get_current_user, AuthUser
+from backend.app.core.database import AsyncSessionLocal
 from backend.app.services.campaign_media_service import (
+    CampaignMediaAccessDenied,
     CampaignMediaService,
     UPLOAD_DIR,
     sniff_media,
@@ -25,6 +28,13 @@ def mock_user():
 def _cleanup(file_id: str) -> None:
     for path in UPLOAD_DIR.glob(f"{file_id}_*"):
         path.unlink(missing_ok=True)
+    (UPLOAD_DIR / f"{file_id}.owner.json").unlink(missing_ok=True)
+
+
+def _write_owner(file_id: str, user_id: str) -> None:
+    (UPLOAD_DIR / f"{file_id}.owner.json").write_text(
+        json.dumps({"user_id": user_id}), encoding="utf-8"
+    )
 
 
 @pytest.mark.asyncio
@@ -56,10 +66,21 @@ async def test_campaign_media_upload_and_retrieve(mock_user):
             assert "sandbox" in get_res.headers.get("content-security-policy", "")
             assert get_res.headers["cache-control"].startswith("private")
 
-            # 3. Test Base64 helper
-            b64 = CampaignMediaService.get_campaign_media_base64(data["media_url"])
+            # 3. Test Base64 helper — dispatch yolu tenant doğrulaması ister.
+            async with AsyncSessionLocal() as db:
+                b64 = await CampaignMediaService.get_authorized_campaign_media_base64(
+                    db, data["media_url"], mock_user.id
+                )
             assert b64 is not None
             assert base64.b64decode(b64) == fake_pdf
+
+            async with AsyncSessionLocal() as db:
+                with pytest.raises(CampaignMediaAccessDenied):
+                    await CampaignMediaService.get_authorized_campaign_media_base64(
+                        db,
+                        data["media_url"],
+                        "22222222-2222-2222-2222-222222222222",
+                    )
         finally:
             _cleanup(file_id)
 
@@ -98,20 +119,32 @@ async def test_campaign_create_with_media_attachment(mock_user):
     app.dependency_overrides[get_current_user] = lambda: mock_user
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        payload = {
-            "name": "Medyalı Diş Kliniği Kampanyası",
-            "message_template": "{Merhaba|Selamlar} {name}, katalog ekte yer almaktadır.",
-            "media_url": "/api/v1/campaigns/media/camp_1234567890abcdef",
-            "media_type": "DOCUMENT",
-            "media_filename": "fiyat_listesi.pdf",
-        }
-        res = await client.post("/api/v1/campaigns", json=payload)
-        assert res.status_code == 201, res.text
-        data = res.json()
-        assert data["name"] == payload["name"]
-        assert data["media_url"] == payload["media_url"]
-        assert data["media_type"] == "DOCUMENT"
-        assert data["media_filename"] == "fiyat_listesi.pdf"
+        # Yeni doğrulama kuralı: referans, önceden var olan bir sahiplik
+        # kaydına dayanmalı. Bu yüzden önce gerçek bir yükleme yapılır.
+        upload = await client.post(
+            "/api/v1/campaigns/upload-media",
+            files={"file": ("fiyat_listesi.pdf", b"%PDF-1.4 katalog", "application/pdf")},
+        )
+        assert upload.status_code == 200, upload.text
+        media = upload.json()
+        file_id = media["file_id"]
+        try:
+            payload = {
+                "name": "Medyalı Diş Kliniği Kampanyası",
+                "message_template": "{Merhaba|Selamlar} {name}, katalog ekte yer almaktadır.",
+                "media_url": media["media_url"],
+                "media_type": "DOCUMENT",
+                "media_filename": media["filename"],
+            }
+            res = await client.post("/api/v1/campaigns", json=payload)
+            assert res.status_code == 201, res.text
+            data = res.json()
+            assert data["name"] == payload["name"]
+            assert data["media_url"] == payload["media_url"]
+            assert data["media_type"] == "DOCUMENT"
+            assert data["media_filename"] == media["filename"]
+        finally:
+            _cleanup(file_id)
 
     app.dependency_overrides.clear()
 
@@ -194,6 +227,7 @@ async def test_previously_stored_html_file_can_no_longer_be_served(mock_user):
     legacy_id = "camp_00000000deadbeef"
     legacy_path = UPLOAD_DIR / f"{legacy_id}_evil.html"
     legacy_path.write_bytes(HTML_PAYLOAD)
+    _write_owner(legacy_id, mock_user.id)
 
     transport = ASGITransport(app=app)
     try:
@@ -202,6 +236,7 @@ async def test_previously_stored_html_file_can_no_longer_be_served(mock_user):
             assert res.status_code == 404
     finally:
         legacy_path.unlink(missing_ok=True)
+        (UPLOAD_DIR / f"{legacy_id}.owner.json").unlink(missing_ok=True)
     app.dependency_overrides.clear()
 
 
@@ -214,6 +249,7 @@ async def test_previously_stored_image_with_wrong_extension_serves_as_image(mock
     legacy_path = UPLOAD_DIR / f"{legacy_id}_banner.html"
     png = b"\x89PNG\r\n\x1a\nlegacy bytes"
     legacy_path.write_bytes(png)
+    _write_owner(legacy_id, mock_user.id)
 
     transport = ASGITransport(app=app)
     try:
@@ -224,6 +260,7 @@ async def test_previously_stored_image_with_wrong_extension_serves_as_image(mock
             assert res.headers["x-content-type-options"] == "nosniff"
     finally:
         legacy_path.unlink(missing_ok=True)
+        (UPLOAD_DIR / f"{legacy_id}.owner.json").unlink(missing_ok=True)
     app.dependency_overrides.clear()
 
 
