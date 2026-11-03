@@ -1,0 +1,808 @@
+diff --git a/backend/app/services/whatsapp/orchestration/sync.py b/backend/app/services/whatsapp/orchestration/sync.py
+index 213f736..a580988 100644
+--- a/backend/app/services/whatsapp/orchestration/sync.py
++++ b/backend/app/services/whatsapp/orchestration/sync.py
+@@ -107,6 +107,36 @@ _SYNC_CHAT_PAGE_SIZE = 40     # conversation snapshot page size
+ _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
+ 
+ 
++def _bulk_chunks(
++    jids: List[str], page_size: int, per_chat_limit: Optional[int]
++) -> List[List[str]]:
++    """Initial sync jid listesini TEK SAYFALIK isteklere böler (AŞAMA 4.28, F2).
++
++    NEDEN: gateway `perChatLimit` kırpmasını **her istekte** yeniden uygular
++    (`session-manager.js` → `slice(-N)`), sonra id'ye göre sıralayıp
++    `[offset, offset+limit)` dilimini döner. Sayfalar arasında bir sohbete yeni
++    mesaj gelirse o sohbetin penceresi ilerler, global dizi SOLA kayar ve sabit
++    `offset` bir kaydı **hiçbir sayfada döndürmeden** atlar (kanıt:
++    `whatsapp-gateway/scripts/test-tz428-initial-sync-front-trim.mjs`).
++
++    ÇÖZÜM: parça boyu `page_size // per_chat_limit` seçilirse bir istekte
++    `total <= parça * per_chat_limit <= page_size` olur; istek **ilk sayfada**
++    biter (`offset + limit >= total`) ve sayfalar arası offset hiç oluşmaz.
++    Böylece kayma fiziksel olarak imkânsız hâle gelir.
++
++    Maliyet: istek SAYISI değişmez —
++    `ceil(sohbet / parça) == ceil(sohbet * per_chat_limit / page_size)`.
++    `per_chat_limit` yoksa/sıfırsa davranış ESKİSİYLE aynıdır (tek istek).
++    """
++    ordered = list(jids)
++    per = int(per_chat_limit or 0)
++    size = int(page_size or 0)
++    if per <= 0 or size <= 0 or not ordered:
++        return [ordered] if ordered else []
++    chunk = max(1, size // per)
++    return [ordered[i: i + chunk] for i in range(0, len(ordered), chunk)]
++
++
+ def _column_scalar_default(column) -> Any:
+     """The column's scalar Python-side default, or None when it has none.
+ 
+@@ -1693,9 +1723,34 @@ class WhatsAppSyncOrchestrator:
+             if not request_jids:
+                 return
+ 
++        # AŞAMA 4.28 (F2): offset sayfalaması yerine jid PARÇALAMA. Her istek
++        # `page_size // per_chat_limit` sohbetle sınırlandığı için `total`
++        # daima `page_size`'ı aşmaz ve istek ilk sayfada biter; sayfalar arası
++        # offset hiç oluşmaz, dolayısıyla front-trim sırasında kayma da oluşmaz.
++        target_jids = (
++            request_jids if request_jids is not None else list(conv_by_jid.keys())
++        )
++        chunks = _bulk_chunks(target_jids, _SYNC_BULK_PAGE_SIZE, _SYNC_PER_CHAT_LIMIT)
++        if not chunks:
++            return
++
++        chunk_idx = 0
++        expected_total = 0
+         offset = 0
+-        first_page = True
++        chunk_total = None
++
++        def _next_chunk() -> bool:
++            """Bir sonraki parçaya geç (offset sıfırlanır); parça yoksa False."""
++            nonlocal chunk_idx, offset, chunk_total
++            chunk_idx += 1
++            if chunk_idx >= len(chunks):
++                return False
++            offset = 0
++            chunk_total = None
++            return True
++
+         while True:
++            chunk_jids = chunks[chunk_idx]
+             if ws_session is not None and gateway_op_or_mark_relink is not None:
+                 page = await gateway_op_or_mark_relink(
+                     db,
+@@ -1706,7 +1761,7 @@ class WhatsAppSyncOrchestrator:
+                         offset=offset,
+                         since=since_epoch,
+                         per_chat_limit=_SYNC_PER_CHAT_LIMIT,
+-                        jids=request_jids,
++                        jids=chunk_jids,
+                     ),
+                 )
+             else:
+@@ -1716,18 +1771,23 @@ class WhatsAppSyncOrchestrator:
+                     offset=offset,
+                     since=since_epoch,
+                     per_chat_limit=_SYNC_PER_CHAT_LIMIT,
+-                    jids=request_jids,
++                    jids=chunk_jids,
+                 )
+             msgs = page.get("messages", []) if isinstance(page, dict) else []
+             total = int(page.get("total") or 0) if isinstance(page, dict) else 0
+-            if first_page:
+-                # Geri doldurma turu ilerleme sayaclarini EZMEZ: kullanicinin
+-                # gordugu "mesajlar" ilerlemesi gercek ilk senkronu anlatmali.
++            # Geri doldurma turu ilerleme sayaclarini EZMEZ: kullanicinin
++            # gordugu "mesajlar" ilerlemesi gercek ilk senkronu anlatmali.
++            # Parçalı turda `total` PARÇA başına gelir → parça başına BİR kez
++            # kümülatif topla (iç sayfalamada aynı değer tekrar gelir).
++            if chunk_total is None:
++                chunk_total = total
++                expected_total += total
+                 if not recovery_pass:
+-                    job.messages_total = total
+-                first_page = False
++                    job.messages_total = expected_total
+             if not msgs:
+-                break
++                if not _next_chunk():
++                    break
++                continue
+             pending: Dict[int, List[Dict[str, Any]]] = {}
+             for gm in msgs:
+                 jid_str = str(gm.get("conversation_id") or "")
+@@ -1923,7 +1983,10 @@ class WhatsAppSyncOrchestrator:
+             )
+             offset += len(msgs)
+             if offset >= total:
+-                break
++                # Bu parça bitti → sonraki parça KENDİ offset=0'ıyla başlar.
++                if not _next_chunk():
++                    break
++                continue
+             if job.cancel_requested:
+                 raise asyncio.CancelledError()
+ 
+diff --git a/backend/tests/test_whatsapp_initial_sync_chunking.py b/backend/tests/test_whatsapp_initial_sync_chunking.py
+new file mode 100644
+index 0000000..eb2a28b
+--- /dev/null
++++ b/backend/tests/test_whatsapp_initial_sync_chunking.py
+@@ -0,0 +1,284 @@
++"""AŞAMA 4.28 — Initial sync front-trim güvenliği (F2).
++
++NEDEN BU DOSYA VAR
++------------------
++Initial sync `offset` + `perChatLimit=50` ile sayfalanıyordu. Gateway
++`perChatLimit` kırpmasını **her istekte** yeniden uygular (`slice(-N)`), sonra
++id'ye göre sıralayıp `[offset, offset+limit)` dilimini döner. Sayfalar arasında
++bir sohbete yeni mesaj gelirse o sohbetin penceresi ilerler, global dizi SOLA
++kayar ve `offset` bir kaydı **hiçbir sayfada döndürmeden** atlar.
++
++Çözüm: istekleri `page_size // per_chat_limit` büyüklüğünde jid parçalarına
++bölmek. Her parçada `total <= page_size` olduğu için istek **tek sayfada**
++biter; offset kayması fiziksel olarak imkânsız hâle gelir. İstek SAYISI
++değişmez: `ceil(chats/chunk) == ceil(chats*per_chat/page_size)`.
++
++Bu dosya iki şeyi sabitler:
++  1. `_bulk_chunks` parça matematiği (saf fonksiyon).
++  2. Gerçek `_run_bulk_message_sync`'in **hiçbir zaman** sayfalar arası offset
++     kullanmadığı ve front-trim sırasında pencere kaydı atlamadığı.
++"""
++from __future__ import annotations
++
++import uuid as _uuid
++from datetime import datetime, timedelta, timezone
++from typing import Any, Dict, List, Optional
++
++import pytest
++import pytest_asyncio
++from sqlalchemy import select, text
++
++from backend.app.core.database import AsyncSessionLocal
++from backend.app.models.message import Message
++from backend.app.services.whatsapp.orchestration import sync as sync_mod
++from backend.app.services.whatsapp.orchestration.sync import (
++    SyncJob,
++    WhatsAppSyncOrchestrator,
++)
++
++# Bu dosyaya özel kiracı.
++U6 = "66666666-6666-6666-6666-666666666666"
++U6_HEX = U6.replace("-", "")
++
++PAGE_SIZE = 1000          # _SYNC_BULK_PAGE_SIZE
++PER_CHAT = 50             # _SYNC_PER_CHAT_LIMIT
++CHUNK = PAGE_SIZE // PER_CHAT   # 20
++CHATS = 25                # 20 + 5 → 2 parça
++PER_CHAT_TOTAL = 60       # yazılan; okuma anında son 50'ye kırpılır
++LATE_ID = 9_999_999_000_000
++
++
++def generic_jid() -> str:
++    return f"9057{_uuid.uuid4().int % 10**10:010d}@s.whatsapp.net"
++
++
++@pytest_asyncio.fixture(autouse=True)
++async def _clean_tenant():
++    async def _wipe():
++        async with AsyncSessionLocal() as db:
++            for table in ("messages", "conversations", "contacts", "whatsapp_sessions"):
++                await db.execute(
++                    text(f"DELETE FROM {table} WHERE user_id = :u"), {"u": U6_HEX}
++                )
++            await db.commit()
++
++    await _wipe()
++    yield
++    await _wipe()
++
++
++# ---------------------------------------------------------------------------
++# Gerçek gateway semantiğinin birebir taklidi
++# ---------------------------------------------------------------------------
++class TrimAwareGateway:
++    """`listAllMessages` offset dalı: jids filtresi → son-N kırpma → id sırala → dilim."""
++
++    def __init__(self) -> None:
++        self.messages: Dict[str, List[Dict[str, Any]]] = {}
++        self.calls: List[Dict[str, Any]] = []
++        self.on_call = None  # callable(call_index) → araya canlı trafik enjekte eder
++
++    def add(self, jid: str, msg_id: int, wa: str) -> None:
++        self.messages.setdefault(jid, []).append(
++            {
++                "conversation_id": jid,
++                "wa_message_id": wa,
++                "direction": "INBOUND",
++                "body": f"b{msg_id}",
++                "message_type": "TEXT",
++                "created_at": _iso(msg_id),
++                "id": msg_id,
++            }
++        )
++
++    def window(self, per_chat: int = PER_CHAT) -> set:
++        """Okuma anındaki 'son N' penceresi (nihai hâl)."""
++        out = set()
++        for lst in self.messages.values():
++            ordered = sorted(lst, key=lambda m: m["id"])
++            for m in ordered[-per_chat:]:
++                out.add(m["wa_message_id"])
++        return out
++
++    async def list_all_messages(
++        self,
++        _gateway_id,
++        limit: int = 1000,
++        offset: int = 0,
++        since=None,
++        per_chat_limit=None,
++        jids=None,
++        after_seq=None,
++        seq_epoch=None,
++        **_kw,
++    ):
++        self.calls.append(
++            {
++                "offset": offset,
++                "limit": limit,
++                "jids": list(jids) if jids else None,
++            }
++        )
++        if self.on_call is not None:
++            self.on_call(len(self.calls))
++
++        wanted = set(jids) if jids else None
++        allm: List[Dict[str, Any]] = []
++        per = per_chat_limit or PER_CHAT
++        for jid, lst in self.messages.items():
++            if wanted is not None and jid not in wanted:
++                continue
++            ordered = sorted(lst, key=lambda m: m["id"])
++            if per and len(ordered) > per:
++                ordered = ordered[-per:]
++            allm.extend(ordered)
++        allm.sort(key=lambda m: m["id"])
++        total = len(allm)
++        return {"messages": allm[offset: offset + int(limit)], "total": total}
++
++
++def _iso(msg_id: int) -> str:
++    return datetime.fromtimestamp(msg_id / 1000.0, tz=timezone.utc).isoformat()
++
++
++async def make_conversations(n: int) -> Dict[int, str]:
++    orch = WhatsAppSyncOrchestrator()
++    items = [
++        {
++            "jid": generic_jid(),
++            "name": f"conv-{i}",
++            "last_message_at": None,
++            "last_message_preview": None,
++        }
++        for i in range(n)
++    ]
++    async with AsyncSessionLocal() as db:
++        _out, jid_by_conv = await orch._persist_chat_snapshot(db, U6, items)
++    return jid_by_conv
++
++
++async def run_bulk(jid_by_conv: Dict[int, str], fake: TrimAwareGateway) -> SyncJob:
++    job = SyncJob(sync_id=f"sync-{_uuid.uuid4().hex[:8]}", user_id=U6)
++    orch = WhatsAppSyncOrchestrator()
++    async with AsyncSessionLocal() as db:
++        with pytest.MonkeyPatch.context() as mp:
++            mp.setattr(sync_mod, "gw", fake)
++            await orch._run_bulk_message_sync(db, job, dict(jid_by_conv), "gw-tz428")
++    return job
++
++
++async def persisted_wa_ids(conv_ids: List[int]) -> set:
++    async with AsyncSessionLocal() as db:
++        res = await db.execute(
++            select(Message.wa_message_id).where(Message.conversation_id.in_(conv_ids))
++        )
++        return {str(r[0]) for r in res.all() if r[0]}
++
++
++# ---------------------------------------------------------------------------
++# 1. Parça matematiği (saf fonksiyon)
++# ---------------------------------------------------------------------------
++def test_bulk_chunks_splits_so_every_request_fits_one_page():
++    jids = [f"j{i}" for i in range(45)]
++    chunks = sync_mod._bulk_chunks(jids, PAGE_SIZE, PER_CHAT)
++    assert len(chunks) == 3
++    assert all(len(c) <= CHUNK for c in chunks)
++    # Her parça en fazla chunk*per_chat = page_size kayıt döndürebilir.
++    assert all(len(c) * PER_CHAT <= PAGE_SIZE for c in chunks)
++    assert [j for c in chunks for j in c] == jids, "parçalama kayıp/tekrar üretmemeli"
++
++
++def test_bulk_chunks_is_a_noop_when_per_chat_limit_is_absent():
++    jids = [f"j{i}" for i in range(5)]
++    assert sync_mod._bulk_chunks(jids, PAGE_SIZE, None) == [jids]
++    assert sync_mod._bulk_chunks(jids, PAGE_SIZE, 0) == [jids]
++
++
++def test_bulk_chunks_handles_empty_and_exact_multiples():
++    assert sync_mod._bulk_chunks([], PAGE_SIZE, PER_CHAT) == []
++    exact = [f"j{i}" for i in range(CHUNK * 2)]
++    assert [len(c) for c in sync_mod._bulk_chunks(exact, PAGE_SIZE, PER_CHAT)] == [CHUNK, CHUNK]
++
++
++# ---------------------------------------------------------------------------
++# 2. Gerçek bulk sync: sayfalar arası offset KULLANILMAMALI
++# ---------------------------------------------------------------------------
++@pytest.mark.asyncio
++async def test_initial_sync_never_pages_with_a_cross_request_offset():
++    jid_by_conv = await make_conversations(CHATS)
++    fake = TrimAwareGateway()
++    base = datetime.now(timezone.utc) - timedelta(hours=2)
++    for i, jid in enumerate(jid_by_conv.values()):
++        for k in range(PER_CHAT_TOTAL):
++            fake.add(jid, int(base.timestamp() * 1000) + k * 10 + i, f"w-{i}-{k}")
++
++    await run_bulk(jid_by_conv, fake)
++
++    assert fake.calls, "en az bir istek yapılmalı"
++    # ASIL KONTROL: hiçbir istek offset>0 ile başlamamalı.
++    assert [c["offset"] for c in fake.calls] == [0] * len(fake.calls), (
++        f"sayfalar arası offset kullanılmamalı: {[c['offset'] for c in fake.calls]}"
++    )
++    # Ve her istek jids ile sınırlı olmalı (tüm depoyu tek seferde çekmemeli).
++    assert all(c["jids"] is not None for c in fake.calls), "her istek jid parçası taşımalı"
++    assert all(len(c["jids"]) <= CHUNK for c in fake.calls), "parça boyu aşılmamalı"
++    assert len(fake.calls) == 2, f"25 sohbet → 2 parça, alınan={len(fake.calls)}"
++
++
++# ---------------------------------------------------------------------------
++# 3. Front-trim sırasında hiçbir pencere kaydı atlanmamalı
++# ---------------------------------------------------------------------------
++@pytest.mark.asyncio
++async def test_initial_sync_does_not_skip_a_windowed_message_during_front_trim():
++    jid_by_conv = await make_conversations(CHATS)
++    fake = TrimAwareGateway()
++    base = datetime.now(timezone.utc) - timedelta(hours=2)
++    jids = list(jid_by_conv.values())
++    for i, jid in enumerate(jids):
++        for k in range(PER_CHAT_TOTAL):
++            fake.add(jid, int(base.timestamp() * 1000) + k * 10 + i, f"w-{i}-{k}")
++
++    late_wa = "w-late-0"
++
++    def inject(call_index: int) -> None:
++        # İlk parça okunduktan SONRA ilk sohbete yeni mesaj: penceresi ilerler,
++        # en eski kaydı düşer, global dizi sola kayar.
++        # `on_call` isteğin BAŞINDA çalışır → enjeksiyon 2. istekte olmalı ki
++        # 1. yanıt enjeksiyondan ÖNCE üretilmiş olsun.
++        if call_index == 2:
++            fake.add(jids[0], LATE_ID, late_wa)
++
++    fake.on_call = inject
++    await run_bulk(jid_by_conv, fake)
++
++    conv_ids = list(jid_by_conv.keys())
++    delivered = await persisted_wa_ids(conv_ids)
++    window = fake.window(PER_CHAT)
++    missing = window - delivered
++    genuine = missing - {late_wa}
++
++    assert genuine == set(), (
++        f"pencere kaydı atlanmamalı; atlanan={sorted(genuine)[:5]} "
++        f"(delivered={len(delivered)}, window={len(window)})"
++    )
++    # Geç gelen mesaj meşru biçimde kapsam dışıdır (snapshot davranışı).
++    assert late_wa in missing, "geç gelen mesaj sonraki turda yakalanmalı, burada değil"
++
++
++# ---------------------------------------------------------------------------
++# 4. Boş sohbet ve kısa sohbet parçayı bozmamalı
++# ---------------------------------------------------------------------------
++@pytest.mark.asyncio
++async def test_initial_sync_tolerates_empty_and_short_chats():
++    jid_by_conv = await make_conversations(3)
++    jids = list(jid_by_conv.values())
++    fake = TrimAwareGateway()
++    base = datetime.now(timezone.utc) - timedelta(hours=1)
++    fake.add(jids[0], int(base.timestamp() * 1000), "w-only-one")  # tek mesaj
++    # jids[1], jids[2] hiç yazılmadı → boş
++
++    await run_bulk(jid_by_conv, fake)
++
++    delivered = await persisted_wa_ids(list(jid_by_conv.keys()))
++    assert delivered == {"w-only-one"}
++    assert all(c["offset"] == 0 for c in fake.calls)
+diff --git a/backend/tests/test_whatsapp_phase2_b_sync_reconciliation.py b/backend/tests/test_whatsapp_phase2_b_sync_reconciliation.py
+index def4640..358189d 100644
+--- a/backend/tests/test_whatsapp_phase2_b_sync_reconciliation.py
++++ b/backend/tests/test_whatsapp_phase2_b_sync_reconciliation.py
+@@ -401,17 +401,32 @@ async def test_chunk_replay_is_idempotent():
+ # ---------------------------------------------------------------------------
+ @pytest.mark.asyncio
+ async def test_partial_failure_survives_and_retry_dedups():
+-    jid = generic_jid()
++    """Kısmi başarısızlık: parça 1 commit edilir, parça 2 patlar, resume dedup eder.
++
++    AŞAMA 4.28 notu: initial sync artık sayfalar arası offset kullanmıyor; her
++    istek `page_size // per_chat_limit` = 20 sohbetlik bir PARÇA. İki istek
++    üretebilmek için 21 sohbet gerekir; kastedilen davranış (parça 1 kalır,
++    parça 2 hata verir, resume dedup eder) birebir korunur.
++    """
+     t = datetime.now(timezone.utc) - timedelta(minutes=5)
+     orch = WhatsAppSyncOrchestrator()
++    jids = [generic_jid() for _ in range(21)]
+     async with AsyncSessionLocal() as db:
+         _out, jid_by_conv = await orch._persist_chat_snapshot(
+-            db, U1, [{"jid": jid, "name": "Partial", "last_message_at": None, "last_message_preview": None}]
++            db,
++            U1,
++            [
++                {"jid": j, "name": f"Partial {i}", "last_message_at": None, "last_message_preview": None}
++                for i, j in enumerate(jids)
++            ],
+         )
+-    conv = await conv_row(jid)
++    # Parça 1 = ilk 20 sohbet, parça 2 = 21.
++    jid_a, jid_b = jids[0], jids[20]
++    conv_a = await conv_row(jid_a)
++    conv_b = await conv_row(jid_b)
+     wa1, wa2 = f"wa-{_uuid.uuid4().hex[:12]}", f"wa-{_uuid.uuid4().hex[:12]}"
+ 
+-    def gm(wa_id, body):
++    def gm(jid, wa_id, body):
+         return {
+             "conversation_id": jid,
+             "wa_message_id": wa_id,
+@@ -421,20 +436,33 @@ async def test_partial_failure_survives_and_retry_dedups():
+             "created_at": iso(t),
+         }
+ 
+-    # Chunk 1 OK, chunk 2 fails (gateway error), chunk 3 never processed.
++    # Parça 1 OK, parça 2 gateway hatası verir.
+     boom = RuntimeError("gateway socket closed mid-sync")
+     with pytest.raises(RuntimeError):
+-        await run_bulk_sync(jid_by_conv, [bulk_page([gm(wa1, "chunk one")], total=3), boom])
+-    # Chunk 1's committed batch survives.
+-    conv_id = conv.id
++        await run_bulk_sync(
++            jid_by_conv,
++            [bulk_page([gm(jid_a, wa1, "chunk one")], total=1), boom],
++        )
++    # Parça 1'in commit edilmiş partisi hayatta kalır.
+     async with AsyncSessionLocal() as db:
+-        rows = (await db.execute(select(Message).where(Message.conversation_id == conv_id))).scalars().all()
++        rows = (await db.execute(
++            select(Message).where(Message.conversation_id == conv_a.id)
++        )).scalars().all()
+         assert [r.wa_message_id for r in rows] == [wa1], "chunk 1 data must survive the partial failure"
+-    # Resume (retry): provider replays chunk 1 + 2 (dedup) — no duplication.
+-    job = await run_bulk_sync(jid_by_conv, [bulk_page([gm(wa1, "chunk one"), gm(wa2, "chunk two")], total=2)])
++
++    # Resume (retry): parça 1 tekrar oynatılır (dedup) + parça 2 gelir.
++    job = await run_bulk_sync(
++        jid_by_conv,
++        [
++            bulk_page([gm(jid_a, wa1, "chunk one")], total=1),
++            bulk_page([gm(jid_b, wa2, "chunk two")], total=1),
++        ],
++    )
+     assert job.messages_synced == 1, "retry must insert only the missing chunk-2 message"
+     async with AsyncSessionLocal() as db:
+-        rows = (await db.execute(select(Message).where(Message.conversation_id == conv_id))).scalars().all()
++        rows = (await db.execute(
++            select(Message).where(Message.conversation_id.in_([conv_a.id, conv_b.id]))
++        )).scalars().all()
+         assert sorted(r.wa_message_id for r in rows) == sorted([wa1, wa2]), "resume without duplicates"
+ 
+ 
+diff --git a/whatsapp-gateway/scripts/test-tz428-initial-sync-front-trim.mjs b/whatsapp-gateway/scripts/test-tz428-initial-sync-front-trim.mjs
+new file mode 100644
+index 0000000..ff12e90
+--- /dev/null
++++ b/whatsapp-gateway/scripts/test-tz428-initial-sync-front-trim.mjs
+@@ -0,0 +1,300 @@
++// AŞAMA 4.28 — Initial sync front-trim kanıtı (GERÇEK gateway kodu).
++//
++// AMAÇ
++// ----
++// `sync.py` initial sync'i `offset` + `perChatLimit=50` ile sayfalar. Gateway
++// `perChatLimit` kırpmasını HER İSTEKTE yeniden uygular (`slice(-N)`), sonra
++// id'ye göre sıralayıp `[offset, offset+limit)` dilimini döner. Sayfalar
++// arasında bir sohbete yeni mesaj gelirse o sohbetin penceresi ilerler, global
++// dizi SOLA kayar ve `offset` bir kaydı ATLAR.
++//
++// Bu dosya iki stratejiyi AYNI gerçek `listAllMessages` üzerinde karşılaştırır:
++//   (A) MEVCUT  : tek jids=null, offset 0..total, perChatLimit=50
++//   (B) ÖNERİLEN: jids'i `floor(limit/perChatLimit)` büyüklüğünde parçala;
++//                 her istek TEK SAYFA (total <= limit) → offset kayması yok.
++//
++// DEĞİŞMEZ (test edilen): "son 50" penceresi okuma anında hesaplanır. Bu yüzden
++// bir sohbetin parçası okunduktan SONRA gelen mesaj meşru biçimde kapsam dışıdır.
++// İhlal = pencerede olan ve HİÇ okunmamış bir kaydın imleç yüzünden atlanması.
++import assert from 'node:assert/strict';
++import os from 'node:os';
++import path from 'node:path';
++import { createSessionManager } from '../src/session-manager.js';
++import {
++  stampMessageSeq,
++  trimChatMessages,
++  boundMessagesByChat,
++} from '../src/messages/message-store.js';
++
++const SILENT = { warn() {}, info() {}, debug() {}, error() {} };
++const silence = (store) => { store.logger = SILENT; return store; };
++
++let passed = 0;
++const check = (label, fn) => {
++  try {
++    fn();
++  } catch (err) {
++    console.error(`  FAIL - ${label}`);
++    throw err;
++  }
++  passed += 1;
++  console.log(`  ok - ${label}`);
++};
++
++const BASE = Date.UTC(2026, 9, 21, 9, 0, 0);
++const chatKey = (n) => `9055522${String(n).padStart(5, '0')}@s.whatsapp.net`;
++
++function record(id, key) {
++  return {
++    conversation_id: key,
++    wa_message_id: `wamid_i_${key.slice(0, 10)}_${id}`,
++    body: `m${id}`,
++    created_at: new Date(id).toISOString(),
++    id,
++    direction: 'INBOUND',
++  };
++}
++
++function ingest(store, key, rec) {
++  if (!store.messagesByChat.has(key)) store.messagesByChat.set(key, []);
++  const list = store.messagesByChat.get(key);
++  list.push(stampMessageSeq(store, rec));
++  trimChatMessages(store, key, list);
++  boundMessagesByChat(store, key);
++  return rec;
++}
++
++function makeManager(tag) {
++  const manager = createSessionManager({
++    sessionsDir: path.join(os.tmpdir(), `tz428-${tag}-sessions`),
++    mediaDir: path.join(os.tmpdir(), `tz428-${tag}-media`),
++    aesKey: '0'.repeat(64),
++    backendWsUrl: '',
++  });
++  const originalStoreOf = manager._storeOf.bind(manager);
++  manager._storeOf = (session) => silence(originalStoreOf(session));
++  return manager;
++}
++
++// Üretimle AYNI ORAN: page_size=100, perChatLimit=50 → parça=2.
++// (Üretimde 1000/50 = 20 sohbet; yapı birebir, yalnız ölçek küçük.)
++const PAGE_SIZE = 100;
++const PER_CHAT = 50;
++const CHUNK = Math.floor(PAGE_SIZE / PER_CHAT);
++const CHATS = 5;
++const PER_CHAT_TOTAL = 60; // 60 yazılır; okuma anında son 50'ye kırpılır
++const LATE_ID = BASE + 999999;
++
++function seed(sm, sid) {
++  const store = sm._storeOf(sm.getSession(sid));
++  const keys = Array.from({ length: CHATS }, (_, c) => chatKey(c));
++  // Id'ler sohbetler arasında İÇ İÇE: id = BASE + (i*10 + c).
++  for (let i = 0; i < PER_CHAT_TOTAL; i += 1) {
++    for (let c = 0; c < CHATS; c += 1) {
++      ingest(store, keys[c], record(BASE + i * 10 + c, keys[c]));
++    }
++  }
++  return { store, keys };
++}
++
++// Okuma anındaki "son N" penceresi (gateway'in uyguladığı kuralın aynısı).
++function windowOf(store, perChat) {
++  const out = new Set();
++  for (const list of store.messagesByChat.values()) {
++    const sorted = [...list].sort((a, b) => (a.id || 0) - (b.id || 0));
++    for (const m of sorted.slice(-perChat)) out.add(m.wa_message_id);
++  }
++  return out;
++}
++
++// ---------------------------------------------------------------------------
++// A. MEVCUT STRATEJİ — offset sayfalama, sayfalar arasında yeni mesaj
++// ---------------------------------------------------------------------------
++function runOffsetStrategy(sm, sid, keys) {
++  const collected = [];
++  let offset = 0;
++  let pages = 0;
++  let first = true;
++  for (;;) {
++    const page = sm.listAllMessages(sid, {
++      limit: PAGE_SIZE,
++      offset,
++      perChatLimit: PER_CHAT,
++    });
++    pages += 1;
++    const msgs = page.messages;
++    if (!msgs.length) break;
++    collected.push(...msgs.map((m) => m.wa_message_id));
++    if (first) {
++      first = false;
++      // Sayfa 1 ile 2 arasında canlı trafik: chat0 penceresi ilerler,
++      // en eski kaydı düşer, global dizi SOLA kayar.
++      ingest(sm._storeOf(sm.getSession(sid)), keys[0], record(LATE_ID, keys[0]));
++    }
++    offset += msgs.length;
++    if (offset >= page.total) break;
++    if (pages > 50) break;
++  }
++  return { collected, pages };
++}
++
++// ---------------------------------------------------------------------------
++// B. ÖNERİLEN STRATEJİ — jids parçalama; her istek tek sayfa
++// ---------------------------------------------------------------------------
++function runChunkedStrategy(sm, sid, keys) {
++  const collected = [];
++  let pages = 0;
++  let first = true;
++  for (let i = 0; i < keys.length; i += CHUNK) {
++    const jids = keys.slice(i, i + CHUNK);
++    const page = sm.listAllMessages(sid, {
++      limit: PAGE_SIZE,
++      offset: 0,
++      perChatLimit: PER_CHAT,
++      jids,
++    });
++    pages += 1;
++    const msgs = page.messages;
++    assert.ok(
++      msgs.length >= page.total,
++      `parça TEK sayfada bitmeliydi: len=${msgs.length} total=${page.total}`,
++    );
++    collected.push(...msgs.map((m) => m.wa_message_id));
++    if (first) {
++      first = false;
++      ingest(sm._storeOf(sm.getSession(sid)), keys[0], record(LATE_ID, keys[0]));
++    }
++  }
++  return { collected, pages };
++}
++
++const lateId = (keys) => record(LATE_ID, keys[0]).wa_message_id;
++
++// ===========================================================================
++// 1. A stratejisi: front-trim sayfa sınırında kayıt ATLAR
++// ===========================================================================
++{
++  const sm = makeManager('offset');
++  const sid = (await sm.createSession('tz428-offset', { autoStart: false })).id;
++  const { store, keys } = seed(sm, sid);
++
++  assert.equal(
++    [...store.messagesByChat.values()].reduce((n, l) => n + l.length, 0),
++    CHATS * PER_CHAT_TOTAL,
++    'depo 5x60 olmalı',
++  );
++
++  const { collected, pages } = runOffsetStrategy(sm, sid, keys);
++  const got = new Set(collected);
++  const win = windowOf(store, PER_CHAT);
++  const late = lateId(keys);
++  // Pencerede olup HİÇ okunmayanlar; geç gelen mesaj meşru istisna.
++  const missed = [...win].filter((id) => !got.has(id));
++  const genuineSkips = missed.filter((id) => id !== late);
++
++  console.log(
++    `    [A offset] pages=${pages} delivered=${got.size} window=${win.size} missed=${missed.length} genuine=${genuineSkips.length}`,
++  );
++
++  check('A. offset stratejisi penceredeki bir kaydı sessizce atlar', () => {
++    assert.ok(
++      genuineSkips.length >= 1,
++      `offset kayıt atlamalıydı (delivered=${got.size}, window=${win.size})`,
++    );
++  });
++
++  check('A. atlanan kayıt depoda HÂLÂ duruyor (silme değil, atlama)', () => {
++    for (const id of genuineSkips) {
++      const present = [...store.messagesByChat.values()].some((l) =>
++        l.some((m) => m.wa_message_id === id),
++      );
++      assert.ok(present, 'atlanan kayıt depoda bulunmalı');
++    }
++  });
++}
++
++// ===========================================================================
++// 2. B stratejisi: parçalı tek-sayfa — HİÇ kayıt atlamaz
++// ===========================================================================
++{
++  const sm = makeManager('chunked');
++  const sid = (await sm.createSession('tz428-chunked', { autoStart: false })).id;
++  const { store, keys } = seed(sm, sid);
++
++  const { collected, pages } = runChunkedStrategy(sm, sid, keys);
++  const got = new Set(collected);
++  const win = windowOf(store, PER_CHAT);
++  const late = lateId(keys);
++  const missed = [...win].filter((id) => !got.has(id));
++  const genuineSkips = missed.filter((id) => id !== late);
++
++  console.log(
++    `    [B chunked] pages=${pages} delivered=${got.size} window=${win.size} missed=${missed.length} genuine=${genuineSkips.length}`,
++  );
++
++  check('B. parçalı strateji hiçbir penceredeki kaydı atlamaz', () => {
++    assert.deepEqual(
++      genuineSkips,
++      [],
++      `atlanan kayıt olmamalı, missed=${genuineSkips.length}`,
++    );
++  });
++
++  check('B. tek "kayıp" yalnızca geç gelen mesajdır (meşru snapshot davranışı)', () => {
++    assert.deepEqual(missed, [late], 'tek eksik geç gelen mesaj olmalı');
++  });
++
++  check('B. sohbet başına 50 sınırı KORUNUR', () => {
++    assert.equal(got.size, CHATS * PER_CHAT, 'her sohbetten 50 kayıt gelmeli');
++  });
++}
++
++// ===========================================================================
++// 3. İstek sayısı: parçalama latency REGRESYONU üretmez
++// ===========================================================================
++{
++  const smA = makeManager('count-a');
++  const sidA = (await smA.createSession('tz428-count-a', { autoStart: false })).id;
++  const a = seed(smA, sidA);
++  const aPages = runOffsetStrategy(smA, sidA, a.keys).pages;
++
++  const smB = makeManager('count-b');
++  const sidB = (await smB.createSession('tz428-count-b', { autoStart: false })).id;
++  const b = seed(smB, sidB);
++  const bPages = runChunkedStrategy(smB, sidB, b.keys).pages;
++
++  console.log(`    [C istek] offset_pages=${aPages} chunked_pages=${bPages}`);
++  check('C. parçalı strateji istek sayısını ARTIRMAZ', () => {
++    assert.ok(
++      bPages <= aPages,
++      `parçalı ${bPages} istek, offset ${aPages} istek — regresyon`,
++    );
++  });
++}
++
++// ===========================================================================
++// 4. Boş sohbet / kısmi sayfa dayanıklılığı
++// ===========================================================================
++{
++  const sm = makeManager('edge');
++  const sid = (await sm.createSession('tz428-edge', { autoStart: false })).id;
++  const store = sm._storeOf(sm.getSession(sid));
++  const emptyKey = chatKey(90);
++  const shortKey = chatKey(91);
++  ingest(store, shortKey, record(BASE, shortKey)); // tek mesajlı sohbet
++  // emptyKey hiç yazılmadı → boş sohbet
++
++  check('D. boş sohbet parçayı bozmaz, kısa sohbet eksik dönmez', () => {
++    const page = sm.listAllMessages(sid, {
++      limit: PAGE_SIZE,
++      offset: 0,
++      perChatLimit: PER_CHAT,
++      jids: [emptyKey, shortKey],
++    });
++    assert.equal(page.messages.length, 1);
++    assert.equal(page.total, 1);
++    assert.ok(page.messages.length >= page.total, 'tek sayfa');
++  });
++}
++
++console.log(`\nInitial sync front-trim proof: PASS (${passed} checks)`);

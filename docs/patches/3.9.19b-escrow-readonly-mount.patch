@@ -1,0 +1,25 @@
+--- a/docker-compose.prod.yml
++++ b/docker-compose.prod.yml
+@@ -70,6 +70,22 @@
+       - /opt/tezlify/runtime:/opt/tezlify/runtime:ro
+       - /opt/tezlify/backups:/opt/tezlify/backups:rw
+       - /opt/tezlify/monitoring:/opt/tezlify/monitoring:ro
++      # Encryption Key Escrow paneli (Asama 3.9.19-B). SALT OKUNUR.
++      #
++      # NEDEN GEREKLI: `.key-escrow-v2` /var/backups/tezlify-ram altinda duruyor ve
++      # backend konteynerine hicbir compose dosyasinda baglanmiyor; panel dosyayi
++      # goremedigi icin durustce "ERISILEMIYOR" durumunda kaliyor.
++      #
++      # NEDEN `:ro`: bu servis anahtari yalnizca OKUR. Yazma yetkisi, bir hatanin
++      # escrow'u bozmasinin onunu acardi; `ro` bunu cerceve seviyesinde imkansiz
++      # kilar. Dosya (0600) ve dizin (0700) izinleri DEGISMEZ: bind mount inode'un
++      # kendi mod bitlerini tasir (ayni hosttaki /opt/tezlify/monitoring:ro ile
++      # olculdu: host 775/1001 = konteyner 775/1001).
++      #
++      # NEDEN DIZIN, TEK DOSYA DEGIL: tek dosya baglamak inode'a sabitlenir;
++      # escrow yeniden yazildiginda (yeni inode) mount ESKI dosyayi gostermeye
++      # devam eder. Dizin baglamak bu sessiz tuzagi onler.
++      - /var/backups/tezlify-ram:/var/backups/tezlify-ram:ro
+       - /run:/host/run:ro
+       # Operations Center: the docker CLI talks to the host daemon through this
+       # socket to run ALLOWLISTED `docker compose` operations (restart / deploy)

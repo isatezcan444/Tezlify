@@ -1,0 +1,54 @@
+diff --git a/backend/app/services/whatsapp/memory_persistence.py b/backend/app/services/whatsapp/memory_persistence.py
+index e12c030..447fc3b 100644
+--- a/backend/app/services/whatsapp/memory_persistence.py
++++ b/backend/app/services/whatsapp/memory_persistence.py
+@@ -440,6 +440,16 @@ async def drain_gateway_memory_once(
+                 _STATE["epoch_resets_total"] = (
+                     int(_STATE.get("epoch_resets_total") or 0) + 1
+                 )
++                # AŞAMA 4.27 (P1): epoch değiştiyse gateway bu turu SIFIRDAN
++                # taradı. İmleç de sıfırlanmazsa aşağıdaki ilerleme muhafızı
++                # (`next_after <= after_seq`) ESKİ epoch'un değeriyle
++                # karşılaştırma yapar; yeni depo eski imleçten küçükse
++                # `next_after` her zaman küçük çıkar ve tur SAHTE bir
++                # `PaginationStalled` ile biter. O durumda imleç, YENİ epoch
++                # ile ESKİ değeri birlikte kaydedilir — yani tutarsız bir
++                # (epoch, after_seq) çifti. Yerel imleci gateway'in gerçekten
++                # kullandığı değere (0) çekmek bunu kökten kapatır.
++                after_seq = 0
+         else:
+             if mode == "seq":
+                 # İlk sayfa seq beklentisiyle çağrıldı ama gateway offset
+
+# --- regression test: backend/tests/test_whatsapp_pagination_contract.py sonuna eklenir ---
+
+@pytest.mark.asyncio
+async def test_tz427_epoch_reset_must_not_be_reported_as_a_stall():
+    """Epoch degisti: imlec YENI epoch'un degerine ilerlemeli, sahte stall olmamali."""
+    gw_id = f"gw-{_uuid.uuid4().hex}"
+    sid = await make_line(gw_id)
+    jid = jid_of("700009")
+    conv = await make_conversation(jid, sid)
+
+    items = [
+        {"msg": gw_msg(jid, f"R{i}", BASE + timedelta(minutes=i)), "seq": i + 1}
+        for i in range(5)
+    ]
+    gateway = SeqGateway(items, epoch="ep-2")
+
+    stats = await drain(
+        gateway,
+        gw_id,
+        session_db_id=sid,
+        page_size=2,
+        max_pages=1,          # tur sonuna ULASMADAN dur
+        start_after_seq=99,   # eski epoch imleci
+        start_epoch="ep-1",   # eski epoch
+    )
+
+    print("PROBE_STATS", stats)
+    assert stats.get("error") is None, f"epoch reset yanlis stall uretti: {stats}"
+    assert stats["epoch_reset"] is True, stats
+    # Sayfa seq 1..2 dondu; imlec 2 olmali — 99 DEGIL.
+    assert stats["next_after_seq"] == 2, f"imlec yeni epoch degeri olmali: {stats}"
+    assert await ids_of(conv) == ["R0", "R1"]

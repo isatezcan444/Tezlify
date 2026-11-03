@@ -1,0 +1,43 @@
+diff --git a/backend/tests/test_whatsapp_pagination_contract.py b/backend/tests/test_whatsapp_pagination_contract.py
+index bab8dec..4cf8a1c 100644
+--- a/backend/tests/test_whatsapp_pagination_contract.py
++++ b/backend/tests/test_whatsapp_pagination_contract.py
+@@ -543,3 +543,38 @@ def test_health_payload_never_leaks_a_gateway_uuid():
+     assert status["consecutive_page_errors"] == 3
+     assert status["last_error"] == "IntegrityError(23505)"
+     mp.reset_memory_persistence_state()
++
++
++# ---------------------------------------------------------------------------
++# TZ427 PROBE — epoch reset sonrası "stall" yanlış alarmı
++# ---------------------------------------------------------------------------
++@pytest.mark.asyncio
++async def test_tz427_epoch_reset_must_not_be_reported_as_a_stall():
++    """Epoch degisti: imlec YENI epoch'un degerine ilerlemeli, sahte stall olmamali."""
++    gw_id = f"gw-{_uuid.uuid4().hex}"
++    sid = await make_line(gw_id)
++    jid = jid_of("700009")
++    conv = await make_conversation(jid, sid)
++
++    items = [
++        {"msg": gw_msg(jid, f"R{i}", BASE + timedelta(minutes=i)), "seq": i + 1}
++        for i in range(5)
++    ]
++    gateway = SeqGateway(items, epoch="ep-2")
++
++    stats = await drain(
++        gateway,
++        gw_id,
++        session_db_id=sid,
++        page_size=2,
++        max_pages=1,          # tur sonuna ULASMADAN dur
++        start_after_seq=99,   # eski epoch imleci
++        start_epoch="ep-1",   # eski epoch
++    )
++
++    print("PROBE_STATS", stats)
++    assert stats.get("error") is None, f"epoch reset yanlis stall uretti: {stats}"
++    assert stats["epoch_reset"] is True, stats
++    # Sayfa seq 1..2 dondu; imlec 2 olmali — 99 DEGIL.
++    assert stats["next_after_seq"] == 2, f"imlec yeni epoch degeri olmali: {stats}"
++    assert await ids_of(conv) == ["R0", "R1"]
