@@ -190,7 +190,7 @@ Branch silme yalnızca "tüm benzersiz işler main'de" kanıtından sonra yapıl
 
 - Bu aşamada sunucuya hiçbir komut gönderilmedi; deploy script'i çalıştırılmadı.
 - Üretim, önceki fazda doğrulanan **`e34e3ff`** sürümünde kalmaya devam ediyor.
-- `e34e3ff..main` farkı: **67 commit, 184 dosya, +53.979 / −281**.
+- `e34e3ff..main` farkı (**`4592b45` itibarıyla, rapor commit'i hariç**): **67 commit, 184 dosya, +53.979 / −281**. Rapor commit'i eklendiğinde fark bir commit/dosya artar.
 - Delta içeriği ağırlıklı olarak: `docs/audits` (76), `reports` (17), backend testleri (13), gateway testleri (10), `.workbuddy-ai/memory` (9), backup/systemd scriptleri, gateway media kodu ve backend servisleri.
 - Migration dosyası yok; canlı şema değişikliği gerektirmiyor.
 - Deploy, ayrı bir onay/brief gerektirir.
