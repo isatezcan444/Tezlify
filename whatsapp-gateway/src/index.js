@@ -212,6 +212,10 @@ app.get('/health', async (_req, res) => {
     live_session_ids: liveSessions
       .filter((s) => s.status === 'CONNECTED')
       .map((s) => s.id),
+    // RAM kapasitesi ve eviction görünürlüğü (P2-1). Bu blok EK'tir: mevcut
+    // alanların hiçbiri değişmedi, yalnızca yeni bir anahtar eklendi.
+    // Mesaj kimliği / gövdesi / telefon numarası YOKTUR — yalnızca sayımlar.
+    capacity: sessionManager.ramCapacitySummary(),
   });
 });
 
@@ -562,7 +566,7 @@ app.post('/sessions/:sessionId/resync-app-state', withSession(async (req, res, s
 // Sorun 1: `perChatLimit` verildiginde her sohbet icin yalnizca en yeni N mesaj
 // dondurulur — ilk senkronun maliyetini sinirlar; gecmis lazy hydration ile gelir.
 app.get('/sessions/:sessionId/messages/bulk', withSession(async (req, res, sessionId) => {
-  const { limit, offset, since, perChatLimit, jids } = req.query;
+  const { limit, offset, since, perChatLimit, jids, afterSeq, seqEpoch } = req.query;
   res.json(sessionManager.listAllMessages(sessionId, {
     limit: limit ? parseInt(limit, 10) : 1000,
     offset: offset ? parseInt(offset, 10) : 0,
@@ -573,6 +577,13 @@ app.get('/sessions/:sessionId/messages/bulk', withSession(async (req, res, sessi
     // yalnizca bu jid'ler sorulur (virgulle ayrilmis). Bos/verilmemis →
     // davranis degismez (tum sohbetler).
     jids: jids !== undefined && jids !== '' ? String(jids).split(',').filter(Boolean) : null,
+    // Sabit (keyset) sayfalama: `afterSeq` bir KONUM değil, ekleme anında
+    // atanmış benzersiz bir sıra DEĞERİdir. Liste başından eviction olduğunda
+    // kaymaz; `seqEpoch` süreç yeniden kurulduğunda imlecin sıfırlanmasını
+    // sağlar. İki parametre de opsiyoneldir — verilmezse eski `offset`
+    // davranışı AYNEN korunur.
+    afterSeq: afterSeq !== undefined && afterSeq !== '' ? parseInt(afterSeq, 10) : null,
+    seqEpoch: seqEpoch !== undefined && seqEpoch !== '' ? String(seqEpoch) : null,
   }));
 }));
 

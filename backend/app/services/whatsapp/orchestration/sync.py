@@ -155,8 +155,30 @@ def _normalize_message_insert_values(item: Any, now: Any) -> Dict[str, Any]:
     return val_dict
 
 
-async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> List[Message]:
-    """Insert message rows, surviving `uq_msg_conv_wa_message_id` races."""
+async def _insert_messages_resilient(
+    db: AsyncSession,
+    rows: List[Message],
+    *,
+    dead_letter: Optional[Dict[str, Any]] = None,
+) -> List[Message]:
+    """Insert message rows, surviving `uq_msg_conv_wa_message_id` races.
+
+    P0-2: PostgreSQL tek bir `ON CONFLICT` arbiter'e izin verir. `wa_message_id`
+    arbiter'iyle `DO NOTHING` yapıldığında, `client_message_id` çakışması olan
+    bir satır BÜTÜN sayfayı öldürür (IntegrityError → tüm 500 satır geri alınır).
+
+    Çözüm: bulk INSERT'i bir SAVEPOINT (`begin_nested`) içinde çalıştır.
+    Hata gelirse savepoint otomatik geri alınır ve dış transaction sağlam kalır.
+    Ardından satır satır izole edilir: her satır kendi SAVEPOINT'inde denenir,
+    başarılı olanlar yazılır, başarısız olanlar `dead_letter` sayacına eklenir.
+
+    Hızlı yol (happy path): hala tek bulk INSERT — yalnızca hata durumunda
+    satır satır düşer. Performans cezası yalnızca zehirli sayfalarda ödenir.
+
+    Hassas veri sınırı: log'da `wa_message_id`, `client_message_id`, gövde,
+    telefon numarası ve JID YOKTUR. Yalnızca kısıt adı (`constraint`) ve
+    `conversation_id` (dahili DB tamsayısı, PII değil) yayınlanır.
+    """
     if not rows:
         return []
     bind = db.get_bind()
@@ -176,17 +198,31 @@ async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> L
             )
             .returning(Message)
         )
-        res = await db.scalars(stmt)
-        inserted = list(res.all())
-        duplicates = len(rows) - len(inserted)
-        if duplicates:
-            logger.info(
-                "Sync inserted %d message(s); %d duplicate(s) lost a concurrent race "
-                "and were ignored.",
-                len(inserted), duplicates,
+        try:
+            async with db.begin_nested():
+                res = await db.scalars(stmt)
+                inserted = list(res.all())
+            duplicates = len(rows) - len(inserted)
+            if duplicates:
+                logger.info(
+                    "Sync inserted %d message(s); %d duplicate(s) lost a concurrent race "
+                    "and were ignored.",
+                    len(inserted), duplicates,
+                )
+            return inserted
+        except IntegrityError as exc:
+            # Non-arbiter unique constraint (örn. client_message_id) veya
+            # başka bir kısıt ihlali: bütün sayfa öldü. İzole et.
+            logger.warning(
+                "Bulk message insert failed on a non-arbiter unique constraint "
+                "(constraint=%s); isolating %d row(s) one-by-one.",
+                _integrity_constraint_name(exc), len(values),
             )
-        return inserted
+            return await _insert_messages_one_by_one(
+                db, ins_cls, values, dead_letter=dead_letter
+            )
 
+    # Fallback dialect: satır satır zaten.
     inserted: List[Message] = []
     duplicates = 0
     for row in rows:
@@ -197,6 +233,8 @@ async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> L
             inserted.append(row)
         except IntegrityError:
             duplicates += 1
+            if dead_letter is not None:
+                dead_letter["count"] = int(dead_letter.get("count", 0)) + 1
             logger.info(
                 "Duplicate WhatsApp message ignored during sync: "
                 "conversation_id=%s wa_message_id=%s",
@@ -209,6 +247,90 @@ async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> L
             len(inserted), duplicates,
         )
     return inserted
+
+
+async def _insert_messages_one_by_one(
+    db: AsyncSession,
+    ins_cls: Any,
+    values: List[Dict[str, Any]],
+    *,
+    dead_letter: Optional[Dict[str, Any]] = None,
+) -> List[Message]:
+    """Satır satır SAVEPOINT ile INSERT; başarısız olanları sayar, geçerli olanları yazar."""
+    inserted: List[Message] = []
+    for val in values:
+        try:
+            async with db.begin_nested():
+                stmt = (
+                    ins_cls(Message)
+                    .values([val])
+                    .on_conflict_do_nothing(
+                        index_elements=["conversation_id", "wa_message_id"],
+                        index_where=text("wa_message_id IS NOT NULL"),
+                    )
+                    .returning(Message)
+                )
+                res = await db.scalars(stmt)
+                got = list(res.all())
+            inserted.extend(got)
+            if not got:
+                # Arbiter çakışması (muhtemelen wa_message_id): idempotent,
+                # dead_letter değil.
+                pass
+        except IntegrityError as exc:
+            if dead_letter is not None:
+                dead_letter["count"] = int(dead_letter.get("count", 0)) + 1
+                constraint = _integrity_constraint_name(exc)
+                dead_letter["constraint"] = constraint
+                logger.warning(
+                    "Message row rejected by unique constraint during isolation: "
+                    "constraint=%s",
+                    constraint,
+                )
+            else:
+                logger.warning(
+                    "Message row rejected by unique constraint during isolation."
+                )
+    return inserted
+
+
+def _integrity_constraint_name(exc: BaseException) -> Optional[str]:
+    """IntegrityError içinden kısıt adını çıkarır (PII içermez).
+
+    DİKKAT — asyncpg'de `orig.diag` BOŞTUR. SQLAlchemy'nin asyncpg sarmalayıcısı
+    (`AsyncAdapt_asyncpg_dbapi.IntegrityError`) gerçek `asyncpg` istisnasını
+    `orig.__cause__` altında tutar; `diag.constraint_name` oradadır. Yalnızca
+    `orig`e bakmak, kısıt ADI yerine SQLSTATE'i (`23505`) döndürür — alan
+    "constraint" olarak adlandırıldığı için bu sessizce yanlış teşhis üretir:
+    operatör `/health`te `dead_letter_last_constraint=23505` görür ve hangi
+    indeksin çakıştığını asla öğrenemez.
+
+    Bu yüzden adaylar sırayla denenir: `orig`, `orig.__cause__`, `exc.__cause__`.
+    Hiçbiri ad vermezse SQLSTATE döner (eski davranış korunur).
+    """
+    orig = getattr(exc, "orig", None)
+    candidates = (
+        orig,
+        getattr(orig, "__cause__", None),
+        getattr(exc, "__cause__", None),
+    )
+    for cand in candidates:
+        if cand is None:
+            continue
+        diag = getattr(cand, "diag", None)
+        if diag:
+            name = getattr(diag, "constraint_name", None)
+            if name:
+                return str(name)
+        name = getattr(cand, "constraint_name", None)
+        if name:
+            return str(name)
+    # Son çare: SQLSTATE / pgcode. Ad yoksa yalan söyleme, kodu ver.
+    for attr in ("constraint_name", "pgcode", "sqlstate"):
+        val = getattr(orig, attr, None) or getattr(exc, attr, None)
+        if val:
+            return str(val)
+    return None
 
 
 async def _persist_sync_batch_safely(

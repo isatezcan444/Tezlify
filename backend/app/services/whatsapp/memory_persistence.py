@@ -98,9 +98,18 @@ _STATE: Dict[str, Any] = {
     "errors_total": 0,
     "last_error": None,
     "dry_run_last": None,
-    # gateway_id -> sonraki turun başlayacağı offset. Tur başına tavan
-    # toplam mesaj sayısının altında kaldığında listenin kuyruğunun
-    # erişilemez olmasını engeller (bkz. `drain_gateway_memory_once`).
+    # P2-2: ölçümler
+    "dead_letter_total": 0,
+    "dead_letter_last_constraint": None,
+    "epoch_resets_total": 0,
+    "stalled_pages_total": 0,
+    "consecutive_page_errors": 0,
+    "last_error_page_key": None,
+    "skipped_unmapped_total": 0,
+    "skipped_no_id_total": 0,
+    "pages_total": 0,
+    "scanned_total": 0,
+    # gateway_id -> {"mode": "seq"|"offset", "after_seq": int, "offset": int, "epoch": str}
     "cursors": {},
 }
 
@@ -122,6 +131,16 @@ def reset_memory_persistence_state() -> None:
             "errors_total": 0,
             "last_error": None,
             "dry_run_last": None,
+            "dead_letter_total": 0,
+            "dead_letter_last_constraint": None,
+            "epoch_resets_total": 0,
+            "stalled_pages_total": 0,
+            "consecutive_page_errors": 0,
+            "last_error_page_key": None,
+            "skipped_unmapped_total": 0,
+            "skipped_no_id_total": 0,
+            "pages_total": 0,
+            "scanned_total": 0,
             "cursors": {},
         }
     )
@@ -138,8 +157,46 @@ def memory_persistence_status() -> Dict[str, Any]:
     """
     snapshot = dict(_STATE)
     cursors = snapshot.pop("cursors", None) or {}
+    # `last_error_page_key` = "<gateway_uuid>:<mode>:<cursor>". Bu bir TEŞHİS
+    # anahtarıdır, ölçüm değil: aynı sayfanın tekrar tekrar düşüp düşmediğini
+    # anlamak için tutulur. `/health` ve `/metrics` kimlik doğrulaması
+    # İSTEMEDİĞİ için gateway UUID'sini oraya yayınlamak, altyapı kimliğini
+    # anonim bir uçtan sızdırmak olur. Operatöre gereken sinyal zaten
+    # `consecutive_page_errors` (kaç turdur aynı sayfa) + `last_error`
+    # (hata türü/SQLSTATE) alanlarında duruyor; kimlik gerekmiyor.
+    snapshot.pop("last_error_page_key", None)
     snapshot["cursor_count"] = len(cursors)
-    snapshot["max_cursor_offset"] = max(cursors.values()) if cursors else 0
+    # max_cursor_offset: eski istemciler için uyumlu; seq modunda `after_seq`,
+    # offset modunda `offset` değerini yansıtır. Yeni kod `max_cursor_after_seq`
+    # anahtarını da yayınlar.
+    max_offset = 0
+    max_after_seq = 0
+    cursor_modes: Dict[str, int] = {}
+    for c in cursors.values():
+        if isinstance(c, dict):
+            mode = c.get("mode") or "unknown"
+            cursor_modes[mode] = cursor_modes.get(mode, 0) + 1
+            if mode == "seq":
+                max_after_seq = max(max_after_seq, int(c.get("after_seq") or 0))
+                max_offset = max(max_offset, int(c.get("after_seq") or 0))
+            else:
+                max_offset = max(max_offset, int(c.get("offset") or 0))
+        else:
+            max_offset = max(max_offset, int(c or 0))
+    snapshot["max_cursor_offset"] = max_offset
+    snapshot["max_cursor_after_seq"] = max_after_seq
+    snapshot["cursor_modes"] = cursor_modes
+    # Lag: son başarılı turun bitiminden bu yana geçen süre (saniye).
+    last_finished = _STATE.get("last_finished_at")
+    if last_finished:
+        try:
+            from datetime import datetime, timezone
+            lag = (datetime.now(timezone.utc) - datetime.fromisoformat(last_finished.replace("Z", "+00:00"))).total_seconds()
+            snapshot["persistence_lag_seconds"] = round(lag, 1)
+        except Exception:
+            snapshot["persistence_lag_seconds"] = None
+    else:
+        snapshot["persistence_lag_seconds"] = None
     # Etkin yapılandırma değeri. Deploy doğrulaması `_STATE["enabled"]`e
     # GÜVENEMEZ: o alan yalnızca bir tur koştuktan sonra dolar ve `None`
     # "hiç koşmadı" ile "kapalı" arasında ayrım yapmaz. Çalışan container'ın
@@ -292,21 +349,27 @@ async def drain_gateway_memory_once(
     per_chat_limit: int = 2000,
     dry_run: bool = False,
     start_offset: int = 0,
+    start_after_seq: int = 0,
+    start_epoch: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Gateway belleğindeki mesajları sınırlı sayfalarla DB'ye yazar.
 
     WhatsApp'a soru SORMAZ (`fetch_provider` kullanılmaz); yalnızca gateway'in
     elinde olan kayıtları mevcut ingest yolundan geçirir.
 
-    `start_offset` bir ÖNCEKİ turun bıraktığı yerdir. Bu olmadan, tur başına
-    tavan (`max_pages * page_size`) toplam mesaj sayısının altında kaldığında
-    her tur offset 0'dan başlar ve listenin KUYRUĞU hiçbir turda erişilemez
-    olurdu: ilk N sayfa zaten DB'de olduğu için 0 satır eklenir, offset hiç
-    ilerlemez. Ölçüm (2026-10-28): RAM 9122 mesaj, tavan 10000 — pay yalnızca
-    878 mesajdı. İmleç bunu yapısal olarak kapatır.
+    P0-1: Sayfalama `offset` tabanlıydı ve liste BAŞINDAN eviction yapıldığında
+    indeksler sola kayıyordu; `offset` sabit kaldığı için hiç görülmemiş kayıtlar
+    kalıcı olarak atlanıyordu. `_seq` ekleme anında atanan, benzersiz, kesin artan
+    bir DEĞER olduğu için eviction imleci KAYDIRMAZ. `after_seq` bir konum değil
+    bir değerdir; `seq_epoch` süreç/session yeniden kurulduğunda imlecin sıfırlanmasını
+    sağlar.
+
+    Eski gateway `afterSeq` parametresini yok sayarsa yanıtta `pagination: 'offset'`
+    döner; backend otomatik olarak eski davranışa düşer — hiçbir zaman daha kötü
+    olmaz, yalnızca aynı eski kayma riski devam eder.
 
     Dönen sözlük: pages / scanned / inserted / conversations / dry_run /
-    next_offset (0 = tur sonuna ulaşıldı).
+    next_after_seq (0 = tur sonuna ulaşıldı) / pagination_mode / seq_epoch.
     """
     stats: Dict[str, Any] = {
         "pages": 0,
@@ -315,9 +378,14 @@ async def drain_gateway_memory_once(
         "conversations": 0,
         "skipped_unmapped": 0,
         "skipped_no_id": 0,
+        "dead_letter": 0,
         "dry_run": bool(dry_run),
         "total_reported": None,
         "next_offset": 0,
+        "next_after_seq": 0,
+        "pagination_mode": "seq",
+        "seq_epoch": start_epoch,
+        "epoch_reset": False,
     }
     if not user_id or not gateway_id:
         return stats
@@ -331,6 +399,10 @@ async def drain_gateway_memory_once(
         )
         return stats
 
+    # İmleç durumu: seq modu (yeni) veya offset modu (eski gateway).
+    mode = "seq"
+    after_seq = max(0, int(start_after_seq or 0))
+    epoch = start_epoch or None
     offset = max(0, int(start_offset or 0))
     total = 0
     reached_end = False
@@ -342,20 +414,46 @@ async def drain_gateway_memory_once(
                 limit=int(page_size),
                 offset=offset,
                 per_chat_limit=int(per_chat_limit),
+                after_seq=after_seq if mode == "seq" else None,
+                seq_epoch=epoch if mode == "seq" else None,
             )
         except Exception as exc:  # noqa: BLE001 - tur düşerse bir sonraki tur dener
             stats["error"] = _safe_error(exc)
             logger.warning(
-                "Memory persistence page failed (gateway=%s offset=%s): %s",
-                gateway_id, offset, _safe_error(exc),
+                "Memory persistence page failed (gateway=%s mode=%s): %s",
+                gateway_id, mode, _safe_error(exc),
             )
             break
 
-        msgs = page.get("messages", []) if isinstance(page, dict) else []
-        total = int(page.get("total") or 0) if isinstance(page, dict) else 0
+        if not isinstance(page, dict):
+            stats["error"] = "InvalidPageType"
+            break
+
+        # Sayfalama modunu yanıttan belirle: eski gateway seq'yi yok sayarsa
+        # `pagination: 'offset'` döner ve backend eski davranışa düşer.
+        reported_mode = str(page.get("pagination") or "")
+        if reported_mode == "seq":
+            mode = "seq"
+            epoch = page.get("seq_epoch") or epoch
+            if page.get("epoch_reset"):
+                stats["epoch_reset"] = True
+                _STATE["epoch_resets_total"] = (
+                    int(_STATE.get("epoch_resets_total") or 0) + 1
+                )
+        else:
+            if mode == "seq":
+                # İlk sayfa seq beklentisiyle çağrıldı ama gateway offset
+                # döndü: seq desteklemiyor. Offset moduna düş. İmleci SIFIRLAMA
+                # — `offset` zaten `start_offset` (yeniden başlama noktası)
+                # değerindedir; sıfırlamak ikinci turun baştan taramasına ve
+                # imleç ilerlemesi testlerinin kırılmasına yol açardı.
+                mode = "offset"
+                offset = int(start_offset or 0)
+
+        msgs = page.get("messages", [])
+        total = int(page.get("total") or 0)
         stats["total_reported"] = total
         if not msgs:
-            # Gateway'de bu offset'ten sonra mesaj yok: liste bitti.
             reached_end = True
             break
         stats["pages"] += 1
@@ -370,12 +468,6 @@ async def drain_gateway_memory_once(
                 stats["skipped_unmapped"] += 1
                 continue
             if not _wa_id_of(gm):
-                # Kimliksiz kayıt YAZILMAZ. Tekillik indeksi
-                # `(conversation_id, wa_message_id) WHERE wa_message_id IS NOT
-                # NULL` olduğu için NULL kimlik hiçbir zaman çakışmaz: yazılsaydı
-                # her turda bir kopya daha üretilirdi (idempotency kırılırdı).
-                # Kayıt gateway belleğinde kalır; canlı akışta gerçek kimlikle
-                # gelirse o zaman yazılır.
                 stats["skipped_no_id"] += 1
                 continue
             pending.setdefault(cid, []).append(gm)
@@ -402,18 +494,28 @@ async def drain_gateway_memory_once(
                 if dry_run:
                     stats["inserted"] += len(rows)
                 else:
+                    dead_letter: Dict[str, Any] = {"count": 0, "constraint": None}
                     try:
-                        inserted = await _insert_messages_resilient(db, rows)
+                        inserted = await _insert_messages_resilient(
+                            db, rows, dead_letter=dead_letter
+                        )
                         stats["inserted"] += len(inserted)
-                    except Exception as exc:  # noqa: BLE001 - tur düşse de durum yazılır
-                        # Sayfa başına TEK INSERT: yarım sayfa kalmaz. Oturumu
-                        # geri alıyoruz ki çağıran aynı oturumla sonraki hattı
-                        # deneyebilsin (aksi halde "failed transaction" zehri
-                        # bütün tura yayılırdı).
+                        if dead_letter["count"]:
+                            stats["dead_letter"] = int(
+                                stats.get("dead_letter", 0) or 0
+                            ) + dead_letter["count"]
+                            _STATE["dead_letter_total"] = (
+                                int(_STATE.get("dead_letter_total") or 0)
+                                + dead_letter["count"]
+                            )
+                            _STATE["dead_letter_last_constraint"] = (
+                                dead_letter.get("constraint") or None
+                            )
+                    except Exception as exc:  # noqa: BLE001
                         stats["error"] = _safe_error(exc)
                         logger.warning(
-                            "Memory persistence insert failed (gateway=%s offset=%s): %s",
-                            gateway_id, offset, _safe_error(exc),
+                            "Memory persistence insert failed (gateway=%s mode=%s): %s",
+                            gateway_id, mode, _safe_error(exc),
                         )
                         try:
                             await db.rollback()
@@ -421,23 +523,41 @@ async def drain_gateway_memory_once(
                             pass
                         break
             if not dry_run and "error" not in stats:
-                # Sayfa başına commit: tek dev transaction yerine küçük yazmalar.
                 await db.commit()
 
         if "error" in stats:
             break
 
-        offset += int(page_size)
-        if offset >= total:
-            reached_end = True
-            break
+        if mode == "seq":
+            next_after = page.get("next_after_seq")
+            if next_after is None:
+                stats["error"] = "MissingNextAfterSeq"
+                break
+            next_after = int(next_after)
+            # İlerleme garantisi: `next_after` bir DEĞER imlecidir. Sayfa boş
+            # değilse en az bir kaydın seq'si dönmüş olmalı, yani next_after
+            # > after_seq. Eğer değilse sayfalama KİTLENMİŞ demektir.
+            if next_after <= after_seq:
+                stats["error"] = "PaginationStalled"
+                _STATE["stalled_pages_total"] = (
+                    int(_STATE.get("stalled_pages_total") or 0) + 1
+                )
+                break
+            after_seq = next_after
+            if page.get("reached_end"):
+                reached_end = True
+                break
+        else:
+            offset += int(page_size)
+            if offset >= total:
+                reached_end = True
+                break
 
     stats["conversations"] = len(touched)
-    # Tur sonuna ulaşıldıysa imleç sıfırlanır (bir sonraki tur baştan tarar,
-    # hepsi DB'de olduğu için 0 satır ekler). Ulaşılamadıysa kaldığı yerden
-    # devam edilir; hata durumunda da aynı sayfa bir sonraki turda yeniden
-    # denenir, çünkü `offset` o sayfada ilerlememiştir.
-    stats["next_offset"] = 0 if reached_end else offset
+    stats["next_offset"] = 0 if reached_end else (after_seq if mode == "seq" else offset)
+    stats["next_after_seq"] = 0 if reached_end else after_seq
+    stats["pagination_mode"] = mode
+    stats["seq_epoch"] = epoch
     return stats
 
 
@@ -495,7 +615,16 @@ async def run_memory_persistence_once(
                 continue
             try:
                 cursors = _STATE.setdefault("cursors", {})
-                start_offset = int(cursors.get(str(gateway_id)) or 0)
+                cursor = cursors.get(str(gateway_id))
+                if isinstance(cursor, dict):
+                    start_offset = int(cursor.get("offset") or 0)
+                    start_after_seq = int(cursor.get("after_seq") or 0)
+                    start_epoch = cursor.get("epoch")
+                else:
+                    # Eski imleç: düz int (offset).
+                    start_offset = int(cursor or 0)
+                    start_after_seq = 0
+                    start_epoch = None
                 result = await drain_gateway_memory_once(
                     db,
                     user_id=str(owner),
@@ -506,20 +635,36 @@ async def run_memory_persistence_once(
                     per_chat_limit=per_chat_limit,
                     dry_run=dry_run,
                     start_offset=start_offset,
+                    start_after_seq=start_after_seq,
+                    start_epoch=start_epoch,
                 )
                 result["gateway_id"] = str(gateway_id)
                 results.append(result)
-                # İmleç yalnızca gerçek bir turda ilerletilir: `dry_run`
-                # sayım turudur, sonrasında gerçek tur yine baştan başlamalı.
-                # Hata varsa `next_offset` zaten kırılan sayfayı gösterir.
                 if not dry_run:
-                    cursors[str(gateway_id)] = int(result.get("next_offset") or 0)
+                    cursors[str(gateway_id)] = {
+                        "mode": result.get("pagination_mode") or "offset",
+                        "after_seq": int(result.get("next_after_seq") or 0),
+                        "offset": int(result.get("next_offset") or 0),
+                        "epoch": result.get("seq_epoch"),
+                    }
                 # Sayfa içinde yakalanan hata buraya `error` olarak döner;
                 # toplam sayaca da yansımalı, aksi halde /health "sorun yok"
                 # derken tur aslında yarım kalmış olurdu.
                 if result.get("error"):
                     _STATE["errors_total"] = int(_STATE.get("errors_total") or 0) + 1
                     _STATE["last_error"] = str(result["error"])
+                    # Aynı sayfa tekrar tekrar hata veriyorsa kritik sinyal.
+                    page_key = f"{gateway_id}:{result.get('pagination_mode')}:{result.get('next_offset')}"
+                    if _STATE.get("last_error_page_key") == page_key:
+                        _STATE["consecutive_page_errors"] = (
+                            int(_STATE.get("consecutive_page_errors") or 0) + 1
+                        )
+                    else:
+                        _STATE["consecutive_page_errors"] = 1
+                        _STATE["last_error_page_key"] = page_key
+                else:
+                    _STATE["consecutive_page_errors"] = 0
+                    _STATE["last_error_page_key"] = None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - bir hat diğerini durdurmaz
@@ -537,10 +682,16 @@ async def run_memory_persistence_once(
     inserted = sum(int(r.get("inserted") or 0) for r in results)
     scanned = sum(int(r.get("scanned") or 0) for r in results)
     pages = sum(int(r.get("pages") or 0) for r in results)
+    skipped_unmapped = sum(int(r.get("skipped_unmapped") or 0) for r in results)
+    skipped_no_id = sum(int(r.get("skipped_no_id") or 0) for r in results)
     _STATE["last_inserted"] = inserted
     _STATE["last_scanned"] = scanned
     _STATE["last_pages"] = pages
     _STATE["inserted_total"] = int(_STATE.get("inserted_total") or 0) + inserted
+    _STATE["pages_total"] = int(_STATE.get("pages_total") or 0) + pages
+    _STATE["scanned_total"] = int(_STATE.get("scanned_total") or 0) + scanned
+    _STATE["skipped_unmapped_total"] = int(_STATE.get("skipped_unmapped_total") or 0) + skipped_unmapped
+    _STATE["skipped_no_id_total"] = int(_STATE.get("skipped_no_id_total") or 0) + skipped_no_id
     _STATE["last_finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     _STATE["last_duration_ms"] = round((time.monotonic() - started) * 1000, 1)
 

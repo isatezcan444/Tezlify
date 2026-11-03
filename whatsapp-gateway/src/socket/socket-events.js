@@ -28,7 +28,7 @@ import {
   archivedPatch,
 } from '../utils/whatsapp-formatting.js';
 import { summarizeWaMessage, resolveDownloadableMedia } from '../messages/message-classifier.js';
-import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
+import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage, stampMessageSeq, trimChatMessages } from '../messages/message-store.js';
 import { safeWriteEncrypted, setCompanionActive } from './socket-connector.js';
 import { sanitizeAvatarUrl } from '../domain/bounded-cache.js';
 
@@ -821,8 +821,8 @@ export function bindSocketEvents({
             if (!hasMedia) {
               const synth = historyMessageToRecord(update.lastMessage, key);
               if (synth) {
-                const next = [...list, synth];
-                if (next.length > 2000) next.splice(0, next.length - 2000);
+                const next = [...list, stampMessageSeq(store, synth)];
+                trimChatMessages(store, key, next);
                 messagesByChat.set(key, next);
 
                 if (!isFromMe && !lidHold && existing._unreadUpdatedForId !== lastMsgId) {
@@ -972,9 +972,9 @@ export function bindSocketEvents({
           continue;
         }
         if (!record) continue;
-        list.push(record);
+        list.push(stampMessageSeq(store, record));
         list.sort((a, b) => (a.id || 0) - (b.id || 0));
-        if (list.length > 2000) list.splice(0, list.length - 2000);
+        trimChatMessages(store, key, list);
         messagesByChat.set(key, list);
         storedMessages += 1;
       }

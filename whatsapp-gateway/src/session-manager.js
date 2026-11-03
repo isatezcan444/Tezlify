@@ -76,12 +76,19 @@ import {
 
 import {
   RAW_MESSAGE_STORE_MAX,
+  MESSAGES_PER_CHAT_MAX,
   createSessionStore,
   rememberRawMessage,
   lookupRawMessage,
   messageTimestampMs,
   boundMessagesByChat,
   countCachedMessages,
+  ramCapacitySnapshot,
+  stampMessageSeq,
+  ensureMessageSeq,
+  messageSeqOf,
+  storeSeqEpoch,
+  trimChatMessages,
 } from './messages/message-store.js';
 
 import { createMediaStore } from './media/media-store.js';
@@ -1311,9 +1318,85 @@ export function createSessionManager({
       return result;
     },
 
-    listAllMessages(sessionId, { limit = 1000, offset = 0, since = null, perChatLimit = null, jids = null } = {}) {
+    /**
+     * Tüm hatların RAM kapasitesi özeti (P2-1).
+     *
+     * `/health` her istekte çalışır; bu yüzden burada YALNIZCA sayaç okunur —
+     * mesaj listeleri kopyalanmaz, sıralanmaz, serileştirilmez. Depo henüz
+     * kurulmamış bir hat için `createSessionStore` ÇAĞRILMAZ (sağlık sorgusu
+     * yan etki üretmemeli).
+     */
+    ramCapacitySummary() {
+      const summary = {
+        sessions: 0,
+        sessions_with_store: 0,
+        ram_messages_total: 0,
+        ram_chats_total: 0,
+        ram_chats_at_cap: 0,
+        ram_chat_max_utilization: 0,
+        ram_raw_store_total: 0,
+        ram_raw_store_utilization: 0,
+        evictions_total: 0,
+        evictions_by_chat: { affected_chats: 0, max_per_chat: 0, total: 0 },
+        evictions_by_reason: {},
+        last_eviction_at: null,
+        limits: {
+          per_chat: MESSAGES_PER_CHAT_MAX,
+          chats: null,
+          raw_store: RAW_MESSAGE_STORE_MAX,
+        },
+      };
+      for (const session of sessions.values()) {
+        summary.sessions += 1;
+        const store = session?.store;
+        if (!store) continue;
+        summary.sessions_with_store += 1;
+        const one = ramCapacitySnapshot(store);
+        summary.ram_messages_total += one.ram_messages_total;
+        summary.ram_chats_total += one.ram_chats_total;
+        summary.ram_chats_at_cap += one.ram_chats_at_cap;
+        summary.ram_raw_store_total += one.ram_raw_store_total;
+        summary.evictions_total += one.evictions_total;
+        summary.evictions_by_chat.affected_chats += one.evictions_by_chat.affected_chats;
+        summary.evictions_by_chat.max_per_chat = Math.max(
+          summary.evictions_by_chat.max_per_chat,
+          one.evictions_by_chat.max_per_chat
+        );
+        summary.evictions_by_chat.total += one.evictions_by_chat.total;
+        summary.ram_chat_max_utilization = Math.max(
+          summary.ram_chat_max_utilization,
+          one.ram_chat_max_utilization
+        );
+        for (const [reason, count] of Object.entries(one.evictions_by_reason || {})) {
+          summary.evictions_by_reason[reason] =
+            (summary.evictions_by_reason[reason] || 0) + Number(count || 0);
+        }
+        if (one.last_eviction_at && (!summary.last_eviction_at || one.last_eviction_at > summary.last_eviction_at)) {
+          summary.last_eviction_at = one.last_eviction_at;
+        }
+        summary.limits.chats = one.limits.chats;
+      }
+      // Ham depo tavanı DEPO BAŞINADIR; toplam doluluk ancak depo sayısına
+      // bölünerek anlamlı olur.
+      const rawCapacity = RAW_MESSAGE_STORE_MAX * Math.max(1, summary.sessions_with_store);
+      summary.ram_raw_store_utilization = Number(
+        (summary.ram_raw_store_total / rawCapacity).toFixed(4)
+      );
+      return summary;
+    },
+
+    listAllMessages(sessionId, {
+      limit = 1000,
+      offset = 0,
+      since = null,
+      perChatLimit = null,
+      jids = null,
+      afterSeq = null,
+      seqEpoch = null,
+    } = {}) {
       const session = this._requireSession(sessionId);
-      const { messagesByChat } = this._storeOf(session);
+      const store = this._storeOf(session);
+      const { messagesByChat } = store;
       const sinceMs = Number.isFinite(Number(since)) && since !== null && since !== ''
         ? Number(since) * 1000
         : null;
@@ -1324,6 +1407,12 @@ export function createSessionManager({
       // satiri olmayan) sohbetler icin yalnizca O jid'leri sorar. Filtre
       // verilmezse davranis DEGISMEZ (tum sohbetler).
       const wanted = Array.isArray(jids) && jids.length > 0 ? new Set(jids.map(String)) : null;
+      // Sabit (keyset) sayfalama modu. `perChatLimit` kırpmasından ÖNCE
+      // bilinmesi gerekir: tavan, imleç filtresinden önce uygulanırsa
+      // `seq > after` koşuluna hiç ulaşmamış kayıtları eler ve tam da
+      // düzeltmeye çalıştığımız sessiz atlamayı geri getirir.
+      const seqMode = afterSeq !== null && afterSeq !== undefined && afterSeq !== ''
+        && Number.isFinite(Number(afterSeq));
       const all = [];
       for (const [chatKey, list] of messagesByChat.entries()) {
         if (wanted && !wanted.has(String(chatKey))) continue;
@@ -1334,18 +1423,75 @@ export function createSessionManager({
             return Number.isFinite(t) && t >= sinceMs;
           });
         }
-        if (perChat !== null && group.length > perChat) {
+        // Seq modunda sohbet başına tavan UYGULANMAZ. `perChatLimit` bir
+        // "en yeni N" kırpmasıdır; imleçle birlikte kullanıldığında eski
+        // kayıtları imleç görene kadar eler. Offset modunda davranış AYNEN
+        // korunur (eski istemciler aynı sayfayı alır).
+        if (!seqMode && perChat !== null && group.length > perChat) {
           group = [...group].sort((a, b) => (a.id || 0) - (b.id || 0)).slice(-perChat);
         }
         for (const m of group) all.push(m);
       }
+
+      // --- Sabit (keyset) sayfalama: `afterSeq` verildiğinde ---
+      //
+      // NEDEN: offset tabanlı sayfalama, liste BAŞINDAN eviction yapıldığında
+      // indeksleri sola kaydırır ve `offset` sabit kaldığı için hiç görülmemiş
+      // kayıtları atlar. `_seq` ekleme anında atanan, benzersiz, kesin artan
+      // bir DEĞER olduğu için eviction imleci kaydıramaz; `afterSeq` bir konum
+      // değil bir değerdir.
+      if (seqMode) {
+        const epoch = storeSeqEpoch(store);
+        // Damgasız kayıt kalırsa (yeni bir yazma yolu eklendiğinde) okuma
+        // anında damgalanır: en yüksek sırayı alır, yani tur içinde daha geç
+        // ziyaret edilir — imlecin GERİSİNDE kalmaz, atlanmaz.
+        for (const m of all) ensureMessageSeq(store, m);
+        // Epoch uyuşmazlığı = süreç/session yeniden kuruldu, eski seq'ler bu
+        // depoda hiçbir kaydı göstermez. Sıfırdan başlanır: kayıp imleç
+        // güvenli bir yeniden taramaya dönüşür.
+        const epochReset = Boolean(seqEpoch) && String(seqEpoch) !== String(epoch);
+        const after = epochReset ? 0 : Math.max(0, Number(afterSeq) || 0);
+        const eligible = [];
+        for (const m of all) {
+          const seq = messageSeqOf(m);
+          if (seq !== null && seq > after) eligible.push(m);
+        }
+        eligible.sort((a, b) => (messageSeqOf(a) || 0) - (messageSeqOf(b) || 0));
+        const page = eligible.slice(0, limit);
+        const lastSeq = page.length ? messageSeqOf(page[page.length - 1]) : null;
+        const nextAfter = lastSeq === null ? after : lastSeq;
+        return {
+          messages: page,
+          total: all.length,
+          offset: 0,
+          limit,
+          pagination: 'seq',
+          seq_epoch: epoch,
+          max_seq: Number(store._messageSeq || 0),
+          after_seq: after,
+          next_after_seq: nextAfter,
+          reached_end: page.length < limit,
+          epoch_reset: epochReset,
+          eligible_total: eligible.length,
+        };
+      }
+
       all.sort((a, b) => {
         const d = (a.id || 0) - (b.id || 0);
         if (d !== 0) return d;
         return String(a.wa_message_id || '') < String(b.wa_message_id || '') ? -1 : 1;
       });
       const page = all.slice(offset, offset + limit);
-      return { messages: page, total: all.length, offset, limit };
+      return {
+        messages: page,
+        total: all.length,
+        offset,
+        limit,
+        // Bu yanıtı okuyan istemci sayfalama modunu AYIRT EDEBİLMELİDİR:
+        // `offset` modunda eski (kayan) davranış geçerlidir.
+        pagination: 'offset',
+        reached_end: offset + limit >= all.length,
+      };
     },
 
     // -----------------------------------------------------------------------
@@ -2575,10 +2721,8 @@ export function createSessionManager({
         );
         if (placeholderAt !== -1) chatMsgs.splice(placeholderAt, 1);
       }
-      chatMsgs.push(record);
-      if (chatMsgs.length > 2000) {
-        chatMsgs.splice(0, chatMsgs.length - 2000);
-      }
+      chatMsgs.push(stampMessageSeq(store, record));
+      trimChatMessages(store, key, chatMsgs);
       boundMessagesByChat(store, key);
       // Metinsiz sistem turleri (arama / ifade / silinmis mesaj / grup bildirimi)
       // `buildChatPreview`ten BOS doner. Onizlemeyi bos birakmak satiri UI'da bos
@@ -2707,10 +2851,8 @@ export function createSessionManager({
       };
       if (!messagesByChat.has(key)) messagesByChat.set(key, []);
       const outList = messagesByChat.get(key);
-      outList.push(msg);
-      if (outList.length > 2000) {
-        outList.splice(0, outList.length - 2000);
-      }
+      outList.push(stampMessageSeq(store, msg));
+      trimChatMessages(store, key, outList);
       boundMessagesByChat(store, key);
       this._touchChat(session, key, buildChatPreview(msg, key.includes('@g.us')), msg.created_at);
       emitEvent({
@@ -2960,12 +3102,17 @@ export function createSessionManager({
             m.sender_name_source = migratedContact?.name_source || m.sender_name_source || null;
           }
           phoneMsgs.push(m);
+          // Kimlik DEĞİŞTİ: kayıt artık `phoneKey` sohbetinin altında. Kalıcı
+          // kimlik `(conversation_id, wa_message_id)` olduğu için bu, YENİ bir
+          // satırdır ve bu turda yeniden ziyaret edilmelidir. Sıra tazelemek
+          // bunu garanti eder; aksi halde imleç zaten geçmiş olurdu.
+          stampMessageSeq(store, m);
           if (!isHistorySync) {
             emitEvent({ event: 'message_new', conversation_id: phoneKey, message: m });
           }
         }
         phoneMsgs.sort((a, b) => (a.id || 0) - (b.id || 0));
-        if (phoneMsgs.length > 2000) phoneMsgs.splice(0, phoneMsgs.length - 2000);
+        trimChatMessages(store, phoneKey, phoneMsgs);
         messagesByChat.set(phoneKey, phoneMsgs);
       }
       logger.debug({ lid: lidKey, jid: phoneKey }, 'LID→telefon eşleşmesi uygulandı');
@@ -4165,7 +4312,7 @@ export function createSessionManager({
         return this._resolveDisplayName(session, participantJid, null);
       });
 
-      return {
+      return stampMessageSeq(this._storeOf(session), {
         id: ts,
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
         conversation_id: key,
@@ -4191,7 +4338,7 @@ export function createSessionManager({
         participant_name: msg.key?.participant ? this._resolveDisplayName(session, msg.key.participant, msg.pushName) : null,
         reactions: reactions,
         created_at: new Date(ts).toISOString(),
-      };
+      });
     },
 
     // -----------------------------------------------------------------------
