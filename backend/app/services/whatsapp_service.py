@@ -2336,7 +2336,7 @@ async def merge_lid_splits(
                 pair["user_id"],
                 pair["lid_jid"],
                 pair["phone_jid"],
-                session_id=None,
+                session_id=pair.get("session_id"),
                 lock_wait_seconds=5.0,
                 result_info=info,
             )

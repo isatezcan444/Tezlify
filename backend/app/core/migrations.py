@@ -2105,6 +2105,23 @@ async def _ensure_sqlite_lid_and_history_tables(engine: AsyncEngine) -> None:
                 )
                 """
             ))
+            await conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS lid_pending_messages (
+                    session_id TEXT NOT NULL,
+                    lid_jid VARCHAR(100) NOT NULL,
+                    wa_message_id VARCHAR(255) NOT NULL,
+                    event_id TEXT NOT NULL,
+                    upsert_type VARCHAR(20) NOT NULL DEFAULT 'notify',
+                    ciphertext BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    auth_tag BLOB NOT NULL,
+                    key_version INTEGER NOT NULL,
+                    created_at TIMESTAMP,
+                    PRIMARY KEY (session_id, lid_jid, wa_message_id)
+                )
+                """
+            ))
 
             # Recovering stale local tables: SQLite supports ADD COLUMN, so for
             # each column missing from PRAGMA table_info, we fill it in one by one.
@@ -2125,6 +2142,10 @@ async def _ensure_sqlite_lid_and_history_tables(engine: AsyncEngine) -> None:
             await conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_wa_lid_mappings_phone "
                 "ON lid_mappings (session_id, phone_jid)"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_wa_lid_pending_created "
+                "ON lid_pending_messages (session_id, created_at)"
             ))
         logger.info("[MIGRATION] sqlite lid_mappings & history_sync_states verified")
     except Exception as e:
@@ -2151,6 +2172,25 @@ async def ensure_whatsapp_private_lid_and_history_tables(engine: AsyncEngine) ->
         """
         CREATE INDEX IF NOT EXISTS ix_wa_lid_mappings_phone
         ON whatsapp_private.lid_mappings (session_id, phone_jid)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.lid_pending_messages (
+            session_id TEXT NOT NULL REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            lid_jid VARCHAR(100) NOT NULL,
+            wa_message_id VARCHAR(255) NOT NULL,
+            event_id UUID NOT NULL,
+            upsert_type VARCHAR(20) NOT NULL DEFAULT 'notify',
+            ciphertext BYTEA NOT NULL,
+            nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+            auth_tag BYTEA NOT NULL CHECK (octet_length(auth_tag) = 16),
+            key_version SMALLINT NOT NULL CHECK (key_version > 0),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (session_id, lid_jid, wa_message_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_wa_lid_pending_created
+        ON whatsapp_private.lid_pending_messages (session_id, created_at)
         """,
         """
         CREATE TABLE IF NOT EXISTS whatsapp_private.history_sync_states (

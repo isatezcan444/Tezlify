@@ -25,6 +25,9 @@ export function createPostgresAuthRepository({
   poolMax = 2,
   pool: injectedPool = null,
   onLidMappingDiscovered = null,
+  // Bounded, per-session retry delays between credential write attempts. The
+  // default is three attempts total; callers may pass [] to disable retries.
+  credentialWriteRetryDelaysMs = [100, 300],
 }) {
   if (!connectionString && !injectedPool) {
     throw new Error('GATEWAY_DATABASE_URL is required for durable WhatsApp auth.');
@@ -39,6 +42,99 @@ export function createPostgresAuthRepository({
   }), 'auth');
   const ownsPool = !injectedPool;
   const codec = createEncryptedCodec(encryptionKey);
+  const credentialWriteChains = new Map();
+  const credentialWriteStates = new Map();
+  const credentialRetryDelays = Array.isArray(credentialWriteRetryDelaysMs)
+    ? credentialWriteRetryDelaysMs.filter((delay) => Number.isFinite(delay) && delay >= 0)
+    : [];
+
+  function credentialKey(sessionId) {
+    return String(sessionId);
+  }
+
+  function getCredentialWriteState(sessionId) {
+    const state = credentialWriteStates.get(credentialKey(sessionId));
+    return state ? { ...state } : { pendingWrites: 0, lastError: null };
+  }
+
+  async function persistCredentialSnapshot(sessionId, payload) {
+    let lastError = null;
+    for (let attempt = 0; attempt <= credentialRetryDelays.length; attempt += 1) {
+      if (attempt > 0) {
+        const delay = credentialRetryDelays[attempt - 1];
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      try {
+        const encrypted = codec.encrypt(
+          payload,
+          context(['credentials', sessionId]),
+        );
+        await pool.query(
+          `INSERT INTO whatsapp_private.session_credentials
+             (session_id, ciphertext, nonce, auth_tag, key_version, version, updated_at)
+           VALUES ($1, $2, $3, $4, $5, 1, NOW())
+           ON CONFLICT (session_id) DO UPDATE SET
+             ciphertext = EXCLUDED.ciphertext,
+             nonce = EXCLUDED.nonce,
+             auth_tag = EXCLUDED.auth_tag,
+             key_version = EXCLUDED.key_version,
+             version = whatsapp_private.session_credentials.version + 1,
+             updated_at = NOW()`,
+          [
+            sessionId,
+            encrypted.ciphertext,
+            encrypted.nonce,
+            encrypted.authTag,
+            encrypted.keyVersion,
+          ],
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError;
+  }
+
+  async function enqueueCredentialWrite(sessionId, credentials) {
+    const key = credentialKey(sessionId);
+    // Snapshot at CALL time. A write queued behind a slow/failed write must
+    // persist the update it was asked to persist, and FIFO order guarantees an
+    // older snapshot can never land after a newer one.
+    const payload = stringify(credentials);
+    const state = credentialWriteStates.get(key) || { pendingWrites: 0, lastError: null };
+    state.pendingWrites += 1;
+    credentialWriteStates.set(key, state);
+
+    const previous = credentialWriteChains.get(key) || Promise.resolve();
+    // A failed predecessor must not break the chain; the next write still runs
+    // (and persists the newer snapshot).
+    const run = previous.then(
+      () => persistCredentialSnapshot(sessionId, payload),
+      () => persistCredentialSnapshot(sessionId, payload),
+    );
+    credentialWriteChains.set(key, run);
+
+    try {
+      await run;
+      state.lastError = null;
+      state.persistedAt = new Date().toISOString();
+    } catch (error) {
+      state.lastError = error?.message || String(error);
+      state.failedAt = new Date().toISOString();
+      throw error;
+    } finally {
+      state.pendingWrites = Math.max(0, state.pendingWrites - 1);
+      if (credentialWriteChains.get(key) === run) credentialWriteChains.delete(key);
+    }
+  }
+
+  async function flushCredentialWrites(sessionId) {
+    const key = credentialKey(sessionId);
+    const chain = credentialWriteChains.get(key);
+    if (chain) await chain.catch(() => {});
+    return getCredentialWriteState(key);
+  }
 
   const repository = {
     async assertReady() {
@@ -92,29 +188,15 @@ export function createPostgresAuthRepository({
     },
 
     async saveCredentials(sessionId, credentials) {
-      const encrypted = codec.encrypt(
-        stringify(credentials),
-        context(['credentials', sessionId]),
-      );
-      await pool.query(
-        `INSERT INTO whatsapp_private.session_credentials
-           (session_id, ciphertext, nonce, auth_tag, key_version, version, updated_at)
-         VALUES ($1, $2, $3, $4, $5, 1, NOW())
-         ON CONFLICT (session_id) DO UPDATE SET
-           ciphertext = EXCLUDED.ciphertext,
-           nonce = EXCLUDED.nonce,
-           auth_tag = EXCLUDED.auth_tag,
-           key_version = EXCLUDED.key_version,
-           version = whatsapp_private.session_credentials.version + 1,
-           updated_at = NOW()`,
-        [
-          sessionId,
-          encrypted.ciphertext,
-          encrypted.nonce,
-          encrypted.authTag,
-          encrypted.keyVersion,
-        ],
-      );
+      await enqueueCredentialWrite(sessionId, credentials);
+    },
+
+    getCredentialWriteState(sessionId) {
+      return getCredentialWriteState(sessionId);
+    },
+
+    flushCredentialWrites(sessionId) {
+      return flushCredentialWrites(sessionId);
     },
 
     async getSignalKeys(sessionId, keyType, ids, sessionDir = null) {

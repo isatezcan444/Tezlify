@@ -350,7 +350,17 @@ app.post('/sessions/:id/logout', async (req, res) => {
     const result = await sessionManager.logoutSession(req.params.id, { force });
     res.json({ success: true, ...result });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    // A failed logout is never reported as success. When the provider failed but
+    // the local session was still closed, `local_status` lets the backend persist
+    // the reconciled state without pretending the provider call worked.
+    // `local_status`/`reason` come first: the backend truncates the response
+    // body to 300 chars, and a long provider message must not hide the fields
+    // that tell it the local session was already closed.
+    const body = { success: false };
+    if (err.localStatus) body.local_status = err.localStatus;
+    if (err.logoutReason) body.reason = err.logoutReason;
+    body.error = err.message;
+    res.status(500).json(body);
   }
 });
 

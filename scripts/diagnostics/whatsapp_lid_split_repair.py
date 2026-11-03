@@ -124,11 +124,20 @@ async def repair_lid_splits(
                 )
             )
             # Ölçümü birleştirmeden ÖNCE al: kanıt sonradan geriye bakarak
-            # değil, önce/sonra farkından okunur.
+            # değil, önce/sonra farkından okunur. Kanonik sohbet de AYNI
+            # oturumda ölçülür: başka hattın sohbetini "hedef" saymak kanıtı
+            # yanlış gösterirdi.
+            pair_session_id = pair.get("session_id")
+            session_filter = (
+                Conversation.session_id.is_(None)
+                if pair_session_id is None
+                else Conversation.session_id == pair_session_id
+            )
             canonical_conv_id = await db.scalar(
                 select(Conversation.id).where(
                     Conversation.contact_id == canonical_contact_id,
                     Conversation.user_id == owner,
+                    session_filter,
                 )
             )
             canonical_wa_ids = set(
@@ -145,7 +154,7 @@ async def repair_lid_splits(
             # Canlı yol, boot adımı ve bu iş AYNI birleştirmeyi çağırır (tek
             # uygulama): ayrı bir kopya zamanla ayrışırdı.
             merged = await merge_split_conversation(
-                db, owner, lid_jid, phone_jid, session_id=None
+                db, owner, lid_jid, phone_jid, session_id=pair_session_id
             )
             if merged is None:
                 skipped.append({**pair, "reason": "reconcile_returned_none"})

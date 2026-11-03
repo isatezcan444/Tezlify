@@ -43,6 +43,7 @@ from backend.app.services.whatsapp.gateway import (
     extract_live_session_fields,
     extract_pairing_code,
     extract_session_id,
+    gateway_logout_local_status,
     is_gateway_session_missing,
 )
 import backend.app.services.whatsapp.orchestration.pairing_registry as pairing_registry
@@ -1146,24 +1147,45 @@ async def request_pairing_code_for_token(
     }
 
 
+def _mark_session_disconnected(row: WhatsAppSession) -> None:
+    row.status = SessionStatus.DISCONNECTED
+    row.is_active = False
+    row.is_phone_online = False
+    row.updated_at = utc_now_naive()
+
+
 async def logout_session(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     """Disconnects session in gateway and marks DISCONNECTED in DB."""
     row = await _get_session_or_404(db, user_id, session_id)
     try:
         await gw.logout_session(row.gateway_id)
     except gw.WhatsAppGatewayError as exc:
-        if not is_gateway_session_missing(exc):
+        if is_gateway_session_missing(exc):
+            logger.warning(
+                "[WhatsApp] Gateway oturumu zaten yok (DB id=%s gateway_id=%s): %s",
+                row.id,
+                row.gateway_id,
+                exc,
+            )
+        elif gateway_logout_local_status(exc) == "DISCONNECTED":
+            # The provider logout failed but the gateway still tore the local
+            # session down. Persist the reconciled state, then re-raise: the
+            # logout did NOT succeed and must never be reported as success.
+            logger.warning(
+                "[WhatsApp] Provider logout başarısız, gateway yerel oturumu kapattı "
+                "(DB id=%s gateway_id=%s): %s",
+                row.id,
+                row.gateway_id,
+                exc,
+            )
+            _mark_session_disconnected(row)
+            await db.commit()
             raise
-        logger.warning(
-            "[WhatsApp] Gateway oturumu zaten yok (DB id=%s gateway_id=%s): %s",
-            row.id,
-            row.gateway_id,
-            exc,
-        )
-    row.status = SessionStatus.DISCONNECTED
-    row.is_active = False
-    row.is_phone_online = False
-    row.updated_at = utc_now_naive()
+        else:
+            # Unknown failure with no local teardown evidence: fail closed and
+            # leave the DB untouched.
+            raise
+    _mark_session_disconnected(row)
     await db.commit()
     return {"success": True, "status": "DISCONNECTED"}
 

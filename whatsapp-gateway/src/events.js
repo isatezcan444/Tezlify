@@ -311,7 +311,7 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     const sessionId = event?.gateway_session_id || event?.session_id;
     const session = sessionId ? sessionManager.getSession(String(sessionId)) : null;
     const isDelete = String(event?.event || '').startsWith('session_deleted');
-    if (sessionId && !session && !isDelete) return;
+    if (sessionId && !session && !isDelete) return { durable: false };
 
     // An ephemeral (No-Create) pairing has NO gateway_sessions row by design:
     // `createSession` deliberately skips registerSession and the lease until
@@ -336,7 +336,7 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     const eventType = String(event?.event || event?.event_type || '');
     if (Boolean(event?._internal_only)) {
       sendLocal(event);
-      return;
+      return { durable: false };
     }
     if (eventType === 'session_sync_progress' || Boolean(event?._ephemeral)) {
       // NOT: ilerleme olayı kasıtlı olarak KALICI DEĞİLDİR (her history chunk'ı
@@ -347,7 +347,7 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
       if (isOpen()) {
         backendSocket.send(JSON.stringify(event));
       }
-      return;
+      return { durable: false };
     }
 
     if (eventOutbox && !skipDurable) {
@@ -355,6 +355,9 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
         const durableEvent = await eventOutbox.enqueue(event);
         sendLocal(durableEvent);
         await pumpOutbox();
+        // Only an acknowledged outbox write is durable. Callers that release
+        // pending messages use this to decide whether the row may be deleted.
+        return { durable: true };
       } catch (error) {
         // G-10(c): outbox yazımı başarısızsa olay SESSİZCE DÜŞÜRÜLMEZ.
         // Enqueue atomik olarak başarısız olduğu için kayıt YOKTUR (çift
@@ -367,7 +370,7 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
         });
         deliverBestEffort(event);
       }
-      return;
+      return { durable: false };
     }
 
     if (eventOutbox && skipDurable) {
@@ -377,13 +380,23 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
       // `sendLocal` still keeps the in-process clients informed.
       bufferForPairing(sessionId, event);
       sendLocal(event);
-      return;
+      return { durable: false };
     }
 
     deliverBestEffort(event);
+    return { durable: false };
   }
 
-  const unsubscribe = sessionManager.onEvent((event) => { void publish(event); });
+  // Returning the promise is what lets durable callers (pending-LID release)
+  // wait until the event is actually in the outbox before deleting their row.
+  const unsubscribe = sessionManager.onEvent((event) => publish(event).catch((error) => {
+    diagnostic('event_publish_failed', {
+      event_type: String(event?.event || event?.event_type || 'unknown'),
+      error_name: error?.name || 'Error',
+      error_code: error?.code || null,
+    });
+    return { durable: false };
+  }));
   connectToBackend();
   if (eventOutbox) {
     retryTimer = setInterval(() => { void pumpOutbox(); }, 10_000);

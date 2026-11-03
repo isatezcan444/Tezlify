@@ -3,12 +3,37 @@
 Pure error inspection and classification. Categorizes gateway errors (404/missing session,
 timeout, connection refused, unauthorized) without database access, side effects, or mutations.
 """
+import json
 import re
 from typing import Optional
 
 from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
 
 _GATEWAY_SESSION_MISSING = "session not found"
+
+
+def gateway_logout_local_status(exc: Exception) -> Optional[str]:
+    """Return the local session status the gateway reports after a failed logout.
+
+    A logout can fail on the WhatsApp provider side while the gateway still
+    closes the local session. The gateway then answers with HTTP 5xx and a body
+    carrying ``local_status`` (and ``reason``). The backend may persist that
+    reconciled state, but it must still surface the provider error — this helper
+    never turns the failure into success.
+    """
+    if not isinstance(exc, WhatsAppGatewayError):
+        return None
+    body = exc.response_body
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    status = data.get("local_status")
+    return str(status) if status else None
 
 
 def is_gateway_session_missing(exc: Exception) -> bool:
