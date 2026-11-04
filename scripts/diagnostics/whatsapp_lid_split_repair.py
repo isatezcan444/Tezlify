@@ -52,15 +52,20 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 
-from backend.app.core.database import AsyncSessionLocal
+from backend.app.core.database import AsyncSessionLocal, engine
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation
 from backend.app.models.message import Message
-from backend.app.services.whatsapp.identity import contact_phone_for_jid
+from backend.app.services.whatsapp.identity import (
+    contact_phone_for_jid,
+    strip_jid_prefix,
+)
 from backend.app.services.whatsapp.reconciliation import (
     DEFAULT_REPAIR_LIMIT,
     candidate_lid_split_pairs,
     merge_split_conversation,
+    recover_quarantined_identities,
+    resolve_quarantine_row,
 )
 
 logger = logging.getLogger("lid_split_repair")
@@ -187,6 +192,19 @@ async def repair_lid_splits(
                 select(Conversation.is_archived).where(Conversation.id == legacy_conv_id)
             )
 
+            # AŞAMA 7.1: Birleştirilen LID'in karantina kaydı varsa çöz
+            resolved_q_id = await resolve_quarantine_row(
+                db,
+                user_id=owner,
+                lid_jid=lid_jid,
+                phone_jid=phone_jid,
+                canonical_conversation_id=merged.id,
+                canonical_contact_id=canonical_contact_id,
+                session_id=pair_session_id,
+                source="diagnostics_repair",
+            )
+            await db.commit()
+
             evidence.append(
                 {
                     **pair,
@@ -200,6 +218,7 @@ async def repair_lid_splits(
                     "unique_messages_stranded": len(stranded_unique),
                     "legacy_conversation_archived": bool(legacy_status),
                     "canonical_unread_count": merged.unread_count,
+                    "quarantine_resolved_id": resolved_q_id,
                 }
             )
             if stranded_unique:
@@ -221,6 +240,48 @@ async def repair_lid_splits(
     }
 
 
+async def learn_bridge(
+    *,
+    gateway_session_id: str,
+    lid: str,
+    phone: str,
+) -> Dict[str, Any]:
+    """Operatörün doğruladığı bir LID -> PN eşleştirmesini güvenle kaydeder."""
+    from sqlalchemy import text
+    clean_lid = strip_jid_prefix(str(lid))
+    if not clean_lid.endswith("@lid"):
+        clean_lid = f"{clean_lid}@lid"
+    clean_p = str(phone).replace("+", "").replace(" ", "").replace("-", "")
+    if "@s.whatsapp.net" not in clean_p:
+        phone_jid = f"{clean_p}@s.whatsapp.net"
+    else:
+        phone_jid = clean_p
+
+    async with AsyncSessionLocal() as db:
+        bind = getattr(db, "bind", None)
+        is_pg = bind.dialect.name == "postgresql" if bind else False
+        table = "whatsapp_private.lid_mappings" if is_pg else "lid_mappings"
+        if is_pg:
+            stmt = text(
+                f"""
+                INSERT INTO {table} (session_id, lid_jid, phone_jid, created_at)
+                VALUES (:sid, :lid, :p, CURRENT_TIMESTAMP)
+                ON CONFLICT (session_id, lid_jid) DO UPDATE
+                SET phone_jid = EXCLUDED.phone_jid, created_at = CURRENT_TIMESTAMP
+                """
+            )
+        else:
+            stmt = text(
+                f"""
+                INSERT OR REPLACE INTO {table} (session_id, lid_jid, phone_jid, created_at)
+                VALUES (:sid, :lid, :p, CURRENT_TIMESTAMP)
+                """
+            )
+        await db.execute(stmt, {"sid": str(gateway_session_id), "lid": clean_lid, "p": phone_jid})
+        await db.commit()
+    return {"session_id": str(gateway_session_id), "lid_jid": clean_lid, "phone_jid": phone_jid}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -228,11 +289,48 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="birleştirmeyi UYGULA (varsayılan: yalnızca plan)",
     )
+    parser.add_argument(
+        "--recover-quarantine",
+        action="store_true",
+        help="karantinada bekleyen ve köprüsü bilinen kayıtları kurtar",
+    )
+    parser.add_argument(
+        "--learn-bridge",
+        action="store_true",
+        help="operatör tarafından doğrulanan bir LID eşleştirmesini kaydet",
+    )
+    parser.add_argument("--lid", default=None, help="LID jid (örn: 218107046027315@lid)")
+    parser.add_argument("--phone", default=None, help="Telefon numarası veya JID")
+    parser.add_argument("--gateway-session-id", default=None, help="Gateway oturum UUID")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--user-id", default=None)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    if args.learn_bridge:
+        if not args.lid or not args.phone or not args.gateway_session_id:
+            print("HATA: --learn-bridge icin --lid, --phone ve --gateway-session-id zorunludur.")
+            return 1
+        res = asyncio.run(
+            learn_bridge(
+                gateway_session_id=args.gateway_session_id,
+                lid=args.lid,
+                phone=args.phone,
+            )
+        )
+        print(f"[lid-bridge] Kaydedildi: {json.dumps(res, default=str)}")
+        if not args.recover_quarantine:
+            print("[lid-bridge] Karantinayı kurtarmak için --recover-quarantine bayrağını ekleyin.")
+            return 0
+
+    if args.recover_quarantine:
+        q_report = asyncio.run(
+            recover_quarantined_identities(engine, limit=args.limit, user_id=args.user_id)
+        )
+        print(f"[quarantine-recovery] {json.dumps(q_report, ensure_ascii=False, default=str)}")
+        return 0
+
     result = asyncio.run(
         repair_lid_splits(apply=args.apply, limit=args.limit, user_id=args.user_id)
     )

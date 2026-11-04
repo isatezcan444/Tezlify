@@ -31,6 +31,7 @@ Davranış sözleşmesi (taşındığı haliyle korunur)
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -48,6 +49,8 @@ from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message
+from backend.app.models.whatsapp_identity_quarantine import WhatsAppIdentityQuarantine
+from backend.app.models.whatsapp_session import WhatsAppSession
 from backend.app.services import whatsapp_data_audit as _data_audit
 from backend.app.services.whatsapp.identity import (
     contact_phone_for_jid,
@@ -57,6 +60,8 @@ from backend.app.services.whatsapp.repositories.conversations import (
     get_conversation_lock,
     get_conversation_scope_filters,
 )
+
+_strip_jid_prefix = strip_jid_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -1160,6 +1165,400 @@ async def collect_stranded_lid_messages(
 
 
 # ---------------------------------------------------------------------------
+# Karantina Kurtarma (AŞAMA 7.1 — P0 Veri Güvenliği ve Otomatik Kurtarma)
+# ---------------------------------------------------------------------------
+
+
+async def candidate_quarantine_recovery_pairs(
+    db: AsyncSession,
+    *,
+    user_id: Optional[str] = None,
+    limit: int = DEFAULT_REPAIR_LIMIT,
+    postgres: Optional[bool] = None,
+) -> List[Dict[str, Any]]:
+    """Karantinada (`status = 'QUARANTINED'`) bekleyen ve köprüsü BİLİNEN kayıtlar.
+
+    AŞAMA 7.1 Güvenlik Sözleşmesi:
+    1. Yalnızca `status = 'QUARANTINED'` olan kayıtlar adaydır. `RESOLVED` veya
+       `RELEASED` kayıtlar ASLA taranmaz veya yeniden işlenmez.
+    2. Tenant İzolasyonu: Köprü eşleştirmesi YALNIZCA aynı kullanıcıya (`user_id`)
+       ait bir WhatsApp oturumundan gelebilir. Başka kullanıcının oturumundaki
+       eşleşme bu kaydı kurtaramaz.
+    3. Oturum Kapsamı: Sohbet bir oturuma bağlıysa (`session_id IS NOT NULL`),
+       köprü YALNIZCA o oturumun gateway kimliği ile eşleşebilir. Farklı
+       oturumun eşleşmesi yok sayılır (kurtarma yapılmaz).
+    4. Belirsizlik Önlemi (Ambiguity Guard): Bir LID için geçerli kapsamda
+       birden çok farklı telefon numarası bulunursa otomatik kurtarma YAPILMAZ;
+       kayıt karantinada kalır ve durum loglanır.
+    5. Eşleşme yoksa kayıt karantinada kalır (veri kaybolmaz).
+    """
+    if postgres is None:
+        postgres = _dialect_is_postgres(getattr(db, "bind", None))
+
+    where_user = " AND (q.user_id = :user_id OR q.user_id = :user_id_hex)" if user_id else ""
+    params: Dict[str, Any] = {"lim": limit}
+    if user_id:
+        params["user_id"] = str(user_id)
+        params["user_id_hex"] = str(user_id).replace("-", "")
+
+    q_table = _public_table(postgres, "whatsapp_identity_quarantine")
+    c_table = _public_table(postgres, "conversations")
+    lid_tbl = _lid_table(postgres)
+    ws_tbl = _public_table(postgres, "whatsapp_sessions")
+
+    q_sql = f"""
+        SELECT q.id AS quarantine_id,
+               q.contact_id,
+               q.conversation_id,
+               q.user_id,
+               q.phone_e164,
+               q.message_count,
+               cv.session_id AS conv_session_id
+        FROM {q_table} q
+        LEFT JOIN {c_table} cv ON cv.id = q.conversation_id
+        WHERE q.status = 'QUARANTINED'
+        {where_user}
+        ORDER BY q.id ASC
+        LIMIT :lim
+    """
+    q_rows = (await db.execute(text(q_sql), params)).all()
+    candidates: List[Dict[str, Any]] = []
+
+    for (
+        quarantine_id,
+        contact_id,
+        conversation_id,
+        owner_id,
+        phone_e164,
+        message_count,
+        conv_session_id,
+    ) in q_rows:
+        clean_lid = strip_jid_prefix(str(phone_e164 or ""))
+        if not clean_lid or not clean_lid.endswith("@lid"):
+            continue
+
+        # Eşleşme sorgusu: Tenant izolasyonu (ws.user_id = owner_id)
+        map_params: Dict[str, Any] = {
+            "clean_lid": clean_lid,
+            "phone_e164": str(phone_e164),
+            "owner": str(owner_id),
+            "owner_hex": str(owner_id).replace("-", "") if owner_id else "",
+        }
+        map_query = f"""
+            SELECT lm.phone_jid, ws.id AS ws_session_id
+            FROM {lid_tbl} lm
+            JOIN {ws_tbl} ws ON ws.gateway_id = lm.session_id
+            WHERE (lm.lid_jid = :clean_lid OR ('jid:' || lm.lid_jid) = :phone_e164)
+              AND (ws.user_id = :owner OR ws.user_id = :owner_hex)
+              AND lm.phone_jid IS NOT NULL AND lm.phone_jid <> ''
+        """
+        map_rows = (await db.execute(text(map_query), map_params)).all()
+
+        # Oturum kapsamı kontrolü
+        if conv_session_id is not None:
+            valid_map_rows = [r for r in map_rows if r[1] == conv_session_id]
+        else:
+            valid_map_rows = map_rows
+
+        if not valid_map_rows:
+            # Eşleşme bulunamadı veya oturum uyuşmadı; karantinada kalır
+            continue
+
+        # Belirsizlik kontrolü: farklı telefon numaraları var mı?
+        distinct_phones = {r[0] for r in valid_map_rows if r[0]}
+        if len(distinct_phones) > 1:
+            logger.warning(
+                "[quarantine_recovery] Çoklu/belirsiz telefon eşleşmesi (quarantine_id=%s, "
+                "lid=%s, adaylar=%s); kurtarma YAPILMADI, karantinada tutuluyor.",
+                quarantine_id,
+                clean_lid,
+                sorted(str(p) for p in distinct_phones),
+            )
+            continue
+
+        chosen_phone_jid = next(iter(distinct_phones))
+        effective_session_id = (
+            conv_session_id if conv_session_id is not None else valid_map_rows[0][1]
+        )
+
+        candidates.append(
+            {
+                "quarantine_id": quarantine_id,
+                "contact_id": contact_id,
+                "conversation_id": conversation_id,
+                "user_id": str(owner_id),
+                "lid_jid": clean_lid,
+                "phone_jid": chosen_phone_jid,
+                "session_id": effective_session_id,
+                "message_count": int(message_count or 0),
+            }
+        )
+
+    return candidates
+
+
+async def resolve_quarantine_row(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    lid_jid: str,
+    phone_jid: str,
+    canonical_conversation_id: Optional[int] = None,
+    canonical_contact_id: Optional[int] = None,
+    session_id: Optional[int] = None,
+    result_info: Optional[Dict[str, Any]] = None,
+    source: str = "live",
+) -> Optional[int]:
+    """Tek bir karantina kaydını `RESOLVED` durumuna geçirir ve meta verileri günceller.
+
+    Canlı yol (`_ingest_lid_mapped`) veya manuel onarım tarafından çağrılır.
+    Yalnızca `status = 'QUARANTINED'` olan satırı günceller (idempotans).
+    """
+    clean_lid = strip_jid_prefix(str(lid_jid))
+    lid_phone = f"jid:{clean_lid}"
+    owner_str = str(user_id)
+    owner_hex = owner_str.replace("-", "")
+
+    stmt = select(WhatsAppIdentityQuarantine).where(
+        WhatsAppIdentityQuarantine.status == "QUARANTINED",
+        WhatsAppIdentityQuarantine.phone_e164.in_([lid_phone, clean_lid]),
+        (WhatsAppIdentityQuarantine.user_id == owner_str)
+        | (WhatsAppIdentityQuarantine.user_id == owner_hex),
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    if not rows:
+        return None
+
+    resolved_id: Optional[int] = None
+    for q_row in rows:
+        # Oturum kontrolü: kayıtlı conversation_id oturumuyla uyuşmalı
+        if session_id is not None and q_row.conversation_id:
+            c_session = await db.scalar(
+                select(Conversation.session_id).where(Conversation.id == q_row.conversation_id)
+            )
+            if c_session is not None and c_session != session_id:
+                logger.warning(
+                    "[quarantine_resolve] Oturum uyuşmazlığı (quarantine_id=%s, "
+                    "conv_session=%s != event_session=%s); atlandı.",
+                    q_row.id,
+                    c_session,
+                    session_id,
+                )
+                continue
+
+        q_row.status = "RESOLVED"
+        q_row.updated_at = utc_now_naive()
+        detail_data: Dict[str, Any] = {}
+        if q_row.detail:
+            try:
+                detail_data = json.loads(q_row.detail)
+            except Exception:
+                detail_data = {}
+        detail_data.update(
+            {
+                "resolved_at": utc_now_naive().isoformat(),
+                "resolved_phone_jid": phone_jid,
+                "canonical_conversation_id": canonical_conversation_id,
+                "canonical_contact_id": canonical_contact_id,
+                "recovery_source": source,
+            }
+        )
+        if result_info:
+            detail_data.update(
+                {
+                    "moved_unique": result_info.get("moved_unique", 0),
+                    "deduped_duplicates": result_info.get("deduped_duplicates", 0),
+                    "stranded_unique": result_info.get("stranded_unique", 0),
+                }
+            )
+        q_row.detail = json.dumps(detail_data, sort_keys=True)
+        resolved_id = q_row.id
+
+    if resolved_id:
+        await db.flush()
+    return resolved_id
+
+
+async def recover_quarantined_record(
+    db: AsyncSession,
+    pair: Dict[str, Any],
+    *,
+    upsert_contact: Optional[Callable[..., Any]] = None,
+    ensure_conversation: Optional[Callable[..., Any]] = None,
+    lock_factory: Optional[Callable[[str, int], Any]] = None,
+    lock_wait_seconds: float = 10.0,
+    source: str = "sweep",
+) -> Dict[str, Any]:
+    """Bir karantina adayını `merge_split_conversation` ile birleştirir ve kaydı çözer.
+
+    Hata durumunda transaction geri alınır (rollback), veri kaybı olmaz.
+    """
+    quarantine_id = pair["quarantine_id"]
+    q_row = (
+        await db.execute(
+            select(WhatsAppIdentityQuarantine).where(
+                WhatsAppIdentityQuarantine.id == quarantine_id,
+                WhatsAppIdentityQuarantine.status == "QUARANTINED",
+            )
+        )
+    ).scalars().first()
+
+    if not q_row:
+        return {"status": "skipped", "reason": "not_quarantined"}
+
+    pair_info: Dict[str, Any] = {}
+    merged = await merge_split_conversation(
+        db,
+        user_id=pair["user_id"],
+        lid_jid=pair["lid_jid"],
+        phone_jid=pair["phone_jid"],
+        session_id=pair.get("session_id"),
+        upsert_contact=upsert_contact,
+        ensure_conversation=ensure_conversation,
+        lock_factory=lock_factory,
+        lock_wait_seconds=lock_wait_seconds,
+        result_info=pair_info,
+    )
+
+    if merged is None:
+        skipped_reason = pair_info.get("skipped_reason", "reconcile_returned_none")
+        if skipped_reason == "merge_lease_held":
+            return {"status": "deferred", "reason": "merge_lease_held"}
+        return {"status": "skipped", "reason": skipped_reason}
+
+    # Başarıyla kanonik sohbete taşındı; karantina kaydını güncelle
+    q_row.status = "RESOLVED"
+    q_row.updated_at = utc_now_naive()
+    detail_data: Dict[str, Any] = {}
+    if q_row.detail:
+        try:
+            detail_data = json.loads(q_row.detail)
+        except Exception:
+            detail_data = {}
+    detail_data.update(
+        {
+            "resolved_at": utc_now_naive().isoformat(),
+            "resolved_phone_jid": pair["phone_jid"],
+            "canonical_conversation_id": merged.id,
+            "canonical_contact_id": merged.contact_id,
+            "moved_unique": pair_info.get("moved_unique", 0),
+            "deduped_duplicates": pair_info.get("deduped_duplicates", 0),
+            "stranded_unique": pair_info.get("stranded_unique", 0),
+            "recovery_source": source,
+        }
+    )
+    q_row.detail = json.dumps(detail_data, sort_keys=True)
+    await db.commit()
+
+    return {
+        "status": "recovered",
+        "quarantine_id": quarantine_id,
+        "canonical_conversation_id": merged.id,
+        "canonical_contact_id": merged.contact_id,
+        "moved_unique": pair_info.get("moved_unique", 0),
+        "deduped_duplicates": pair_info.get("deduped_duplicates", 0),
+        "stranded_unique": pair_info.get("stranded_unique", 0),
+    }
+
+
+async def recover_quarantined_identities(
+    engine: AsyncEngine,
+    *,
+    limit: int = BOOT_MERGE_LIMIT,
+    user_id: Optional[str] = None,
+    session_factory: Optional[Callable[[], Any]] = None,
+) -> Dict[str, Any]:
+    """Karantinada bekleyen ve köprüsü sonradan öğrenilmiş tüm kayıtları kurtarır.
+
+    Periyodik süpürme (sweep) ve boot sırasında çağrılır.
+    """
+    factory = session_factory or AsyncSessionLocal
+    report: Dict[str, Any] = {
+        "scanned": 0,
+        "recovered": 0,
+        "skipped": 0,
+        "deferred": 0,
+        "errors": 0,
+        "remaining_at_least": 0,
+        "limit": limit,
+        "recovered_records": [],
+        "skipped_records": [],
+        "deferred_records": [],
+        "errors_list": [],
+        "error": None,
+    }
+    if limit <= 0:
+        report["error"] = "limit pozitif olmali"
+        return report
+
+    try:
+        async with factory() as db:
+            pairs = await candidate_quarantine_recovery_pairs(
+                db,
+                user_id=user_id,
+                limit=limit + 1,
+                postgres=_dialect_is_postgres(engine),
+            )
+            if len(pairs) > limit:
+                report["remaining_at_least"] = len(pairs) - limit
+            for pair in pairs[:limit]:
+                report["scanned"] += 1
+                try:
+                    rec_res = await recover_quarantined_record(db, pair, source="sweep")
+                except Exception as pair_exc:
+                    await db.rollback()
+                    report["errors"] += 1
+                    report["errors_list"].append({**pair, "reason": str(pair_exc)})
+                    logger.warning(
+                        "[quarantine_recovery] Karantina kaydı kurtarma hatası (id=%s): %s",
+                        pair.get("quarantine_id"),
+                        pair_exc,
+                    )
+                    continue
+
+                st = rec_res.get("status")
+                if st == "recovered":
+                    report["recovered"] += 1
+                    report["recovered_records"].append({**pair, **rec_res})
+                    logger.info(
+                        "[quarantine_recovery] Karantina kaydı kurtarıldı: id=%s (%s → %s), "
+                        "kanonik sohbet=%s, taşınan=%s",
+                        pair["quarantine_id"],
+                        pair["lid_jid"],
+                        pair["phone_jid"],
+                        rec_res.get("canonical_conversation_id"),
+                        rec_res.get("moved_unique"),
+                    )
+                elif st == "deferred":
+                    report["deferred"] += 1
+                    report["deferred_records"].append({**pair, **rec_res})
+                else:
+                    report["skipped"] += 1
+                    report["skipped_records"].append({**pair, **rec_res})
+    except Exception as exc:
+        report["error"] = str(exc)
+        logger.warning(
+            "[quarantine_recovery] recover_quarantined_identities atlandı: %s",
+            exc,
+            exc_info=True,
+        )
+        return report
+
+    if report["recovered"] or report["deferred"] or report["errors"]:
+        logger.info(
+            "[quarantine_recovery] Karantina kurtarma özeti: %d kurtarıldı, %d atlandı, "
+            "%d ertelendi, %d hata (kalan en az %d, limit=%d).",
+            report["recovered"],
+            report["skipped"],
+            report["deferred"],
+            report["errors"],
+            report["remaining_at_least"],
+            limit,
+        )
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Periyodik süpürme: operatör `docker exec` etmek zorunda kalmasın
 # ---------------------------------------------------------------------------
 #
@@ -1175,15 +1574,17 @@ _SWEEP_STATE: Dict[str, Any] = {
     "deferred_total": 0,
     "stranded_moved_total": 0,
     "still_stranded": 0,
+    "quarantine_recovered_total": 0,
     "errors_total": 0,
     "last_started_at": None,
     "last_finished_at": None,
     "last_report": None,
     "last_error": None,
-    # Gözlemlenebilirlik: her turun toplam süresi ve iki fazın ayrı süreleri.
+    # Gözlemlenebilirlik: her turun toplam süresi ve faz süreleri.
     "duration_samples_ms": [],
     "split_duration_samples_ms": [],
     "stranded_duration_samples_ms": [],
+    "quarantine_duration_samples_ms": [],
     "duration_total_ms": 0.0,
 }
 
@@ -1194,11 +1595,11 @@ async def run_identity_sweep_once(
     limit: int = BOOT_MERGE_LIMIT,
     session_factory: Optional[Callable[[], Any]] = None,
 ) -> Dict[str, Any]:
-    """Bir süpürme turu: (1) bölünmüşleri birleştir, (2) sahipsizleri topla.
+    """Bir süpürme turu: (1) bölünmüşleri birleştir, (2) sahipsizleri topla, (3) karantinayı kurtar.
 
-    İki faz ayrı raporlanır. Sıra önemlidir: birleştirme LID sohbetini
+    Üç faz ayrı raporlanır. Sıra önemlidir: birleştirme LID sohbetini
     arşivler, ikinci faz da tam o arşivde kalmış (yarışta yazılmış) satırları
-    toplar — birinci fazın ürettiği artığı aynı turda temizler.
+    toplar, üçüncü faz ise köprüsü öğrenilmiş karantina kayıtlarını çözer.
     """
     _SWEEP_STATE["last_started_at"] = utc_now_naive().isoformat()
     run_started = time.monotonic()
@@ -1212,6 +1613,11 @@ async def run_identity_sweep_once(
         engine, limit=limit, session_factory=session_factory
     )
     stranded_ms = (time.monotonic() - stranded_started) * 1000.0
+    quarantine_started = time.monotonic()
+    quarantine = await recover_quarantined_identities(
+        engine, limit=limit, session_factory=session_factory
+    )
+    quarantine_ms = (time.monotonic() - quarantine_started) * 1000.0
     duration_ms = (time.monotonic() - run_started) * 1000.0
     _SWEEP_STATE["duration_total_ms"] = round(
         float(_SWEEP_STATE["duration_total_ms"]) + duration_ms, 3
@@ -1220,6 +1626,7 @@ async def run_identity_sweep_once(
         ("duration_samples_ms", duration_ms),
         ("split_duration_samples_ms", split_ms),
         ("stranded_duration_samples_ms", stranded_ms),
+        ("quarantine_duration_samples_ms", quarantine_ms),
     ):
         samples = _SWEEP_STATE[key]
         samples.append(round(value, 3))
@@ -1231,16 +1638,23 @@ async def run_identity_sweep_once(
         _SWEEP_STATE.get("stranded_moved_total") or 0
     ) + int(stranded.get("moved_unique_total") or 0)
     _SWEEP_STATE["still_stranded"] = int(stranded.get("still_stranded") or 0)
-    last_error = report.get("error") or stranded.get("error")
+    _SWEEP_STATE["quarantine_recovered_total"] = int(
+        _SWEEP_STATE.get("quarantine_recovered_total") or 0
+    ) + int(quarantine.get("recovered") or 0)
+    last_error = report.get("error") or stranded.get("error") or quarantine.get("error")
     if last_error:
         _SWEEP_STATE["errors_total"] = int(_SWEEP_STATE["errors_total"]) + 1
         _SWEEP_STATE["last_error"] = last_error
     _SWEEP_STATE["last_finished_at"] = utc_now_naive().isoformat()
-    _SWEEP_STATE["last_report"] = {"splits": report, "stranded": stranded}
+    _SWEEP_STATE["last_report"] = {
+        "splits": report,
+        "stranded": stranded,
+        "quarantine": quarantine,
+    }
 
     # Kalıcı özet: `_SWEEP_STATE` bir modül globali olduğu için her restart'ta
     # sıfırlanır ve "geçen sefer ne oldu" sorusunu cevaplayamaz. Bir turda
-    # gerçekten bir şey değiştiyse (birleştirme/erteleme/hata/taşıma) kalıcı bir
+    # gerçekten bir şey değiştiyse (birleştirme/erteleme/hata/taşıma/kurtarma) kalıcı bir
     # satır bırakılır; her 5 dakikada boş satır yazmak gürültüdür.
     changed = bool(
         int(report.get("merged") or 0)
@@ -1248,14 +1662,15 @@ async def run_identity_sweep_once(
         or int(report.get("errors") or 0)
         or int(stranded.get("moved_unique_total") or 0)
         or int(stranded.get("still_stranded") or 0)
+        or int(quarantine.get("recovered") or 0)
     )
     if changed:
         await _data_audit.record_data_event(
             None,
             event=_data_audit.EVENT_SWEEP_RUN,
             source="sweep",
-            outcome=("partial" if (report.get("error") or stranded.get("error")) else "committed"),
-            reason=("sweep_error" if (report.get("error") or stranded.get("error")) else "sweep_changed_state"),
+            outcome=("partial" if (report.get("error") or stranded.get("error") or quarantine.get("error")) else "committed"),
+            reason=("sweep_error" if (report.get("error") or stranded.get("error") or quarantine.get("error")) else "sweep_changed_state"),
             detail={
                 "merged": int(report.get("merged") or 0),
                 "deferred": int(report.get("deferred") or 0),
@@ -1263,6 +1678,7 @@ async def run_identity_sweep_once(
                 "moved_unique": int(report.get("moved_unique_total") or 0),
                 "still_stranded": int(report.get("still_stranded") or 0),
                 "stranded_moved": int(stranded.get("moved_unique_total") or 0),
+                "quarantine_recovered": int(quarantine.get("recovered") or 0),
                 "duration_ms": round(duration_ms, 3),
             },
         )
@@ -1326,9 +1742,12 @@ def merge_sweep_status() -> Dict[str, Any]:
     report = state.get("last_report") or {}
     splits = report.get("splits") or {}
     stranded = report.get("stranded") or {}
+    quarantine = report.get("quarantine") or {}
     state["pending_at_least"] = splits.get("remaining_at_least")
     state["last_deferred"] = (splits.get("deferred") or 0) + (stranded.get("deferred") or 0)
     state["last_stranded_moved"] = stranded.get("moved_unique_total")
+    state["last_quarantine_recovered"] = quarantine.get("recovered") or 0
+    state["quarantine_recovered_total"] = int(state.get("quarantine_recovered_total") or 0)
     runs = int(state.get("runs") or 0)
     samples = state.get("duration_samples_ms") or []
     # Özet alanlar: son tur süresi, tüm koşuların ortalaması ve kilit özeti.
@@ -1348,6 +1767,7 @@ def merge_sweep_status() -> Dict[str, Any]:
         "duration_samples_ms",
         "split_duration_samples_ms",
         "stranded_duration_samples_ms",
+        "quarantine_duration_samples_ms",
     ):
         state.pop(key, None)
     return state
@@ -1369,6 +1789,7 @@ def identity_sweep_metrics() -> Dict[str, Any]:
         "merged_total": int(_SWEEP_STATE.get("merged_total") or 0),
         "deferred_total": int(_SWEEP_STATE.get("deferred_total") or 0),
         "stranded_moved_total": int(_SWEEP_STATE.get("stranded_moved_total") or 0),
+        "quarantine_recovered_total": int(_SWEEP_STATE.get("quarantine_recovered_total") or 0),
         "still_stranded": int(_SWEEP_STATE.get("still_stranded") or 0),
         "errors_total": int(_SWEEP_STATE.get("errors_total") or 0),
         "last_started_at": _SWEEP_STATE.get("last_started_at"),
@@ -1384,6 +1805,9 @@ def identity_sweep_metrics() -> Dict[str, Any]:
         ),
         "stranded_duration_ms": _sample_stats(
             _SWEEP_STATE.get("stranded_duration_samples_ms") or []
+        ),
+        "quarantine_duration_ms": _sample_stats(
+            _SWEEP_STATE.get("quarantine_duration_samples_ms") or []
         ),
         "merge_lock": {
             "attempts": lock_attempts,
@@ -1407,6 +1831,7 @@ def reset_sweep_state() -> None:
             "merged_total": 0,
             "deferred_total": 0,
             "stranded_moved_total": 0,
+            "quarantine_recovered_total": 0,
             "still_stranded": 0,
             "errors_total": 0,
             "last_started_at": None,
@@ -1416,6 +1841,7 @@ def reset_sweep_state() -> None:
             "duration_samples_ms": [],
             "split_duration_samples_ms": [],
             "stranded_duration_samples_ms": [],
+            "quarantine_duration_samples_ms": [],
             "duration_total_ms": 0.0,
         }
     )

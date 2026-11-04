@@ -67,6 +67,7 @@ from backend.app.services.whatsapp.orchestration.messaging import (
 )
 from backend.app.services.whatsapp.reconciliation import (
     merge_split_conversation as _merge_split_conversation,
+    resolve_quarantine_row as _resolve_quarantine_row,
 )
 from backend.app.services.whatsapp.preview_normalization import (
     as_naive_utc as _as_naive_utc,
@@ -1677,6 +1678,27 @@ class WhatsAppEventOrchestrator:
             clean_phone,
             session_id=ws_session_id,
         )
+        # AŞAMA 7.1: Live-path resolution for any quarantined LID record
+        try:
+            resolved_q_id = await _resolve_quarantine_row(
+                db,
+                user_id=owner,
+                lid_jid=clean_lid,
+                phone_jid=clean_phone,
+                canonical_conversation_id=reconciled.id if reconciled else None,
+                canonical_contact_id=getattr(reconciled, "contact_id", None) if reconciled else None,
+                session_id=ws_session_id,
+                source="live_event",
+            )
+            if resolved_q_id:
+                logger.info(
+                    "[quarantine_recovery] Live lid_mapped resolved quarantine record id=%s (%s -> %s)",
+                    resolved_q_id,
+                    clean_lid,
+                    clean_phone,
+                )
+        except Exception as q_exc:  # noqa: BLE001 - quarantine resolution must not drop the event
+            logger.warning("lid_mapped: quarantine resolution skipped (%s): %s", clean_lid, q_exc)
         if reconciled:
             event["reconciled_conversation_id"] = reconciled.id
             event["event"] = "conversations_updated"

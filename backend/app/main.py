@@ -69,6 +69,7 @@ from backend.app.services.whatsapp.reconciliation import (
     identity_sweep_metrics,
     merge_deferred_lid_ghosts,
     merge_sweep_status,
+    recover_quarantined_identities,
 )
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
@@ -325,6 +326,9 @@ async def lifespan(app: FastAPI):
     # birleştirme mantığıyla canonical sohbete taşınırlar. Sınırlıdır ve
     # startup'ı düşürmez.
     await merge_deferred_lid_ghosts(engine)
+    # AŞAMA 7.1: Köprüsü sonradan öğrenilmiş karantina kayıtlarını kurtar
+    await recover_quarantined_identities(engine)
+    await quarantine_counts(engine)
     await backfill_phone_sender_names(engine)
     await purge_degenerate_phone_contacts(engine)
     await backfill_whatsapp_last_message_previews(engine)
