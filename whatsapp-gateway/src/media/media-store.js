@@ -37,16 +37,37 @@ if (typeof globalThis.fetch === 'function' && !globalThis.__mediaFetchIntercepto
   globalThis.fetch = function (input, init = {}) {
     const scope = mediaDownloadScope.getStore();
     if (scope?.signal) {
-      const effectiveSignal = init?.signal
+      const callerSignal = init?.signal || (input && typeof input === 'object' && input.signal ? input.signal : undefined);
+      const effectiveSignal = callerSignal
         ? (typeof AbortSignal.any === 'function'
-            ? AbortSignal.any([init.signal, scope.signal])
-            : init.signal)
+            ? AbortSignal.any([callerSignal, scope.signal])
+            : (callerSignal.aborted ? callerSignal : scope.signal))
         : scope.signal;
       return nativeFetch.call(this, input, { ...init, signal: effectiveSignal });
     }
     return nativeFetch.call(this, input, init);
   };
   globalThis.__mediaFetchInterceptorInstalled = true;
+}
+
+if (typeof Readable.fromWeb === 'function' && !globalThis.__mediaFromWebHookInstalled) {
+  const origFromWeb = Readable.fromWeb;
+  Readable.fromWeb = function (webStream, options) {
+    const nodeReadable = origFromWeb.call(this, webStream, options);
+    if (mediaDownloadScope.getStore()) {
+      const origPipe = nodeReadable.pipe;
+      nodeReadable.pipe = function (dest, pipeOpts) {
+        nodeReadable.on('error', (err) => {
+          if (dest && typeof dest.destroy === 'function' && !dest.destroyed) {
+            dest.destroy(err);
+          }
+        });
+        return origPipe.call(this, dest, pipeOpts);
+      };
+    }
+    return nodeReadable;
+  };
+  globalThis.__mediaFromWebHookInstalled = true;
 }
 
 /**
