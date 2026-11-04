@@ -119,6 +119,9 @@ async def test_successful_ping_pong_flow_with_mock_gateway(monkeypatch):
         correlation_id=corr,
         timeout_ms=5000,
         gateway_client=mock_gw,
+        user_id="user_test_01",
+        session_owner_id="user_test_01",
+        is_admin=True,
     )
     await sim_task
 
@@ -133,9 +136,11 @@ async def test_successful_ping_pong_flow_with_mock_gateway(monkeypatch):
     assert res["target_masked"] == "+90555****67"
 
     # History kaydı doğrulaması
-    history = service.get_results_history()
-    assert len(history) == 1
-    assert history[0]["correlation_id"] == corr
+    history_user = service.get_results_history(user_id="user_test_01")
+    assert len(history_user) == 1
+    assert history_user[0]["correlation_id"] == corr
+    history_admin = service.get_results_history(is_admin=True)
+    assert len(history_admin) >= 1
 
 
 @pytest.mark.asyncio
@@ -216,9 +221,10 @@ async def test_mismatched_and_late_pong_handling():
 
 
 @pytest.mark.asyncio
-async def test_delivery_receipt_idempotence():
+async def test_delivery_receipt_idempotence(monkeypatch):
     """Tekrarlanan receipt mesajları güvenle güncellenir ve çökme oluşturmaz."""
     service = WhatsAppSandboxService()
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ENABLED", True)
     fake_wa_id = "3EB0IDEMPOTENT"
     corr = "TEZLIFY_SANDBOX:idempotent_test"
 
@@ -243,17 +249,36 @@ async def test_delivery_receipt_idempotence():
 
 
 @pytest.mark.asyncio
-async def test_event_ingestion_intercepts_sandbox_messages_without_db_write():
-    """events.py içindeki _ingest_message kancası sandbox mesajlarını yakalar ve DB'ye yazmaz."""
+async def test_event_ingestion_intercepts_sandbox_messages_without_db_write(monkeypatch):
+    """events.py içindeki _ingest_message kancası geçerli sandbox PONG mesajlarını yakalar ve DB'ye yazmaz."""
     from backend.app.services.whatsapp.orchestration.events import WhatsAppEventOrchestrator
-    from backend.app.services.whatsapp.sandbox import sandbox_service
+    from backend.app.services.whatsapp.sandbox import SandboxTestRecord, sandbox_service
+
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ENABLED", True)
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_SESSION_ID", 999)
+    monkeypatch.setattr(
+        "backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ALLOWED_TARGETS",
+        ["+905551234567"],
+    )
+
+    corr = "corr_hook_test"
+    sandbox_service._active_tests[corr] = SandboxTestRecord(
+        test_id="test_hook",
+        correlation_id=corr,
+        session_id=999,
+        target_masked="+90555****67",
+        started_at="2026-11-04T00:00:00Z",
+        target_phone="+905551234567",
+        gateway_session_id="sandbox-session-999",
+    )
 
     handler = WhatsAppEventOrchestrator()
     db_mock = AsyncMock()
 
-    sandbox_body = "TEZLIFY_SANDBOX:PONG:corr_hook_test"
+    sandbox_body = f"TEZLIFY_SANDBOX:PONG:{corr}"
     event = {
         "event": "message_new",
+        "gateway_session_id": "sandbox-session-999",
         "conversation_id": "905551234567@s.whatsapp.net",
         "message": {
             "conversation_id": "905551234567@s.whatsapp.net",
@@ -262,11 +287,14 @@ async def test_event_ingestion_intercepts_sandbox_messages_without_db_write():
         },
     }
 
-    # _ingest_message çağrıldığında
-    res = await handler._ingest_message(db_mock, event)
+    try:
+        # _ingest_message çağrıldığında
+        res = await handler._ingest_message(db_mock, event)
 
-    # Atlanmış (_skip) dönmeli ve veritabanına sorgu/yazım yapılmamalı
-    assert "_skip" in res
-    assert "sandbox ping/pong handled without db mutation" in res["_skip"]
-    assert db_mock.execute.call_count == 0
-    assert db_mock.commit.call_count == 0
+        # Atlanmış (_skip) dönmeli ve veritabanına sorgu/yazım yapılmamalı
+        assert "_skip" in res
+        assert "sandbox ping/pong consumed safely without db mutation" in res["_skip"]
+        assert db_mock.execute.call_count == 0
+        assert db_mock.commit.call_count == 0
+    finally:
+        sandbox_service._active_tests.pop(corr, None)

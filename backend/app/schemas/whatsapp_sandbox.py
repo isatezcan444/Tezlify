@@ -28,6 +28,7 @@ class SandboxPingResponse(BaseModel):
     correlation_id: str = Field(..., description="Korelasyon ID")
     session_id: Optional[int] = Field(None, description="Kullanılan session ID")
     target_masked: str = Field(..., description="Maskelenmiş hedef telefon numarası")
+    user_id: Optional[str] = Field(None, description="Testi başlatan kullanıcı ID'si")
     started_at: str = Field(..., description="Test başlangıç zamanı (ISO8601)")
     completed_at: Optional[str] = Field(None, description="Test bitiş zamanı (ISO8601)")
     send_status: str = Field(..., description="Gönderim durumu (PENDING, SENT, FAILED, BLOCKED)")
@@ -36,3 +37,4 @@ class SandboxPingResponse(BaseModel):
     duration_ms: Optional[float] = Field(None, description="Toplam işlem süresi (ms)")
     error_code: Optional[str] = Field(None, description="Hata kodu")
     error_detail: Optional[str] = Field(None, description="Maskelenmiş hata detayı")
+

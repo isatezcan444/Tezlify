@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from backend.app.core.config import settings
+from backend.app.services.whatsapp.identity import is_system_session_name
 
 logger = logging.getLogger("whatsapp.sandbox")
 
@@ -25,6 +26,29 @@ PROTECTED_PRODUCTION_SESSION_IDS: Set[int] = {201}
 SANDBOX_PREFIX = "TEZLIFY_SANDBOX"
 PING_PREFIX = f"{SANDBOX_PREFIX}:PING"
 PONG_PREFIX = f"{SANDBOX_PREFIX}:PONG"
+
+
+def is_session_sandbox_eligible(
+    session_id: int,
+    session_name: Optional[str] = None,
+    gateway_id: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Verifies that a WhatsApp session is explicitly safe and eligible for sandbox use."""
+    if session_id in PROTECTED_PRODUCTION_SESSION_IDS:
+        return False, f"Session {session_id} is in PROTECTED_PRODUCTION_SESSION_IDS"
+
+    cfg_sess = settings.WHATSAPP_SANDBOX_SESSION_ID
+    if cfg_sess is None or session_id != cfg_sess:
+        return False, f"Session {session_id} does not match configured WHATSAPP_SANDBOX_SESSION_ID ({cfg_sess})"
+
+    if session_name:
+        s_name = str(session_name).strip().lower()
+        # Production names like "Hat 1", "Hat 2", "Tezlify Live", etc.
+        if is_system_session_name(session_name) or "live" in s_name or "prod" in s_name:
+            if "sandbox" not in s_name:
+                return False, f"Session name '{session_name}' indicates a production line"
+
+    return True, "OK"
 
 
 class WhatsAppSandboxError(Exception):
@@ -104,6 +128,9 @@ class SandboxTestRecord:
     session_id: Optional[int]
     target_masked: str
     started_at: str
+    user_id: Optional[str] = None
+    target_phone: Optional[str] = None
+    gateway_session_id: Optional[str] = None
     completed_at: Optional[str] = None
     send_status: str = "PENDING"  # PENDING, SENT, FAILED, BLOCKED
     delivery_status: str = "PENDING"  # PENDING, DELIVERED, READ, TIMEOUT, NONE, SKIPPED
@@ -112,6 +139,7 @@ class SandboxTestRecord:
     error_code: Optional[str] = None
     error_detail: Optional[str] = None
     wa_message_id: Optional[str] = None
+    is_terminal: bool = False
     _completion_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -120,6 +148,7 @@ class SandboxTestRecord:
             "correlation_id": self.correlation_id,
             "session_id": self.session_id,
             "target_masked": self.target_masked,
+            "user_id": self.user_id,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "send_status": self.send_status,
@@ -222,6 +251,8 @@ class WhatsAppSandboxService:
         session_id: Optional[int],
         user_id: Optional[str] = None,
         session_owner_id: Optional[str] = None,
+        is_admin: bool = False,
+        session_name: Optional[str] = None,
     ) -> int:
         """Oturumun korumalı olmadığını ve kiracı yetkisini doğrular."""
         if session_id is None:
@@ -236,9 +267,23 @@ class WhatsAppSandboxService:
                 f"Production session {session_id} is strictly protected and cannot be used for sandbox."
             )
 
-        # Kiracı izolasyonu kontrolü
+        # Üretim oturumu ismi / deseni kontrolü (P2)
+        if session_name:
+            s_name = str(session_name).strip().lower()
+            if "sandbox" not in s_name and (is_system_session_name(session_name) or "live" in s_name or "prod" in s_name):
+                logger.error("[AUDIT] Sandbox security violation: session '%s' indicates production", session_name)
+                raise ProductionSessionBlockedError(
+                    f"Session '{session_name}' indicates a production line and cannot be used for sandbox."
+                )
+
+        # Sahipsiz oturum kontrolü (user_id=None durumu) (P1)
+        if session_owner_id is None and user_id is not None and not is_admin:
+            logger.warning("[AUDIT] Sandbox unowned session access rejected for non-admin: user=%s", user_id)
+            raise WhatsAppSandboxError("Tenant isolation error: Unowned/system session requires administrator authorization.")
+
+        # Kiracı izolasyonu kontrolü (P1)
         if user_id is not None and session_owner_id is not None:
-            if str(user_id) != str(session_owner_id):
+            if str(user_id) != str(session_owner_id) and not is_admin:
                 logger.warning("[AUDIT] Sandbox tenant isolation mismatch: user=%s session_owner=%s", user_id, session_owner_id)
                 raise WhatsAppSandboxError("Tenant/session ownership mismatch.")
 
@@ -325,12 +370,15 @@ class WhatsAppSandboxService:
 
     def handle_status_or_receipt(self, wa_message_id: str, status: str) -> bool:
         """Teslimat raporu (delivery receipt) veya statü güncellemesini eşleştirir."""
+        if not self.is_enabled:
+            return False
+
         corr_id = self._wa_id_to_corr.get(wa_message_id)
         if not corr_id:
             return False
 
         test = self._active_tests.get(corr_id)
-        if not test:
+        if not test or test.session_id in PROTECTED_PRODUCTION_SESSION_IDS:
             return False
 
         upper_st = str(status).upper()
@@ -344,8 +392,18 @@ class WhatsAppSandboxService:
             test._completion_event.set()
         return True
 
-    def handle_inbound_message(self, body: Optional[str], sender_phone: Optional[str] = None) -> bool:
-        """Gelen PONG mesajını aktif test correlation ID ile eşleştirir."""
+    def handle_inbound_message(
+        self,
+        body: Optional[str],
+        sender_phone: Optional[str] = None,
+        gateway_session_id: Optional[str] = None,
+    ) -> bool:
+        """Gelen PONG mesajını aktif test correlation ID ile eşleştirir (fail-closed, strictly isolated)."""
+        # 1. Sandbox açık mı?
+        if not self.is_enabled:
+            return False
+
+        # 2. Mesaj formatı ve PONG tipi doğrulaması
         parsed = self.parse_sandbox_message(body)
         if not parsed or parsed.get("type") != "PONG":
             return False
@@ -354,26 +412,90 @@ class WhatsAppSandboxService:
         if not corr_id:
             return False
 
+        # 3. Aktif test kaydı var mı?
         test = self._active_tests.get(corr_id)
         masked_sender = mask_phone_number(sender_phone)
         if not test:
             logger.warning(
-                "[AUDIT] Sandbox inbound PONG matched no active test (expired/late): corr=%s sender=%s",
+                "[AUDIT] Sandbox inbound PONG matched no active test (expired/late/unknown): corr=%s sender=%s",
                 corr_id, masked_sender
             )
             return False
 
+        # 4. Korumalı üretim oturumu koruması
+        if test.session_id in PROTECTED_PRODUCTION_SESSION_IDS:
+            logger.error(
+                "[AUDIT] Sandbox inbound rejected: test uses protected session %s",
+                test.session_id
+            )
+            return False
+
+        # 5. Gateway session eşleşmesi (event session vs test session)
+        if gateway_session_id and test.gateway_session_id:
+            ev_gw = str(gateway_session_id).strip()
+            test_gw = str(test.gateway_session_id).strip()
+            expected_alias = f"sandbox-session-{test.session_id}"
+            if ev_gw != test_gw and ev_gw != expected_alias:
+                logger.warning(
+                    "[AUDIT] Sandbox PONG session mismatch: event_session=%s test_session=%s corr=%s",
+                    ev_gw, test_gw, corr_id
+                )
+                return False
+
+        # 6. Gönderici allowlist ve hedef telefon eşleşmesi
+        norm_sender = normalize_target_phone(sender_phone) if sender_phone else ""
+        allowed_targets = self.get_allowed_targets()
+        if not allowed_targets or norm_sender not in allowed_targets:
+            logger.warning(
+                "[AUDIT] Sandbox PONG sender not in allowlist: sender=%s corr=%s",
+                masked_sender, corr_id
+            )
+            return False
+
+        if test.target_phone:
+            norm_target = normalize_target_phone(test.target_phone)
+            if norm_sender and norm_target and norm_sender != norm_target:
+                logger.warning(
+                    "[AUDIT] Sandbox PONG sender mismatch: sender=%s expected=%s corr=%s",
+                    masked_sender, mask_phone_number(norm_target), corr_id
+                )
+                return False
+
+        # 7. Terminal durum ve tekil eşleşme garantisi (P3)
+        if test.is_terminal or test.pong_status != "WAITING":
+            logger.warning(
+                "[AUDIT] Sandbox late or duplicate PONG rejected: corr=%s status=%s is_terminal=%s",
+                corr_id, test.pong_status, test.is_terminal
+            )
+            return False
+
+        # 8. Başarılı eşleştirme ve durum güncellemesi
         test.pong_status = "MATCHED"
+        test.is_terminal = True
+        test.error_code = None
+        test.error_detail = None
         logger.info(
-            "[AUDIT] Sandbox PONG successfully matched: corr=%s sender=%s",
-            corr_id, masked_sender
+            "[AUDIT] Sandbox PONG successfully matched: corr=%s sender=%s session=%s",
+            corr_id, masked_sender, test.session_id
         )
         test._completion_event.set()
         return True
 
-    def get_results_history(self) -> List[Dict[str, Any]]:
-        """Son yapılandırılmış operational health sonuçlarını döner."""
-        return list(self._results_history)
+    def get_results_history(
+        self,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Son yapılandırılmış operational health sonuçlarını döner (tenant isolated)."""
+        if is_admin:
+            return list(self._results_history)
+        if not user_id:
+            return []
+        uid_str = str(user_id)
+        return [
+            item for item in self._results_history
+            if item.get("user_id") and str(item.get("user_id")) == uid_str
+        ]
 
     async def run_ping_pong_test(
         self,
@@ -383,13 +505,23 @@ class WhatsAppSandboxService:
         timeout_ms: Optional[int] = None,
         gateway_id: Optional[str] = None,
         gateway_client: Optional[Any] = None,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+        session_owner_id: Optional[str] = None,
+        session_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Kontrollü Ping/Pong test akışını çalıştırır."""
         # 1. Konfigürasyon ve güvenlik doğrulamaları
         if not self.is_enabled:
             raise SandboxDisabledError("WhatsApp Sandbox is disabled (WHATSAPP_SANDBOX_ENABLED is False).")
 
-        sess_id = self.validate_session(session_id)
+        sess_id = self.validate_session(
+            session_id,
+            user_id=user_id,
+            session_owner_id=session_owner_id,
+            is_admin=is_admin,
+            session_name=session_name,
+        )
         norm_target = self.validate_target_allowed(target_phone)
         self.check_rate_limit()
 
@@ -401,6 +533,7 @@ class WhatsAppSandboxService:
         masked_target = mask_phone_number(norm_target)
         now_dt = datetime.now(timezone.utc)
         start_mono = time.monotonic()
+        effective_gateway_id = gateway_id or f"sandbox-session-{sess_id}"
 
         test_record = SandboxTestRecord(
             test_id=test_id,
@@ -408,6 +541,9 @@ class WhatsAppSandboxService:
             session_id=sess_id,
             target_masked=masked_target,
             started_at=now_dt.isoformat(),
+            user_id=str(user_id) if user_id else None,
+            target_phone=norm_target,
+            gateway_session_id=effective_gateway_id,
             send_status="PENDING",
             delivery_status="PENDING",
             pong_status="WAITING",
@@ -418,7 +554,6 @@ class WhatsAppSandboxService:
 
         timeout_sec = (timeout_ms or settings.WHATSAPP_SANDBOX_TIMEOUT_MS or 15000) / 1000.0
         ping_body = self.build_ping_body(corr_id)
-        effective_gateway_id = gateway_id or f"sandbox-session-{sess_id}"
 
         # 3. Mesaj gönderme isteği (Gateway REST üzerinden)
         try:
@@ -426,8 +561,8 @@ class WhatsAppSandboxService:
             target_jid = f"{norm_target.lstrip('+')}@s.whatsapp.net"
 
             logger.info(
-                "[AUDIT] Dispatching sandbox PING: test_id=%s corr=%s session=%s target=%s",
-                test_id, corr_id, sess_id, masked_target
+                "[AUDIT] Dispatching sandbox PING: test_id=%s corr=%s session=%s target=%s user=%s",
+                test_id, corr_id, sess_id, masked_target, user_id
             )
 
             if gateway_client is not None:
@@ -457,6 +592,7 @@ class WhatsAppSandboxService:
             test_record.error_detail = str(exc)[:250]
             test_record.completed_at = datetime.now(timezone.utc).isoformat()
             test_record.duration_ms = round(duration_ms, 2)
+            test_record.is_terminal = True
 
             logger.error("[AUDIT] Sandbox PING dispatch failed: test_id=%s error=%s", test_id, exc)
 
@@ -470,19 +606,30 @@ class WhatsAppSandboxService:
         try:
             await asyncio.wait_for(test_record._completion_event.wait(), timeout=timeout_sec)
         except asyncio.TimeoutError:
-            if test_record.delivery_status == "PENDING":
-                test_record.delivery_status = "TIMEOUT"
-            if test_record.pong_status == "WAITING":
-                test_record.pong_status = "TIMEOUT"
-            test_record.error_code = "TIMEOUT"
-            test_record.error_detail = f"Sandbox verification timed out after {timeout_sec:.1f}s waiting for receipt/PONG"
-            logger.warning("[AUDIT] Sandbox test timed out: test_id=%s corr=%s", test_id, corr_id)
+            async with self._lock:
+                if test_record.pong_status == "MATCHED":
+                    test_record.is_terminal = True
+                    if test_record.delivery_status == "PENDING":
+                        test_record.delivery_status = "TIMEOUT"
+                    logger.info("[AUDIT] Sandbox PONG arrived before timeout settled: corr=%s", corr_id)
+                else:
+                    test_record.is_terminal = True
+                    test_record.pong_status = "TIMEOUT"
+                    if test_record.delivery_status == "PENDING":
+                        test_record.delivery_status = "TIMEOUT"
+                    test_record.error_code = "TIMEOUT"
+                    test_record.error_detail = f"Sandbox verification timed out after {timeout_sec:.1f}s waiting for receipt/PONG"
+                    logger.warning("[AUDIT] Sandbox test timed out: test_id=%s corr=%s", test_id, corr_id)
 
         duration_ms = (time.monotonic() - start_mono) * 1000.0
         test_record.completed_at = datetime.now(timezone.utc).isoformat()
         test_record.duration_ms = round(duration_ms, 2)
 
         async with self._lock:
+            test_record.is_terminal = True
+            if test_record.pong_status == "MATCHED":
+                test_record.error_code = None
+                test_record.error_detail = None
             self._active_tests.pop(corr_id, None)
             if test_record.wa_message_id:
                 self._wa_id_to_corr.pop(test_record.wa_message_id, None)
