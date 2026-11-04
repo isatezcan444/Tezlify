@@ -285,6 +285,168 @@ async def test_valid_active_pong_safely_consumed(monkeypatch, mock_db):
         sandbox_service._active_tests.pop(corr, None)
 
 
+@pytest.mark.asyncio
+async def test_missing_gateway_session_id_falls_through_to_normal_ingest(monkeypatch, mock_db):
+    """Scenario 2: Gateway session ID eksik olduğunda event asla sandbox tarafından tüketilmez."""
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ENABLED", True)
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_SESSION_ID", 999)
+    monkeypatch.setattr(
+        "backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ALLOWED_TARGETS",
+        ["+905551234567"],
+    )
+
+    corr = "corr_missing_gw_sid"
+    sandbox_service._active_tests[corr] = SandboxTestRecord(
+        test_id="test_missing_gw",
+        correlation_id=corr,
+        session_id=999,
+        target_masked="+90555****67",
+        started_at="2026-11-04T00:00:00Z",
+        target_phone="+905551234567",
+        gateway_session_id="sandbox-session-999",
+    )
+
+    handler = WhatsAppEventOrchestrator()
+    # Event'te gateway_session_id ve session_id EKSİK!
+    event = {
+        "event": "message_new",
+        "conversation_id": "905551234567@s.whatsapp.net",
+        "message": {
+            "conversation_id": "905551234567@s.whatsapp.net",
+            "body": f"TEZLIFY_SANDBOX:PONG:{corr}",
+            "direction": "INBOUND",
+        },
+    }
+
+    try:
+        with fallthrough_tracker(handler, session_id=999) as spy_resolve:
+            res = await handler._ingest_message(mock_db, event)
+            # Mesaj normal ingest'e ulaştı
+            spy_resolve.assert_awaited_once()
+            if "_skip" in res:
+                assert "sandbox" not in res["_skip"]
+    finally:
+        sandbox_service._active_tests.pop(corr, None)
+
+
+@pytest.mark.asyncio
+async def test_empty_gateway_session_id_falls_through_to_normal_ingest(monkeypatch, mock_db):
+    """Scenario 3: Gateway session ID boş veya salt boşluk olduğunda normal ingest'e devam eder."""
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ENABLED", True)
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_SESSION_ID", 999)
+    monkeypatch.setattr(
+        "backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ALLOWED_TARGETS",
+        ["+905551234567"],
+    )
+
+    corr = "corr_empty_gw_sid"
+    sandbox_service._active_tests[corr] = SandboxTestRecord(
+        test_id="test_empty_gw",
+        correlation_id=corr,
+        session_id=999,
+        target_masked="+90555****67",
+        started_at="2026-11-04T00:00:00Z",
+        target_phone="+905551234567",
+        gateway_session_id="sandbox-session-999",
+    )
+
+    handler = WhatsAppEventOrchestrator()
+    # Event'te gateway_session_id boşluk string'i
+    event = {
+        "event": "message_new",
+        "gateway_session_id": "   ",
+        "conversation_id": "905551234567@s.whatsapp.net",
+        "message": {
+            "conversation_id": "905551234567@s.whatsapp.net",
+            "body": f"TEZLIFY_SANDBOX:PONG:{corr}",
+            "direction": "INBOUND",
+        },
+    }
+
+    try:
+        with fallthrough_tracker(handler, session_id=999) as spy_resolve:
+            res = await handler._ingest_message(mock_db, event)
+            spy_resolve.assert_awaited_once()
+            if "_skip" in res:
+                assert "sandbox" not in res["_skip"]
+    finally:
+        sandbox_service._active_tests.pop(corr, None)
+
+
+@pytest.mark.asyncio
+async def test_ineligible_session_falls_through_to_normal_ingest(monkeypatch, mock_db):
+    """Scenario 5: Session eligibility başarısız olduğunda (ör. korumalı 201) normal ingest'e devam eder."""
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ENABLED", True)
+    # Session 201 korumalı üretim hattıdır
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_SESSION_ID", 201)
+    monkeypatch.setattr(
+        "backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ALLOWED_TARGETS",
+        ["+905551234567"],
+    )
+
+    corr = "corr_ineligible_session"
+    sandbox_service._active_tests[corr] = SandboxTestRecord(
+        test_id="test_ineligible",
+        correlation_id=corr,
+        session_id=201,
+        target_masked="+90555****67",
+        started_at="2026-11-04T00:00:00Z",
+        target_phone="+905551234567",
+        gateway_session_id="sandbox-session-201",
+    )
+
+    handler = WhatsAppEventOrchestrator()
+    event = {
+        "event": "message_new",
+        "gateway_session_id": "sandbox-session-201",
+        "conversation_id": "905551234567@s.whatsapp.net",
+        "message": {
+            "conversation_id": "905551234567@s.whatsapp.net",
+            "body": f"TEZLIFY_SANDBOX:PONG:{corr}",
+            "direction": "INBOUND",
+        },
+    }
+
+    try:
+        with fallthrough_tracker(handler, session_id=201) as spy_resolve:
+            res = await handler._ingest_message(mock_db, event)
+            spy_resolve.assert_awaited_once()
+            if "_skip" in res:
+                assert "sandbox" not in res["_skip"]
+    finally:
+        sandbox_service._active_tests.pop(corr, None)
+
+
+@pytest.mark.asyncio
+async def test_invalid_pong_format_falls_through_to_normal_ingest(monkeypatch, mock_db):
+    """Scenario 8: PONG formatı geçersiz olduğunda normal ingest'e devam eder."""
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ENABLED", True)
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_SESSION_ID", 999)
+    monkeypatch.setattr(
+        "backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ALLOWED_TARGETS",
+        ["+905551234567"],
+    )
+
+    handler = WhatsAppEventOrchestrator()
+    # PONG tipi olmayan veya bozuk prefix içeren mesaj
+    event = {
+        "event": "message_new",
+        "gateway_session_id": "sandbox-session-999",
+        "conversation_id": "905551234567@s.whatsapp.net",
+        "message": {
+            "conversation_id": "905551234567@s.whatsapp.net",
+            "body": "TEZLIFY_SANDBOX:INVALID_TYPE_FORMAT",
+            "direction": "INBOUND",
+        },
+    }
+
+    with fallthrough_tracker(handler, session_id=999) as spy_resolve:
+        res = await handler._ingest_message(mock_db, event)
+        spy_resolve.assert_awaited_once()
+        if "_skip" in res:
+            assert "sandbox" not in res["_skip"]
+
+
 # ==============================================================================
 # SECTION 2: P1 — ADMIN RBAC ENFORCEMENT ON /status, /ping, /results
 # ==============================================================================

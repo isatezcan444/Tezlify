@@ -29,11 +29,14 @@ PONG_PREFIX = f"{SANDBOX_PREFIX}:PONG"
 
 
 def is_session_sandbox_eligible(
-    session_id: int,
+    session_id: Optional[int],
     session_name: Optional[str] = None,
     gateway_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Verifies that a WhatsApp session is explicitly safe and eligible for sandbox use."""
+    if session_id is None:
+        return False, "Session ID is None (missing session)"
+
     if session_id in PROTECTED_PRODUCTION_SESSION_IDS:
         return False, f"Session {session_id} is in PROTECTED_PRODUCTION_SESSION_IDS"
 
@@ -422,25 +425,41 @@ class WhatsAppSandboxService:
             )
             return False
 
-        # 4. Korumalı üretim oturumu koruması
-        if test.session_id in PROTECTED_PRODUCTION_SESSION_IDS:
+        # 4. Korumalı üretim oturumu ve uygunluk koruması (Fail-Closed)
+        if test.session_id is None or test.session_id in PROTECTED_PRODUCTION_SESSION_IDS:
             logger.error(
-                "[AUDIT] Sandbox inbound rejected: test uses protected session %s",
-                test.session_id
+                "[AUDIT] Sandbox inbound rejected: test uses protected or missing session %s",
+                test.session_id,
             )
             return False
 
-        # 5. Gateway session eşleşmesi (event session vs test session)
-        if gateway_session_id and test.gateway_session_id:
-            ev_gw = str(gateway_session_id).strip()
-            test_gw = str(test.gateway_session_id).strip()
-            expected_alias = f"sandbox-session-{test.session_id}"
-            if ev_gw != test_gw and ev_gw != expected_alias:
-                logger.warning(
-                    "[AUDIT] Sandbox PONG session mismatch: event_session=%s test_session=%s corr=%s",
-                    ev_gw, test_gw, corr_id
-                )
-                return False
+        eligible, reason = is_session_sandbox_eligible(session_id=test.session_id)
+        if not eligible:
+            logger.error(
+                "[AUDIT] Sandbox inbound rejected: test session %s ineligible (%s) corr=%s",
+                test.session_id, reason, corr_id,
+            )
+            return False
+
+        # 5. Gateway session kimliği doğrulaması (Fail-Closed)
+        if not gateway_session_id or not str(gateway_session_id).strip():
+            logger.warning(
+                "[AUDIT] Sandbox inbound PONG rejected: missing or empty gateway_session_id corr=%s",
+                corr_id,
+            )
+            return False
+
+        ev_gw = str(gateway_session_id).strip()
+        test_gw = str(test.gateway_session_id).strip() if test.gateway_session_id else ""
+        expected_alias = f"sandbox-session-{test.session_id}" if test.session_id else ""
+        valid_sids = {s for s in (test_gw, expected_alias) if s}
+
+        if not valid_sids or ev_gw not in valid_sids:
+            logger.warning(
+                "[AUDIT] Sandbox PONG session mismatch: event_session=%s expected=%s corr=%s",
+                ev_gw, valid_sids, corr_id,
+            )
+            return False
 
         # 6. Gönderici allowlist ve hedef telefon eşleşmesi
         norm_sender = normalize_target_phone(sender_phone) if sender_phone else ""

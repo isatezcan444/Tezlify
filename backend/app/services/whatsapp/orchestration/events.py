@@ -942,28 +942,56 @@ class WhatsAppEventOrchestrator:
         if is_degenerate_jid(jid_str):
             return _skip_event(event, f"message_new: dejenere jid ({jid_str})")
 
-        # Phase 8.0.3: Safe Sandbox Interception (Fail-Safe Fallthrough Guard)
-        from backend.app.services.whatsapp.sandbox import sandbox_service, mask_phone_number
+        # Phase 8.0.5: Safe Sandbox Interception (Fail-Closed Gateway Session Identity)
+        from backend.app.services.whatsapp.sandbox import (
+            sandbox_service,
+            mask_phone_number,
+            is_session_sandbox_eligible,
+        )
         msg_body = msg.get("body")
         if sandbox_service.is_enabled and sandbox_service.is_sandbox_message(msg_body):
             try:
-                gw_sid = event.get("gateway_session_id") or event.get("session_id")
+                # Gateway session identity extraction with explicit fail-closed validation
+                raw_gw_sid = event.get("gateway_session_id")
+                if not raw_gw_sid or not str(raw_gw_sid).strip():
+                    raw_gw_sid = event.get("session_id")
+
                 sender_phone = jid_to_phone(jid_str) or jid_str
-                consumed = sandbox_service.handle_inbound_message(
-                    body=msg_body,
-                    sender_phone=sender_phone,
-                    gateway_session_id=gw_sid,
-                )
-                if consumed:
-                    return _skip_event(
-                        event,
-                        f"message_new: sandbox ping/pong consumed safely without db mutation ({jid_str})"
-                    )
-                else:
+                gw_sid_str = str(raw_gw_sid).strip() if raw_gw_sid is not None else ""
+
+                if not gw_sid_str:
                     logger.info(
-                        "[AUDIT] Sandbox inbound not consumed (unmatched/inactive test), proceeding to normal ingest: sender=%s",
+                        "[AUDIT] Sandbox inbound check rejected: missing or empty gateway_session_id, proceeding to normal ingest: sender=%s",
                         mask_phone_number(sender_phone),
                     )
+                else:
+                    cfg_sess = sandbox_service.get_configured_session_id()
+                    eligible, reason = (
+                        is_session_sandbox_eligible(session_id=cfg_sess)
+                        if cfg_sess is not None
+                        else (False, "No configured session")
+                    )
+                    if not eligible:
+                        logger.warning(
+                            "[AUDIT] Sandbox inbound check rejected: configured session %s ineligible (%s), proceeding to normal ingest: sender=%s",
+                            cfg_sess, reason, mask_phone_number(sender_phone),
+                        )
+                    else:
+                        consumed = sandbox_service.handle_inbound_message(
+                            body=msg_body,
+                            sender_phone=sender_phone,
+                            gateway_session_id=gw_sid_str,
+                        )
+                        if consumed:
+                            return _skip_event(
+                                event,
+                                f"message_new: sandbox ping/pong consumed safely without db mutation ({jid_str})"
+                            )
+                        else:
+                            logger.info(
+                                "[AUDIT] Sandbox inbound not consumed (unmatched/inactive test), proceeding to normal ingest: sender=%s",
+                                mask_phone_number(sender_phone),
+                            )
             except Exception as sbx_err:
                 logger.warning(
                     "[AUDIT] Sandbox inbound inspection error, falling back to normal ingest: sender=%s err=%s",

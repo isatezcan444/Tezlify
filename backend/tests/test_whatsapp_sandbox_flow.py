@@ -106,9 +106,13 @@ async def test_successful_ping_pong_flow_with_mock_gateway(monkeypatch):
         # 1. Delivery Receipt
         service.handle_status_or_receipt(fake_wa_id, "DELIVERED")
         await asyncio.sleep(0.05)
-        # 2. Inbound PONG
+        # 2. Inbound PONG (with valid gateway_session_id)
         pong = service.build_pong_body(corr_id)
-        service.handle_inbound_message(pong, "+905551234567")
+        service.handle_inbound_message(
+            pong,
+            "+905551234567",
+            gateway_session_id="sandbox-session-999",
+        )
 
     corr = "TEZLIFY_SANDBOX:flow_success_01"
     sim_task = asyncio.create_task(simulate_incoming_responses(corr))
