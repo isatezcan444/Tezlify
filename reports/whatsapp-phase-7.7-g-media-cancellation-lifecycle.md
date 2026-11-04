@@ -169,8 +169,31 @@ Tüm test paketleri çalıştırılmış ve eksiksiz doğrulanmıştır:
 
 ---
 
-## 9. NİHAİ KARAR
+## 9. PRODUCTION DEPLOYMENT VE CANLI DOĞRULAMA
+
+Yapılan targeted düzeltme tüm testlerden %100 başarıyla geçtikten sonra prodüksiyona alınmıştır:
+- **Deploy Commit'i:** `88559ef70ec93262b2e540adf1b88b7657529811` (`88559ef`)
+- **Release ID:** `20261104T193535Z`
+- **Release Script:** `scripts/deploy/release.sh`
+- **Adacık Sağlık Kontrolü:** İzole kopya veritabanında (`tezlify_cand_20261104T193535Z`) 25 migration ve /health kontrolü sıfır hata ile geçmiştir.
+- **Canlı Sunucu Doğrulaması (`130.162.247.20`):**
+  - Public API Health: `HTTP 200 OK` (`https://api.130.162.247.20.sslip.io/health`), `gateway_bridge.connected: true`.
+  - Konteyner Durumları: `tezlify-backend (healthy)`, `tezlify-gateway (healthy)`, `tezlify-caddy (healthy)`, `tezlify-db (healthy)`.
+  - WhatsApp Session 201: `id=201 status=SessionStatus.CONNECTED is_phone_online=True gw_id=1bd78836-c084-4cbf-b333-9386d44b7bd7`.
+  - Gateway Dahili Sağlık: `status: 'ok', database: 'connected', sessions: { total: 1, connected: 1 }`.
+
+---
+
+## 10. AÇIK RİSKLER
+
+Yapılan scoped fetch interceptor ve AsyncLocalStorage çözümü sayesinde Baileys kaynak koduna dokunmadan tüm indirmeler soket düzeyinde iptal edilebilir hale getirilmiştir. Açık kalan hiçbir kritik risk veya yetim görev sızıntısı kalmamıştır.
+
+---
+
+## 11. NİHAİ KARAR
 
 **NİHAİ KARAR: PASS**
 
-Baileys'in `fetch()` düzeyindeki `signal` eksikliği ve `Promise.race` sonucu ortaya çıkan yetim arka plan indirmesi ve erken slot serbest bırakma riski başarıyla tespit edilmiş, kanıtlanmış ve `AsyncLocalStorage` scoped interceptor ile sıfır yan etkiyle tamamen çözülmüştür.
+Baileys'in `fetch()` düzeyindeki `signal` eksikliği ve `Promise.race` sonucu ortaya çıkan yetim arka plan indirmesi ve erken slot serbest bırakma riski başarıyla tespit edilmiş, kanıtlanmış ve `AsyncLocalStorage` scoped interceptor ile sıfır yan etkiyle tamamen çözülerek prodüksiyona başarıyla deploy edilmiştir.
+
+
