@@ -6,7 +6,9 @@ import {
   PowerOff, 
   QrCode, 
   Trash2,
-  Sliders
+  Sliders,
+  AlertTriangle,
+  RotateCcw
 } from 'lucide-react';
 import { WhatsAppSession } from '../../../types';
 import { Card } from '../../../components/ui/card';
@@ -141,6 +143,18 @@ export const SessionCard: React.FC<SessionCardProps> = ({
             </span>
           </div>
         </div>
+
+        {session.error_message === 'WHATSAPP_CONNECTION_REPLACED' && (
+          <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
+            <p className="font-bold flex items-center gap-1.5 text-xs">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>{t('whatsapp.connectionReplacedTitle')}</span>
+            </p>
+            <p className="text-[11px] mt-1 text-slate-600 dark:text-slate-300 font-medium">
+              {t('whatsapp.connectionReplacedDesc')}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Card Actions Footer */}
@@ -160,8 +174,17 @@ export const SessionCard: React.FC<SessionCardProps> = ({
             onClick={() => onScanQR && onScanQR(session.id)}
             className="text-[#7367F0] hover:text-[#685DD8] flex items-center gap-1.5 font-bold text-xs cursor-pointer"
           >
-            <QrCode className="w-3.5 h-3.5" />
-            <span>{t('whatsapp.scanQrToConnect')}</span>
+            {session.error_message === 'WHATSAPP_CONNECTION_REPLACED' ? (
+              <>
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{t('whatsapp.reconnect')}</span>
+              </>
+            ) : (
+              <>
+                <QrCode className="w-3.5 h-3.5" />
+                <span>{t('whatsapp.scanQrToConnect')}</span>
+              </>
+            )}
           </button>
         )}
 

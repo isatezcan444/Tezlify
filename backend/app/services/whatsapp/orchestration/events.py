@@ -112,7 +112,14 @@ from backend.app.services.whatsapp.status_policy import (
 logger = logging.getLogger(__name__)
 
 # Events that are intentionally not persisted but must reach the UI
-_PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({"history_sync_completed"})
+_PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({
+    "history_sync_completed",
+    "session_history_status",
+    "newsletter_reaction",
+    "newsletter_view",
+    "newsletter_participants_updated",
+    "newsletter_settings_updated",
+})
 
 # Events the gateway emits that carry NO tenant identity and therefore must not
 # be forwarded to any tenant socket.
@@ -563,6 +570,20 @@ class WhatsAppEventOrchestrator:
         event["user_id"] = owner
         return event
 
+    async def _ingest_group_participants_updated(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        find_whatsapp_conversation = self._get_helper("_find_whatsapp_conversation", _find_whatsapp_conversation)
+        resolve_event_owner = self._get_helper("_resolve_event_owner", _resolve_event_owner)
+        gw_session_id = event.get("gateway_session_id")
+        conv_jid = event.get("conversation_id") or event.get("group_id")
+        owner = await resolve_event_owner(db, str(conv_jid or ""), str(gw_session_id or ""))
+        event["user_id"] = owner
+        if conv_jid:
+            conv = await find_whatsapp_conversation(db, owner, str(conv_jid))
+            if conv:
+                event["conversation_id"] = conv.id
+                event["group_id"] = str(conv_jid)
+        return event
+
     async def _upsert_contact(
         self,
         db: AsyncSession,
@@ -782,6 +803,9 @@ class WhatsAppEventOrchestrator:
                     f"Birden fazla legacy line-siz sohbet eslenemedi (contact={contact.id})"
                 )
         if not conv:
+            is_grp = "@g.us" in jid
+            is_newsletter = "@newsletter" in jid
+            entity_type = "CHANNEL" if is_newsletter else ("GROUP" if is_grp else "INDIVIDUAL")
             conv = Conversation(
                 user_id=user_id,
                 contact_id=contact.id,
@@ -789,7 +813,8 @@ class WhatsAppEventOrchestrator:
                 status=ConversationStatus.ACTIVE,
                 session_id=session_id,
                 last_message_preview=preview,
-                is_group="@g.us" in jid,
+                is_group=is_grp,
+                entity_type=entity_type,
                 is_archived=False,
                 last_message_at=None,
             )
@@ -2100,6 +2125,29 @@ class WhatsAppEventOrchestrator:
             conv.is_group = bool(payload.get("is_group")) or "@g.us" in str(jid)
             if "archived" in payload:
                 conv.is_archived = bool(payload.get("archived"))
+            # Phase 7.3: Entity Classification & Parent Association
+            incoming_entity = payload.get("entity_type")
+            if incoming_entity:
+                conv.entity_type = str(incoming_entity).upper()
+            elif "@newsletter" in str(jid):
+                conv.entity_type = "CHANNEL"
+                conv.is_group = False
+            elif "@broadcast" in str(jid):
+                conv.entity_type = "BROADCAST"
+                conv.is_group = False
+            elif "@g.us" in str(jid):
+                if payload.get("is_community"):
+                    conv.entity_type = "COMMUNITY"
+                elif payload.get("is_community_announce"):
+                    conv.entity_type = "ANNOUNCEMENT"
+                elif not conv.entity_type or conv.entity_type == "INDIVIDUAL":
+                    conv.entity_type = "GROUP"
+            else:
+                conv.entity_type = "INDIVIDUAL"
+                conv.is_group = False
+
+            if "parent_jid" in payload:
+                conv.parent_jid = payload.get("parent_jid")
             name = payload.get("name")
             contact = None
             if name or payload.get("avatar_url"):
@@ -2183,6 +2231,8 @@ class WhatsAppEventOrchestrator:
                 "identity_state": canonical_id_state,
                 "is_group": canonical_is_group,
                 "is_archived": bool(conv.is_archived),
+                "entity_type": conv.entity_type or ("GROUP" if canonical_is_group else "INDIVIDUAL"),
+                "parent_jid": conv.parent_jid,
                 "avatar_url": _get_contact_avatar(canonical_contact),
                 "last_message_preview": canonical_preview,
                 "last_reaction": conv_rx,
@@ -2523,6 +2573,8 @@ class WhatsAppEventOrchestrator:
                 # SessionStatus has no LOGGED_OUT member; keep DISCONNECTED and
                 # surface the cause via error_message so the UI can react.
                 row.error_message = "WHATSAPP_LOGGED_OUT"
+            elif str(reason or "") == "CONNECTION_REPLACED":
+                row.error_message = str(event.get("error_message") or "WHATSAPP_CONNECTION_REPLACED")
             row.updated_at = utc_now_naive()
         elif evt == "session_qr_updated":
             row.status = SessionStatus.SCAN_QR
@@ -2906,6 +2958,8 @@ class WhatsAppEventOrchestrator:
                     result = await self._ingest_message_receipt_updated(db, event)
                 elif evt == "lid_mapped":
                     result = await self._ingest_lid_mapped(db, event)
+                elif evt == "group_participants_updated":
+                    result = await self._ingest_group_participants_updated(db, event)
                 elif evt == "connection_error" or str(evt).startswith("session_"):
                     result = await map_session_event(db, event)
                 elif evt in _PASSTHROUGH_EVENTS:

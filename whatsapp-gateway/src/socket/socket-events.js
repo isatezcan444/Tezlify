@@ -10,6 +10,7 @@ import { performance } from 'perf_hooks';
 import { diagnostic, sessionRef, latency } from '../observability.js';
 import {
   isLidJid,
+  isNewsletterJid,
   isBroadcastOnlyJid,
   isDegenerateJid,
   isRawIdentityName,
@@ -20,6 +21,7 @@ import {
   resolveJidKey,
   rememberLidPair,
   jidKind,
+  classifyEntityType,
 } from '../utils/whatsapp-identity.js';
 import {
   normalizePreviewText,
@@ -537,6 +539,37 @@ export function bindSocketEvents({
       }
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
       const isBanned = statusCode === DisconnectReason.badSession;
+      const isReplaced = statusCode === DisconnectReason.connectionReplaced;
+
+      if (isReplaced) {
+        session.status = 'DISCONNECTED';
+        session.is_active = false;
+        session.is_phone_online = false;
+        session.error_reason = 'CONNECTION_REPLACED';
+        session.error_message =
+          'WhatsApp oturumu başka bir cihaz veya web sekmesinde açıldığı için durduruldu (440 connectionReplaced). ' +
+          'Tezlify üzerinden devam etmek için "Yeniden Bağlan" seçeneğini kullanın.';
+        session.updated_at = new Date().toISOString();
+        session.lifecycle.cancelReconnect();
+        await leaseCoordinator.releaseLease(session);
+        logger?.warn?.(
+          { id, generation, session_ref: sessionRef(id) },
+          'Baileys connectionReplaced (440) — WhatsApp Web başka cihazda açıldı, otomatik reconnect durduruldu',
+        );
+        diagnostic('session_connection_replaced', {
+          session_ref: sessionRef(id),
+          generation,
+          status_code: 440,
+        });
+        emitEvent({
+          event: 'session_disconnected',
+          session_id: id,
+          session_name: session.session_name,
+          reason: 'CONNECTION_REPLACED',
+          error_message: session.error_message,
+        });
+        return;
+      }
       if (statusCode === DisconnectReason.restartRequired) {
         session.status = 'CONNECTING';
         session.is_phone_online = false;
@@ -777,6 +810,58 @@ export function bindSocketEvents({
     if (lid && jid) applyLidMapping(lid, jid);
   });
 
+  // --- Baileys Native LID Mapping Update ---
+  sock.ev.on('lid-mapping.update', ({ lid, pn }) => {
+    if (ignoreStaleSocketEvent('lid-mapping.update')) return;
+    if (lid && pn) applyLidMapping(lid, pn);
+  });
+
+  // --- Chats Upsert (New chats discovered or reported by Baileys) ---
+  sock.ev.on('chats.upsert', (newChats) => {
+    if (ignoreStaleSocketEvent('chats.upsert')) return;
+    for (const chat of newChats || []) {
+      const rawJid = chat?.id || chat?.jid;
+      if (!rawJid || isBroadcastOnlyJid(rawJid) || isDegenerateJid(rawJid)) continue;
+      const key = normalizeJid(rawJid);
+      if (isBroadcastOnlyJid(key)) continue;
+      const existing = chats.get(key) || {};
+      const contact = contacts.get(key);
+      const isGrp = key.includes('@g.us');
+      const isNews = isNewsletterJid(key);
+      const lidHold = isLidJid(key);
+      const entityType = chat.entity_type || classifyEntityType({
+        jid: key,
+        isCommunity: Boolean(chat.isCommunity),
+        isCommunityAnnounce: Boolean(chat.isCommunityAnnounce),
+        linkedParent: chat.linkedParent || existing.parent_jid || null,
+      });
+
+      const resolvedName = contact?.name || chat.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : (isGrp || isNews || lidHold ? '' : jidToPhone(key) || key));
+      const resolvedNameSource = contact?.name_source || (chat.name ? 'upsert' : existing.name_source) || (key === '0@s.whatsapp.net' ? 'system' : null);
+
+      const merged = {
+        ...existing,
+        id: key,
+        jid: key,
+        name: resolvedName,
+        name_source: resolvedNameSource,
+        phone: jidToPhone(key) || existing.phone || '',
+        avatar_url: sanitizeAvatarUrl(chat.avatar_url) || sanitizeAvatarUrl(contact?.avatar_url) || sanitizeAvatarUrl(existing.avatar_url) || null,
+        is_group: isGrp,
+        entity_type: entityType,
+        parent_jid: chat.linkedParent || existing.parent_jid || null,
+        ...archivedPatch(chat.archived ?? existing.archived),
+        last_message_at: existing.last_message_at || (chat.conversationTimestamp ? new Date(messageTimestampMs(chat.conversationTimestamp)).toISOString() : null),
+        last_message_preview: existing.last_message_preview || '',
+        unread_count: existing.unread_count ?? (chat.unreadCount != null ? Math.max(0, Number(chat.unreadCount)) : 0),
+        created_at: existing.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      chats.set(key, merged);
+      emitEvent({ event: 'conversation_updated', conversation: { ...merged } });
+    }
+  });
+
   // --- Chats sync ---
   sock.ev.on('chats.update', (updates) => {
     if (ignoreStaleSocketEvent('chats.update')) return;
@@ -884,6 +969,13 @@ export function bindSocketEvents({
         phone: jidToPhone(key) || existing.phone || '',
         avatar_url: sanitizeAvatarUrl(contact?.avatar_url) || sanitizeAvatarUrl(existing.avatar_url) || null,
         is_group: key.includes('@g.us'),
+        entity_type: existing.entity_type || classifyEntityType({
+          jid: key,
+          isCommunity: Boolean(existing.is_community),
+          isCommunityAnnounce: Boolean(existing.is_community_announce),
+          linkedParent: existing.parent_jid,
+        }),
+        parent_jid: existing.parent_jid || null,
         // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
         ...archivedPatch(update.archived ?? existing.archived),
         last_message_at: updTs && !tsOlder ? updTs : existing.last_message_at,
@@ -1126,6 +1218,13 @@ export function bindSocketEvents({
           name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
           phone: jidToPhone(key) || existing.phone || '',
           is_group: key.includes('@g.us'),
+          entity_type: chat.entity_type || existing.entity_type || classifyEntityType({
+            jid: key,
+            isCommunity: Boolean(chat.isCommunity),
+            isCommunityAnnounce: Boolean(chat.isCommunityAnnounce),
+            linkedParent: chat.linkedParent || existing.parent_jid || null,
+          }),
+          parent_jid: chat.linkedParent || existing.parent_jid || null,
           // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
           ...archivedPatch(chat.archived ?? existing.archived),
           avatar_url: sanitizeAvatarUrl(chat.avatar_url) || sanitizeAvatarUrl(contact?.avatar_url) || sanitizeAvatarUrl(existing.avatar_url) || null,
@@ -1236,26 +1335,126 @@ export function bindSocketEvents({
     }
   });
 
+  // --- Messaging History Status (milestones per sync phase) ---
+  sock.ev.on('messaging-history.status', ({ syncType, status, explicit }) => {
+    if (ignoreStaleSocketEvent('messaging-history.status')) return;
+    logger?.info?.(
+      { session_ref: sessionRef(id), syncType, status, explicit },
+      'Baileys messaging-history.status received',
+    );
+    if (session.sync) {
+      session.sync.history_status = session.sync.history_status || {};
+      session.sync.history_status[syncType] = { status, explicit, at: new Date().toISOString() };
+    }
+    emitEvent({
+      event: 'session_history_status',
+      session_id: id,
+      sync_type: syncType ?? null,
+      status: status || 'complete',
+      explicit: Boolean(explicit),
+    });
+  });
+
+  // --- Groups Upsert (Discovered groups / full metadata) ---
+  sock.ev.on('groups.upsert', (groups) => {
+    if (ignoreStaleSocketEvent('groups.upsert')) return;
+    for (const group of groups || []) {
+      const rawJid = group?.id;
+      if (!rawJid || !rawJid.includes('@g.us')) continue;
+      const key = normalizeJid(rawJid);
+      const existing = chats.get(key) || {};
+      const subject = typeof group?.subject === 'string' ? group.subject.trim() : (existing.name || '');
+      const entityType = classifyEntityType({
+        jid: key,
+        isCommunity: Boolean(group.isCommunity),
+        isCommunityAnnounce: Boolean(group.isCommunityAnnounce),
+        linkedParent: group.linkedParent || null,
+      });
+
+      const mergedChat = {
+        ...existing,
+        id: key,
+        jid: key,
+        name: subject || existing.name || 'Grup',
+        name_source: subject ? 'group_subject' : (existing.name_source || 'system'),
+        phone: '',
+        is_group: true,
+        entity_type: entityType,
+        parent_jid: group.linkedParent || existing.parent_jid || null,
+        group_size: group.size || group.participants?.length || existing.group_size || 0,
+        group_desc: group.desc || existing.group_desc || null,
+        ...archivedPatch(existing.archived),
+        unread_count: existing.unread_count || 0,
+        created_at: existing.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      chats.set(key, mergedChat);
+
+      const contact = contacts.get(key) || {};
+      contacts.set(key, {
+        ...contact,
+        id: key,
+        jid: key,
+        name: subject || contact.name || 'Grup',
+        name_source: subject ? 'group_subject' : (contact.name_source || 'system'),
+        phone: '',
+        updated_at: new Date().toISOString(),
+      });
+
+      emitEvent({ event: 'conversation_updated', conversation: { ...mergedChat } });
+    }
+  });
+
   // --- Groups ---
   sock.ev.on('groups.update', (updates) => {
     if (ignoreStaleSocketEvent('groups.update')) return;
     for (const update of updates || []) {
       const jid = update?.id;
-      const subject = typeof update?.subject === 'string' ? update.subject.trim() : '';
-      if (!jid || !jid.includes('@g.us') || !subject) continue;
+      if (!jid || !jid.includes('@g.us')) continue;
       const key = normalizeJid(jid);
       const chat = chats.get(key);
+      const contact = contacts.get(key);
+      const subject = typeof update?.subject === 'string' ? update.subject.trim() : '';
+      let changed = false;
+
+      const entityType = classifyEntityType({
+        jid: key,
+        isCommunity: Boolean(update.isCommunity ?? chat?.entity_type === 'COMMUNITY'),
+        isCommunityAnnounce: Boolean(update.isCommunityAnnounce ?? chat?.entity_type === 'ANNOUNCEMENT'),
+        linkedParent: update.linkedParent || chat?.parent_jid || null,
+      });
+
       if (chat) {
-        const merged = mergeContactName({ name: chat.name, name_source: chat.name_source }, subject, 'group_subject');
-        if (merged.name && merged.name !== chat.name) {
-          chat.name = merged.name;
-          chat.name_source = merged.name_source;
+        if (subject) {
+          const merged = mergeContactName({ name: chat.name, name_source: chat.name_source }, subject, 'group_subject');
+          if (merged.name && merged.name !== chat.name) {
+            chat.name = merged.name;
+            chat.name_source = merged.name_source;
+            changed = true;
+          }
+        }
+        if (update.desc != null && update.desc !== chat.group_desc) {
+          chat.group_desc = update.desc;
+          changed = true;
+        }
+        if (update.size != null && update.size !== chat.group_size) {
+          chat.group_size = update.size;
+          changed = true;
+        }
+        if (entityType && entityType !== chat.entity_type) {
+          chat.entity_type = entityType;
+          changed = true;
+        }
+        if (update.linkedParent && update.linkedParent !== chat.parent_jid) {
+          chat.parent_jid = update.linkedParent;
+          changed = true;
+        }
+        if (changed) {
           chat.updated_at = new Date().toISOString();
           emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
         }
       }
-      const contact = contacts.get(key);
-      if (contact) {
+      if (contact && subject) {
         const mergedC = mergeContactName({ name: contact.name, name_source: contact.name_source }, subject, 'group_subject');
         if (mergedC.name && mergedC.name !== contact.name) {
           contact.name = mergedC.name;
@@ -1265,6 +1464,91 @@ export function bindSocketEvents({
         }
       }
     }
+  });
+
+  // --- Group Participants Update ---
+  sock.ev.on('group-participants.update', ({ id: groupId, author, authorPn, authorUsername, participants, action }) => {
+    if (ignoreStaleSocketEvent('group-participants.update')) return;
+    if (!groupId || !groupId.includes('@g.us')) return;
+    const key = normalizeJid(groupId);
+    const chat = chats.get(key);
+    const parsedParticipants = (participants || []).map((p) => {
+      if (typeof p === 'string') return p;
+      return p?.id || p?.phoneNumber || p?.jid || null;
+    }).filter(Boolean);
+
+    if (chat) {
+      if (typeof chat.group_size === 'number') {
+        if (action === 'add') {
+          chat.group_size += parsedParticipants.length;
+        } else if (action === 'remove') {
+          chat.group_size = Math.max(0, chat.group_size - parsedParticipants.length);
+        }
+      }
+      chat.updated_at = new Date().toISOString();
+      emitEvent({
+        event: 'conversation_updated',
+        conversation: { ...chat },
+      });
+    }
+
+    emitEvent({
+      event: 'group_participants_updated',
+      conversation_id: key,
+      group_id: key,
+      author: author || null,
+      author_pn: authorPn || null,
+      author_username: authorUsername || null,
+      participants: parsedParticipants,
+      action: action || 'modify',
+      group_size: chat?.group_size ?? null,
+    });
+  });
+
+  // --- Newsletter / Channel Events ---
+  sock.ev.on('newsletter.reaction', (update) => {
+    if (ignoreStaleSocketEvent('newsletter.reaction')) return;
+    if (!update?.id) return;
+    emitEvent({
+      event: 'newsletter_reaction',
+      channel_id: normalizeJid(update.id),
+      server_id: update.server_id || null,
+      reaction: update.reaction || null,
+    });
+  });
+
+  sock.ev.on('newsletter.view', (update) => {
+    if (ignoreStaleSocketEvent('newsletter.view')) return;
+    if (!update?.id) return;
+    emitEvent({
+      event: 'newsletter_view',
+      channel_id: normalizeJid(update.id),
+      server_id: update.server_id || null,
+      count: update.count || 0,
+    });
+  });
+
+  sock.ev.on('newsletter-participants.update', (update) => {
+    if (ignoreStaleSocketEvent('newsletter-participants.update')) return;
+    if (!update?.id) return;
+    emitEvent({
+      event: 'newsletter_participants_updated',
+      channel_id: normalizeJid(update.id),
+      author: update.author || null,
+      user: update.user || null,
+      new_role: update.new_role || null,
+      action: update.action || null,
+    });
+  });
+
+  sock.ev.on('newsletter-settings.update', (update) => {
+    if (ignoreStaleSocketEvent('newsletter-settings.update')) return;
+    if (!update?.id) return;
+    emitEvent({
+      event: 'newsletter_settings_updated',
+      channel_id: normalizeJid(update.id),
+      update: update.update || null,
+    });
   });
 
   // --- Presence ---

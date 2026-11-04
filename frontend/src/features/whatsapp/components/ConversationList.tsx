@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { MessageSquare, Archive, CheckCircle2, ChevronDown, Inbox, Mail, MessageSquarePlus, RefreshCw, RotateCcw, Trash2, Users, AlertTriangle } from 'lucide-react';
+import { MessageSquare, Archive, CheckCircle2, ChevronDown, Inbox, Mail, MessageSquarePlus, RefreshCw, RotateCcw, Trash2, Users, AlertTriangle, Megaphone, Radio } from 'lucide-react';
 import { Conversation, ConversationStatus } from '../../../types';
 import { Avatar } from '../../../components/ui/Avatar';
 import { Badge } from '../../../components/ui/badge';
@@ -97,6 +97,7 @@ interface ConversationRowProps {
   isArchived?: boolean;
   unreadCount: number;
   isGroup?: boolean;
+  entityType?: 'INDIVIDUAL' | 'GROUP' | 'COMMUNITY' | 'ANNOUNCEMENT' | 'CHANNEL' | 'BROADCAST';
   selected: boolean;
   typing: boolean;
   typingSenderName?: string;
@@ -112,7 +113,7 @@ interface ConversationRowProps {
   onAvatarResolved?: (id: number, newUrl: string) => void;
 }
 
-const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, lastReactionReactorName, lastReactionFromMe, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, priority = 'normal', onSelect, onArchive, onClose, onReopen, onDelete, onAvatarResolved }) => {
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, lastReactionReactorName, lastReactionFromMe, status, isArchived, unreadCount, isGroup, entityType, selected, typing, typingSenderName, isSyncing, priority = 'normal', onSelect, onArchive, onClose, onReopen, onDelete, onAvatarResolved }) => {
   const { t, language } = useI18n();
   const isRawJid = isRawWhatsAppJid(phone);
   const cleanPhone = extractCleanPhone(phone);
@@ -209,12 +210,32 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-1.5 truncate">
-            {isGroup && (
+            {entityType === 'COMMUNITY' ? (
+              <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:bg-emerald-500/25 dark:text-emerald-400">
+                <Users className="w-2.5 h-2.5" />
+                <span>{t('whatsapp.community')}</span>
+              </span>
+            ) : entityType === 'ANNOUNCEMENT' ? (
+              <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:bg-amber-500/25 dark:text-amber-400">
+                <Megaphone className="w-2.5 h-2.5" />
+                <span>{t('whatsapp.announcement')}</span>
+              </span>
+            ) : entityType === 'CHANNEL' ? (
+              <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-600 dark:bg-sky-500/25 dark:text-sky-400">
+                <Radio className="w-2.5 h-2.5" />
+                <span>{t('whatsapp.channel')}</span>
+              </span>
+            ) : entityType === 'BROADCAST' ? (
+              <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-500/15 text-indigo-600 dark:bg-indigo-500/25 dark:text-indigo-400">
+                <Radio className="w-2.5 h-2.5" />
+                <span>{t('whatsapp.broadcast')}</span>
+              </span>
+            ) : isGroup ? (
               <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
                 <Users className="w-2.5 h-2.5" />
                 <span>{t('whatsapp.group')}</span>
               </span>
-            )}
+            ) : null}
             <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate" dir="auto">
               <bdi>{name}</bdi>
             </h4>
@@ -654,6 +675,7 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
                 isArchived={Boolean(conv.is_archived)}
                 unreadCount={conv.unread_count}
                 isGroup={conv.is_group}
+                entityType={conv.entity_type}
                 selected={selectedId === conv.id}
                 typing={typeof typingMap?.[conv.id] === 'object' ? !!(typingMap[conv.id] as any)?.isTyping : !!typingMap?.[conv.id]}
                 typingSenderName={typeof typingMap?.[conv.id] === 'object' ? (typingMap[conv.id] as any)?.senderName : undefined}

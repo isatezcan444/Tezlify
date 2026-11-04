@@ -22,6 +22,8 @@ import {
   Upload,
   Lock,
   Sliders,
+  Megaphone,
+  Radio,
 } from 'lucide-react';
 import { Tooltip } from '../components/ui/Tooltip';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
@@ -3317,6 +3319,24 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           }
         }
       }
+
+      // 5. GROUP PARTICIPANTS UPDATE
+      if (eventData.event === 'group_participants_updated') {
+        const rawConvId = eventData.conversation_id;
+        const convIdNumber = typeof rawConvId === 'number' ? rawConvId : Number(rawConvId);
+        if (Number.isInteger(convIdNumber) && convIdNumber > 0) {
+          void WhatsAppApi.getGroupParticipants(convIdNumber)
+            .then((res) => {
+              if (res && Array.isArray(res.participants)) {
+                setGroupParticipantsMap((prev) => ({
+                  ...prev,
+                  [convIdNumber]: res.participants,
+                }));
+              }
+            })
+            .catch(() => {});
+        }
+      }
     };
 
     // Reconnect Recovery: WS dustuyse job arka planda calismaya devam eder —
@@ -3425,6 +3445,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         eventData?.event === 'session_disconnected' ||
         eventData?.event === 'session_updated'
       ) {
+        if (eventData?.event === 'session_disconnected' && (eventData?.error_reason === 'CONNECTION_REPLACED' || eventData?.reason === 'CONNECTION_REPLACED')) {
+          toast.warning(t('whatsapp.connectionReplacedDesc'), t('whatsapp.connectionReplacedTitle'));
+        }
         fetchSessions(true);
         onRefreshStatsRef.current();
         loadConversations(true);
@@ -3876,12 +3899,32 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5 truncate">
-                                {selectedConv.is_group && (
+                                {selectedConv.entity_type === 'COMMUNITY' ? (
+                                  <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:bg-emerald-500/25 dark:text-emerald-400">
+                                    <Users className="w-3 h-3" />
+                                    <span>{t('whatsapp.community')}</span>
+                                  </span>
+                                ) : selectedConv.entity_type === 'ANNOUNCEMENT' ? (
+                                  <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:bg-amber-500/25 dark:text-amber-400">
+                                    <Megaphone className="w-3 h-3" />
+                                    <span>{t('whatsapp.announcement')}</span>
+                                  </span>
+                                ) : selectedConv.entity_type === 'CHANNEL' ? (
+                                  <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-600 dark:bg-sky-500/25 dark:text-sky-400">
+                                    <Radio className="w-3 h-3" />
+                                    <span>{t('whatsapp.channel')}</span>
+                                  </span>
+                                ) : selectedConv.entity_type === 'BROADCAST' ? (
+                                  <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-500/15 text-indigo-600 dark:bg-indigo-500/25 dark:text-indigo-400">
+                                    <Radio className="w-3 h-3" />
+                                    <span>{t('whatsapp.broadcast')}</span>
+                                  </span>
+                                ) : selectedConv.is_group ? (
                                   <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
                                     <Users className="w-3 h-3" />
                                     <span>{t('whatsapp.group')}</span>
                                   </span>
-                                )}
+                                ) : null}
                                 <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate group-hover/header:text-[#7367F0] transition-colors" dir="auto">
                                   <bdi>{headerDisplayName}</bdi>
                                 </h4>

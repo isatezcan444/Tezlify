@@ -936,6 +936,8 @@ async def list_conversations(
                 # Sorun 4: kalici `is_group` sütunu esas; eski satirlar
                 # (sync oncesinde olusmus) JID sentinel'iyle tamamlanir.
                 "is_group": bool(r.is_group) or bool(phone and "@g.us" in phone),
+                "entity_type": r.entity_type or ("GROUP" if (r.is_group or (phone and "@g.us" in phone)) else "INDIVIDUAL"),
+                "parent_jid": r.parent_jid,
                 # WhatsApp arsiv durumu (CRM status'tan bagimsiz, gateway
                 # metadata'sindan kalici yazilir).
                 "is_archived": bool(r.is_archived),

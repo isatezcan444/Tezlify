@@ -301,6 +301,8 @@ export interface BackendConversation {
   phone?: string | null;
   is_group?: boolean;
   is_archived?: boolean;
+  entity_type?: 'INDIVIDUAL' | 'GROUP' | 'COMMUNITY' | 'ANNOUNCEMENT' | 'CHANNEL' | 'BROADCAST' | null;
+  parent_jid?: string | null;
   avatar_url?: string | null;
   last_message_preview?: string | null;
   /** Liste rozeti: SON mesajin en yeni ifadesi (sunucu hesaplar). */
@@ -345,6 +347,8 @@ function mapConversation(c: BackendConversation): Conversation {
   if (c.phone !== undefined) conv.lead_phone = c.phone || undefined;
   if (c.identity_state !== undefined) conv.identity_state = c.identity_state || undefined;
   if (c.is_group !== undefined || c.phone !== undefined) conv.is_group = isGroup;
+  if (c.entity_type !== undefined) conv.entity_type = (c.entity_type as any) || undefined;
+  if (c.parent_jid !== undefined) conv.parent_jid = c.parent_jid ?? null;
   if (c.is_archived !== undefined) conv.is_archived = Boolean(c.is_archived);
   // Phase 22 (Rule 1 & 2): Avatar alanı yalnızca geçerli, boş olmayan bir string ise yazılır.
   // null, undefined veya boş string ASLA `lead_avatar_url: undefined` olarak objeye eklenmez;
@@ -527,6 +531,8 @@ export function buildConversationUpdatedPayload(
   else if (p.phone === null) canonical.phone = null;
   if (p.identity_state !== undefined) canonical.identity_state = p.identity_state;
   if (p.is_group !== undefined) canonical.is_group = p.is_group;
+  if (p.entity_type !== undefined) canonical.entity_type = p.entity_type;
+  if (p.parent_jid !== undefined) canonical.parent_jid = p.parent_jid;
   if (typeof p.avatar_url === 'string' && p.avatar_url) canonical.avatar_url = p.avatar_url;
 
   return canonical;

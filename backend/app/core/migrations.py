@@ -393,11 +393,18 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
                 # Sohbetin geldigi WhatsApp hatti (gateway oturumu): gonderim
                 # yonlendirmesi ve hat bazli temizlik icin. Eski satirlarda NULL.
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                # Phase 7.3: WhatsApp Entity Classification & Hierarchy
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS entity_type VARCHAR(30) DEFAULT 'INDIVIDUAL'"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS parent_jid VARCHAR(100)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_session_id ON conversations (session_id)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_group ON conversations (is_group)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_entity_type ON conversations (entity_type)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_parent_jid ON conversations (parent_jid)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_group_archived ON conversations (user_id, is_group, is_archived)"))
+                # Backfill existing groups to GROUP entity_type
+                await conn.execute(text("UPDATE conversations SET entity_type = 'GROUP' WHERE is_group = TRUE AND (entity_type IS NULL OR entity_type = 'INDIVIDUAL')"))
                 # Repair duplicate same-line conversations before enforcing
                 # uniqueness. Messages are reassigned to the lowest id so no
                 # history is lost; legacy line-less (NULL session_id) rows
@@ -505,13 +512,22 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
             if "session_id" not in columns:
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN session_id INTEGER REFERENCES whatsapp_sessions(id)"))
                 logger.info("[MIGRATION] Added conversations.session_id")
+            if "entity_type" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN entity_type VARCHAR(30) DEFAULT 'INDIVIDUAL'"))
+                logger.info("[MIGRATION] Added conversations.entity_type")
+            if "parent_jid" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN parent_jid VARCHAR(100)"))
+                logger.info("[MIGRATION] Added conversations.parent_jid")
 
         # Ensure generic conversation indexes
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_group ON conversations (is_group)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_entity_type ON conversations (entity_type)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_parent_jid ON conversations (parent_jid)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_group_archived ON conversations (user_id, is_group, is_archived)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_session_id ON conversations (session_id)"))
+        await conn.execute(text("UPDATE conversations SET entity_type = 'GROUP' WHERE is_group = 1 AND (entity_type IS NULL OR entity_type = 'INDIVIDUAL')"))
         idx_check = await conn.execute(text(
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_conv_user_session_contact_channel'"
         ))

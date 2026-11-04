@@ -162,6 +162,9 @@ class WhatsAppConversationItem(BaseModel):
     is_self: bool = False
     # Sorun 4: WhatsApp arsiv durumu (gateway Baileys metadata'sindan kalici).
     is_archived: bool = False
+    # Phase 7.3: WhatsApp Entity Classification & Hierarchy
+    entity_type: Optional[str] = "INDIVIDUAL"
+    parent_jid: Optional[str] = None
     avatar_url: Optional[str] = None
     last_message_preview: Optional[str] = None
     last_message_at: Optional[str] = None

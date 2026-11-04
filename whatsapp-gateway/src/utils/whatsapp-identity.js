@@ -46,7 +46,19 @@ export function isNewsletterJid(jid) {
 }
 
 export function isBroadcastOnlyJid(jid) {
-  return isStatusBroadcastJid(jid) || isNewsletterJid(jid);
+  return isStatusBroadcastJid(jid);
+}
+
+export function classifyEntityType({ jid, isCommunity = false, isCommunityAnnounce = false, linkedParent = null } = {}) {
+  const s = String(jid || '');
+  if (s.endsWith('@newsletter')) return 'CHANNEL';
+  if (s.endsWith('@broadcast') && s !== 'status@broadcast') return 'BROADCAST';
+  if (s.endsWith('@g.us')) {
+    if (isCommunity) return 'COMMUNITY';
+    if (isCommunityAnnounce) return 'ANNOUNCEMENT';
+    return 'GROUP';
+  }
+  return 'INDIVIDUAL';
 }
 
 export function asLid(v) {
@@ -86,6 +98,7 @@ function _asPhoneSide(v) {
   if (!clean.includes('@')) return null;
   if (isLidJid(clean)) return null;
   if (clean.includes('@g.us')) return null;
+  if (isNewsletterJid(clean)) return null;
   if (isBroadcastOnlyJid(clean)) return null;
   return clean.endsWith('@c.us')
     ? `${clean.slice(0, -'@c.us'.length)}@s.whatsapp.net`
@@ -125,6 +138,7 @@ export function jidToPhone(jid) {
   if (!jid) return null;
   if (isLidJid(jid)) return null;
   if (jid.includes('@g.us')) return null;
+  if (isNewsletterJid(jid)) return null;
   const match = jid.match(/^(\d+)(?::\d+)?@/);
   if (!match) return null;
   const digits = match[1];

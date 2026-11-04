@@ -12,6 +12,15 @@ class ConversationStatus(str, enum.Enum):
     CLOSED = "CLOSED"
 
 
+class ConversationEntityType(str, enum.Enum):
+    INDIVIDUAL = "INDIVIDUAL"
+    GROUP = "GROUP"
+    COMMUNITY = "COMMUNITY"
+    ANNOUNCEMENT = "ANNOUNCEMENT"
+    CHANNEL = "CHANNEL"
+    BROADCAST = "BROADCAST"
+
+
 class Conversation(Base):
     """
     Represents an ongoing conversational dialogue thread across a channel.
@@ -61,6 +70,10 @@ class Conversation(Base):
     # durumundan farkli bir kavramdir).
     is_group = Column(Boolean, default=False, nullable=False, index=True)
     is_archived = Column(Boolean, default=False, nullable=False, index=True)
+
+    # Phase 7.3: WhatsApp Entity Classification & Hierarchy
+    entity_type = Column(String(30), default=ConversationEntityType.INDIVIDUAL.value, nullable=True, index=True)
+    parent_jid = Column(String(100), nullable=True, index=True)
 
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
     updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)

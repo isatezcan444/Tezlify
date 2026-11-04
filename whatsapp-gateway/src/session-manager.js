@@ -37,6 +37,7 @@ import {
   resolveJidKey,
   lidPairsFromMessageKey,
   jidKind,
+  classifyEntityType,
 } from './utils/whatsapp-identity.js';
 
 import {
@@ -4449,19 +4450,43 @@ export function createSessionManager({
       session._groupSubjectsInFlight = true;
       session._groupSubjectsAt = Date.now();
 
-      const applySubject = (jid, subject) => {
+      const applySubject = (jid, subject, meta = null) => {
         const key = resolveJidKey(store, jid);
         const chat = chats.get(key);
         const contact = contacts.get(key);
         const rankCur = NAME_RANK[chat?.name_source] || 0;
+        let changed = false;
         if (chat && (NAME_RANK.group_subject > rankCur || isRawIdentityName(chat.name))) {
           const merged = mergeContactName({ name: chat.name, name_source: chat.name_source }, subject, 'group_subject');
           if (merged.name && merged.name !== chat.name) {
             chat.name = merged.name;
             chat.name_source = merged.name_source;
-            chat.updated_at = new Date().toISOString();
-            emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+            changed = true;
           }
+        }
+        if (chat && meta) {
+          const entityType = classifyEntityType({
+            jid: key,
+            isCommunity: Boolean(meta.isCommunity),
+            isCommunityAnnounce: Boolean(meta.isCommunityAnnounce),
+            linkedParent: meta.linkedParent || null,
+          });
+          if (entityType && entityType !== chat.entity_type) {
+            chat.entity_type = entityType;
+            changed = true;
+          }
+          if (meta.linkedParent && meta.linkedParent !== chat.parent_jid) {
+            chat.parent_jid = meta.linkedParent;
+            changed = true;
+          }
+          if (meta.size != null && meta.size !== chat.group_size) {
+            chat.group_size = meta.size;
+            changed = true;
+          }
+        }
+        if (chat && changed) {
+          chat.updated_at = new Date().toISOString();
+          emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
         }
         if (contact) {
           const mergedC = mergeContactName({ name: contact.name, name_source: contact.name_source }, subject, 'group_subject');
@@ -4492,6 +4517,12 @@ export function createSessionManager({
           const key = resolveJidKey(store, jid);
           if (chats.has(key)) return;
           const nowIso = new Date().toISOString();
+          const entityType = classifyEntityType({
+            jid: key,
+            isCommunity: Boolean(meta?.isCommunity),
+            isCommunityAnnounce: Boolean(meta?.isCommunityAnnounce),
+            linkedParent: meta?.linkedParent || null,
+          });
           const created = {
             id: key,
             jid: key,
@@ -4499,6 +4530,10 @@ export function createSessionManager({
             name_source: 'group_subject',
             phone: '',
             is_group: true,
+            entity_type: entityType,
+            parent_jid: meta?.linkedParent || null,
+            group_size: meta?.size || meta?.participants?.length || 0,
+            group_desc: meta?.desc || null,
             // Yalnizca konusundan bilinen grup: arsiv durumu BILINMIYOR.
             // Sabit `false` yazmak, backend'in `"archived" in payload`
             // korumasini devre disi birakip bilinen bir arsivi ezerdi.
@@ -4538,7 +4573,7 @@ export function createSessionManager({
           if (!jid || !jid.includes('@g.us') || !subject) continue;
           resolvedKeys.add(resolveJidKey(store, jid));
           seedGroupChat(jid, subject, meta);
-          applySubject(jid, subject);
+          applySubject(jid, subject, meta);
         }
       } catch (err) {
         session._groupSubjectsAt = 0;

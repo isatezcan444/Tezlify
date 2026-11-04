@@ -601,6 +601,8 @@ export interface Conversation {
   is_self?: boolean;
   // Sorun 4: WhatsApp arsiv durumu (Baileys metadata) — CRM status'tan bagimsiz.
   is_archived?: boolean;
+  entity_type?: 'INDIVIDUAL' | 'GROUP' | 'COMMUNITY' | 'ANNOUNCEMENT' | 'CHANNEL' | 'BROADCAST';
+  parent_jid?: string | null;
   last_message_preview?: string;
   /** WhatsApp Web paritesi: liste satirinda SON MESAJIN en yeni ifadesi.
    * Eski bir mesaja birakilan ifade listede gorunmez (sunucu hesaplar). */

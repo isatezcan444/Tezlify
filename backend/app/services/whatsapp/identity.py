@@ -43,9 +43,9 @@ def jid_to_phone(jid: Optional[str]) -> Optional[str]:
     jid_str = str(jid)
     if jid_str.endswith("@lid"):
         return None
-    # Faz 8 (RC-4): grup JID'inden (`120363...@g.us`) asla telefon türetilmez
-    # — yoksa UI'da `+1203632...` gibi sahte numaralar görünür (AGENTS.md).
-    if "@g.us" in jid_str:
+    # Faz 8 (RC-4): grup JID'inden (`120363...@g.us`) veya kanal JID'inden
+    # (`120363...@newsletter`) asla telefon türetilmez — sahte telefon sentezlenmez (AGENTS.md).
+    if "@g.us" in jid_str or "@newsletter" in jid_str:
         return None
     head = jid_str.split("@")[0].split(":")[0]
     digits = "".join(ch for ch in head if ch.isdigit())
@@ -73,6 +73,9 @@ def is_degenerate_jid(jid: Optional[str]) -> bool:
         head = clean.split("@")[0]
         parts = head.split("-")
         return not (all(p.isdigit() for p in parts) and len(parts) in (1, 2) and head != "")
+    if clean.endswith("@newsletter"):
+        head = clean.split("@")[0]
+        return not head.isdigit() or len(head) < 5 or set(head) == {"0"}
     head = clean.split("@")[0].split(":")[0]
     digits = "".join(ch for ch in head if ch.isdigit())
     if not digits or digits != head.strip():
@@ -80,12 +83,32 @@ def is_degenerate_jid(jid: Optional[str]) -> bool:
     return len(digits) < 5 or set(digits) == {"0"}
 
 
-def is_broadcast_only_jid(jid: Optional[str]) -> bool:
-    """WhatsApp Durum/Hikaye (`status@broadcast`) ve kanal (`@newsletter`) JID'leri."""
+def is_newsletter_jid(jid: Optional[str]) -> bool:
+    """WhatsApp Kanal / Newsletter JID'i mi (@newsletter)."""
     if not jid:
         return False
-    jid_str = str(jid)
-    return jid_str == "status@broadcast" or jid_str.endswith("@newsletter")
+    return str(jid).strip().endswith("@newsletter")
+
+
+def is_group_jid(jid: Optional[str]) -> bool:
+    """WhatsApp Grup JID'i mi (@g.us)."""
+    if not jid:
+        return False
+    return str(jid).strip().endswith("@g.us")
+
+
+def is_status_broadcast_jid(jid: Optional[str]) -> bool:
+    """WhatsApp Durum/Hikaye (`status@broadcast`) JID'i mi."""
+    if not jid:
+        return False
+    return str(jid).strip() == "status@broadcast"
+
+
+def is_broadcast_only_jid(jid: Optional[str]) -> bool:
+    """WhatsApp Durum/Hikaye (`status@broadcast`) JID'leri.
+    NOT: Kanal (@newsletter) artık elenmez; birinci sınıf sohbet varlığıdır.
+    """
+    return is_status_broadcast_jid(jid)
 
 
 def phone_to_jid(phone_e164: str) -> str:
