@@ -1,3 +1,5 @@
+import path from 'path';
+
 /**
  * HTTP media routes.
  *
@@ -56,18 +58,35 @@ export function registerMediaRoutes(app, { sessionManager, logger }) {
 
   async function serveVerifiedMedia(req, res, sessionId, lookupId, options) {
     let filePath = null;
-    try {
-      filePath = await sessionManager.resolveMediaPath(sessionId, lookupId);
-    } catch (err) {
-      logger?.error({ err: err?.code || err?.message }, 'Media path resolution failed');
-      return res.status(500).json({ error: 'Media lookup failed', code: 'MEDIA_LOOKUP_ERROR' });
+    const isRetry = Boolean(options?.retry);
+    const isFullMediaRequested = !options?.preferPreview;
+
+    if (!isRetry) {
+      try {
+        filePath = await sessionManager.resolveMediaPath(sessionId, lookupId);
+      } catch (err) {
+        logger?.error({ err: err?.code || err?.message }, 'Media path resolution failed');
+        return res.status(500).json({ error: 'Media lookup failed', code: 'MEDIA_LOOKUP_ERROR' });
+      }
+      if (filePath && isFullMediaRequested && path.basename(filePath).startsWith('thumb_')) {
+        filePath = null;
+      }
     }
+
     if (!filePath) {
       try {
         filePath = await sessionManager.downloadMediaOnDemand(sessionId, lookupId, options);
       } catch (err) {
         logger?.error({ err: err?.code || err?.message }, 'On-demand media download failed');
         return res.status(500).json({ error: 'Media lookup failed', code: 'MEDIA_LOOKUP_ERROR' });
+      }
+    }
+    if (!filePath && isFullMediaRequested) {
+      try {
+        const cachedPath = await sessionManager.resolveMediaPath(sessionId, lookupId);
+        if (cachedPath) filePath = cachedPath;
+      } catch {
+        // best effort
       }
     }
     if (!filePath) return res.status(404).json({ error: 'Media not found', code: 'MEDIA_EXPIRED' });

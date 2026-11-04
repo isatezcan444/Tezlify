@@ -1415,19 +1415,20 @@ class WhatsAppMessagingOrchestrator:
         # Commit the read transaction so the DB connection is released to the pool
         # while waiting on the gateway media download.
         await db.commit()
+        media_timeout = gw.gateway_media_timeout(mime_type=mime, preview=preview)
         try:
             data = await gateway_client.fetch_media(
-                gateway_id, target_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+                gateway_id, target_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me, timeout=media_timeout
             )
         except LookupError:
             try:
                 if target_id != media_id:
                     data = await gateway_client.fetch_media(
-                        gateway_id, media_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+                        gateway_id, media_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me, timeout=media_timeout
                     )
                 elif wa_msg_id and target_id != wa_msg_id:
                     data = await gateway_client.fetch_media(
-                        gateway_id, wa_msg_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+                        gateway_id, wa_msg_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me, timeout=media_timeout
                     )
                 else:
                     raise

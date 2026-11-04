@@ -2499,8 +2499,11 @@ export function createSessionManager({
                   if (found.media_id) {
                     const p = await mediaStore.resolveMediaPath(session.id, found.media_id);
                     if (p) {
-                      this._failedMediaCache?.delete(inFlightKey);
-                      return p;
+                      const isThumbnail = path.basename(p).startsWith('thumb_');
+                      if (!isRetry && (options?.preferPreview || !isThumbnail)) {
+                        this._failedMediaCache?.delete(inFlightKey);
+                        return p;
+                      }
                     }
                   }
                 }

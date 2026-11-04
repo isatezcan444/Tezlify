@@ -376,7 +376,8 @@ NEWSLETTER_JID = "120363123456789012@newsletter"
 def test_broadcast_only_jid_helper():
     """Helper dogru JID'leri tanimli; normal JID'leri es gecer."""
     assert ws.is_broadcast_only_jid(BROADCAST_JID) is True
-    assert ws.is_broadcast_only_jid(NEWSLETTER_JID) is True
+    # Faz 7.3: Kanal (@newsletter) artık elenmez; birinci sınıf sohbet varlığıdır.
+    assert ws.is_broadcast_only_jid(NEWSLETTER_JID) is False
     assert ws.is_broadcast_only_jid(REAL_JID) is False
     assert ws.is_broadcast_only_jid("120363@g.us") is False
     assert ws.is_broadcast_only_jid(None) is False
@@ -406,8 +407,8 @@ async def test_status_broadcast_message_is_not_persisted():
 
 
 @pytest.mark.asyncio
-async def test_newsletter_message_is_not_persisted():
-    """`@newsletter` (kanal) mesaji sohbet listesine dusmez."""
+async def test_newsletter_message_is_persisted():
+    """Faz 7.3: `@newsletter` (kanal) mesaji birinci sinif sohbet olarak islenir."""
     gw_id = await _add_session(U1)
     result = await ws.ingest_gateway_event({
         "event": "message_new",
@@ -418,7 +419,7 @@ async def test_newsletter_message_is_not_persisted():
             "wa_message_id": "wamid-news-1",
         },
     })
-    assert result is None
+    assert result is not None
 
 
 @pytest.mark.asyncio

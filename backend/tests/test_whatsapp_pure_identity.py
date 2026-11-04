@@ -83,7 +83,8 @@ def test_is_degenerate_jid():
 
 def test_is_broadcast_only_jid():
     assert is_broadcast_only_jid("status@broadcast") is True
-    assert is_broadcast_only_jid("123456789@newsletter") is True
+    # Faz 7.3: Kanal (@newsletter) artık elenmez; birinci sınıf sohbet varlığıdır.
+    assert is_broadcast_only_jid("123456789@newsletter") is False
     assert is_broadcast_only_jid("905551234567@s.whatsapp.net") is False
     assert is_broadcast_only_jid("120363025442111111@g.us") is False
     assert is_broadcast_only_jid(None) is False

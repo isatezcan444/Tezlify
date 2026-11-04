@@ -48,6 +48,46 @@ def gateway_timeout() -> float:
     return float(getattr(settings, "WHATSAPP_GATEWAY_TIMEOUT", 30.0) or 30.0)
 
 
+def gateway_media_timeout(
+    mime_type: Optional[str] = None,
+    preview: bool = False,
+    file_length: Optional[int] = None,
+) -> float:
+    """Gateway medya indirme istekleri için dinamik HTTP timeout hesaplar.
+
+    Gateway içindeki Baileys zaman aşımı değerleri:
+    - Preview: 10s -> Backend timeout: 15.0s
+    - Video: 45s-180s -> Backend timeout: 195.0s
+    - Document / PDF: 35s-120s -> Backend timeout: 135.0s
+    - Audio: 30s-60s -> Backend timeout: 75.0s
+    - Image / Diğer: 20s-45s -> Backend timeout: 60.0s
+
+    Gateway ve backend arasındaki ağ aktarımı için 15 saniyelik marj eklenir.
+    Dosya boyutu biliniyorsa (file_length > 0) asgari 100 KB/sn varsayımıyla ölçeklenir,
+    üst sınır 240.0s olarak kısıtlanır.
+    """
+    if preview:
+        return 15.0
+
+    raw_mime = (mime_type or "").strip().lower()
+    if "video" in raw_mime:
+        timeout = 195.0
+    elif "pdf" in raw_mime or "document" in raw_mime or "application/" in raw_mime or "text/" in raw_mime:
+        timeout = 135.0
+    elif "audio" in raw_mime or "ogg" in raw_mime or "opus" in raw_mime:
+        timeout = 75.0
+    elif "image" in raw_mime:
+        timeout = 60.0
+    else:
+        timeout = 60.0
+
+    if file_length and file_length > 0:
+        scaled = (file_length / (100 * 1024)) + 20.0
+        timeout = max(timeout, min(240.0, float(scaled)))
+
+    return float(timeout)
+
+
 def gateway_auth_headers() -> Dict[str, str]:
     """Return the mandatory gateway credential without ever logging it."""
     secret = str(getattr(settings, "WHATSAPP_GATEWAY_SECRET", "") or "").strip()
@@ -621,6 +661,7 @@ async def fetch_media(
     retry: bool = False,
     jid: Optional[str] = None,
     from_me: Optional[bool] = None,
+    timeout: Optional[float] = None,
 ) -> bytes:
     """Gateway'den medya indirir (oturum kapsamli). Yalnızca 2xx bayt döner."""
     params = []
@@ -634,8 +675,9 @@ async def fetch_media(
         params.append(f"from_me={'true' if from_me else 'false'}")
     query = f"?{'&'.join(params)}" if params else ""
     url = f"{gateway_base()}{_s(gateway_id)}/media/{media_id}{query}"
+    req_timeout = timeout if timeout is not None else gateway_media_timeout(preview=preview)
     try:
-        async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
+        async with httpx.AsyncClient(timeout=req_timeout) as client:
             res = await client.get(url, headers=gateway_auth_headers())
     except httpx.HTTPError as exc:
         raise WhatsAppGatewayError(f"Medya indirilemedi: {exc}") from exc
@@ -659,6 +701,7 @@ async def fetch_media_unscoped(
     retry: bool = False,
     jid: Optional[str] = None,
     from_me: Optional[bool] = None,
+    timeout: Optional[float] = None,
 ) -> bytes:
     """Gateway'den oturumsuz doğrudan medya indirir. Yalnızca 2xx bayt döner.
 
@@ -676,8 +719,9 @@ async def fetch_media_unscoped(
         params.append(f"from_me={'true' if from_me else 'false'}")
     query = f"?{'&'.join(params)}" if params else ""
     url = f"{gateway_base()}/media/{media_id}{query}"
+    req_timeout = timeout if timeout is not None else gateway_media_timeout(preview=preview)
     try:
-        async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
+        async with httpx.AsyncClient(timeout=req_timeout) as client:
             res = await client.get(url, headers=gateway_auth_headers())
     except httpx.HTTPError as exc:
         raise WhatsAppGatewayError(f"Medya indirilemedi: {exc}") from exc

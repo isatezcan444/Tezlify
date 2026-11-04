@@ -16,6 +16,17 @@ import { Readable } from 'stream';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadMediaMessage, downloadContentFromMessage } from '@whiskeysockets/baileys';
 import { resolveDownloadableMedia, unwrapMessageContent } from '../messages/message-classifier.js';
+import {
+  calculateMediaTimeout,
+  isTransientMediaError,
+  getRetryDelay,
+} from './media-timeout.js';
+
+export {
+  calculateMediaTimeout,
+  isTransientMediaError,
+  getRetryDelay,
+};
 
 // Surec baslama ani: bu andan SONRA uretilmis bir mesaj onceden diskte olamaz.
 // Bu, canli medya akisinda gereksiz tam sidecar taramasini engeller; replay /
@@ -831,7 +842,14 @@ export function createMediaStore({
       // Ayni mesajin medyasi RAM'de veya diskte zaten varsa YENI KOPYA URETME.
       if (waMessageId) {
         const existing = await findExistingMediaByWaId(String(waMessageId), waMessage, session);
-        if (existing) return existing;
+        if (existing) {
+          const isRetry = Boolean(options?.retry || options?.force);
+          const isThumbnail = existing.filename && existing.filename.startsWith('thumb_');
+          // If caller wants full media or explicitly retried, don't return thumbnail fallback
+          if (!isRetry && (options?.preferPreview || !isThumbnail)) {
+            return existing;
+          }
+        }
       }
 
       const unwrappedMessage = unwrapMessageContent(waMessage?.message) || waMessage?.message;
@@ -866,44 +884,112 @@ export function createMediaStore({
         media.url = 'https://mmg.whatsapp.net';
       }
 
+      const fileLengthNum = media?.fileLength ? Number(media.fileLength) : 0;
+      const isPreview = Boolean(options?.preferPreview);
+      const dynamicTimeoutMs = calculateMediaTimeout({
+        mediaType,
+        mimetype: media.mimetype,
+        fileLength: fileLengthNum,
+        isPreview,
+        customTimeout: options?.timeoutMs,
+      });
+
       let buffer = null;
+      let lastDlError = null;
+      const MAX_RETRIES = 2; // Initial attempt + up to 2 retries (total 3 attempts)
+
       await acquireMediaDownloadSlot();
       try {
-        const dlPromise = (async () => {
-          try {
-            return await downloadMediaMessage(
-              effectiveWaMessage,
-              'buffer',
-              {},
-              { logger, reuploadRequest: sock?.updateMediaMessage }
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          const isRetryAttempt = attempt > 0;
+          if (isRetryAttempt) {
+            const delay = getRetryDelay(attempt - 1);
+            logger?.info(
+              { waMessageId, attempt: attempt + 1, delay, error: lastDlError?.message },
+              'Retrying media download after transient failure'
             );
-          } catch (dlErr) {
-            // Direct fallback via downloadContentFromMessage if Baileys wrapper failed
-            if ((media.directPath || media.url) && media.mediaKey) {
-              try {
-                const stream = await downloadContentFromMessage(media, mediaType || 'image', {});
-                let buf = Buffer.from([]);
-                for await (const chunk of stream) {
-                  buf = Buffer.concat([buf, chunk]);
-                }
-                if (buf.length > 0) return buf;
-              } catch (directErr) {
-                logger?.debug({ directErr: directErr?.message, waMessageId }, 'downloadContentFromMessage fallback failed');
-              }
-            }
-            throw dlErr;
+            await new Promise((resolve) => setTimeout(resolve, delay));
           }
-        })();
 
-        let dlTimer;
-        const dlTimeout = new Promise((_, reject) => {
-          dlTimer = setTimeout(() => reject(new Error('Media download timeout (10s)')), 10_000);
-        });
-        dlTimeout.catch(() => {});
-        try {
-          buffer = await Promise.race([dlPromise, dlTimeout]);
-        } finally {
-          if (dlTimer) clearTimeout(dlTimer);
+          let dlTimer;
+          try {
+            const dlPromise = (async () => {
+              try {
+                return await downloadMediaMessage(
+                  effectiveWaMessage,
+                  'buffer',
+                  {},
+                  { logger, reuploadRequest: sock?.updateMediaMessage }
+                );
+              } catch (dlErr) {
+                // Direct fallback via downloadContentFromMessage if Baileys wrapper failed
+                if ((media.directPath || media.url) && media.mediaKey) {
+                  try {
+                    const stream = await downloadContentFromMessage(media, mediaType || 'image', {});
+                    let buf = Buffer.from([]);
+                    for await (const chunk of stream) {
+                      buf = Buffer.concat([buf, chunk]);
+                    }
+                    if (buf.length > 0) return buf;
+                  } catch (directErr) {
+                    logger?.debug({ directErr: directErr?.message, waMessageId }, 'downloadContentFromMessage fallback failed');
+                  }
+                }
+                throw dlErr;
+              }
+            })();
+
+            const dlTimeout = new Promise((_, reject) => {
+              dlTimer = setTimeout(
+                () => reject(new Error(`Media download timeout (${Math.round(dynamicTimeoutMs / 1000)}s)`)),
+                dynamicTimeoutMs
+              );
+            });
+            dlTimeout.catch(() => {});
+
+            buffer = await Promise.race([dlPromise, dlTimeout]);
+
+            // Validate stream integrity: if expected length is known and not preview, verify not truncated
+            if (buffer && !isPreview && fileLengthNum > 0 && buffer.length < fileLengthNum * 0.9) {
+              const truncErr = new Error(`Media stream truncated: received ${buffer.length} of ${fileLengthNum} bytes`);
+              truncErr.code = 'STREAM_TRUNCATED';
+              buffer = null;
+              throw truncErr;
+            }
+
+            // Successful download! Break out of retry loop
+            if (buffer && buffer.length > 0) {
+              if (isRetryAttempt) {
+                logger?.info(
+                  { waMessageId, attempt: attempt + 1, bytes: buffer.length },
+                  'Media download succeeded on retry'
+                );
+              }
+              break;
+            }
+          } catch (dlErr) {
+            lastDlError = dlErr;
+            buffer = null;
+
+            // Check if error is transient
+            const isTransient = isTransientMediaError(dlErr);
+            if (!isTransient) {
+              logger?.debug(
+                { waMessageId, attempt: attempt + 1, error: dlErr?.message, code: dlErr?.code },
+                'Media download failed with terminal error; will not retry'
+              );
+              break;
+            }
+
+            if (attempt === MAX_RETRIES) {
+              logger?.warn(
+                { waMessageId, attempts: attempt + 1, error: dlErr?.message },
+                'Media download failed after maximum retry attempts'
+              );
+            }
+          } finally {
+            if (dlTimer) clearTimeout(dlTimer);
+          }
         }
       } catch (dlErr) {
         logger?.debug({ dlErr: dlErr?.message, waMessageId }, 'downloadMediaMessage failed or timed out, checking thumbnail');
@@ -1018,5 +1104,8 @@ export function createMediaStore({
     storeMediaBuffer,
     evictOverflowMedia,
     clearSessionMedia,
+    calculateMediaTimeout,
+    isTransientMediaError,
+    getRetryDelay,
   };
 }
