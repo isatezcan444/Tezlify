@@ -246,3 +246,4 @@ Production sunucusu (`130.162.247.20`) üzerinde cutover sonrası yapılan doğr
 ---
 
 **AŞAMA 7.7 başarıyla tamamlanmıştır. Kodlar GitHub `main` branch'ine push edilmiş ve Oracle Cloud production ortamına sıfır kesintiyle deploy edilmiştir.**
+

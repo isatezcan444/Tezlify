@@ -13,6 +13,7 @@ import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
+import { AsyncLocalStorage } from 'async_hooks';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadMediaMessage, downloadContentFromMessage } from '@whiskeysockets/baileys';
 import { resolveDownloadableMedia, unwrapMessageContent } from '../messages/message-classifier.js';
@@ -23,6 +24,30 @@ import {
   getRetryDelay,
   MEDIA_TIMEOUT_BOUNDS,
 } from './media-timeout.js';
+
+/**
+ * AsyncLocalStorage context holding the active AbortSignal for the current media download.
+ * Injects the signal into globalThis.fetch so Baileys getHttpStream calls can physically
+ * abort the underlying HTTP TCP connection when client disconnects or times out.
+ */
+export const mediaDownloadScope = new AsyncLocalStorage();
+
+if (typeof globalThis.fetch === 'function' && !globalThis.__mediaFetchInterceptorInstalled) {
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = function (input, init = {}) {
+    const scope = mediaDownloadScope.getStore();
+    if (scope?.signal) {
+      const effectiveSignal = init?.signal
+        ? (typeof AbortSignal.any === 'function'
+            ? AbortSignal.any([init.signal, scope.signal])
+            : init.signal)
+        : scope.signal;
+      return nativeFetch.call(this, input, { ...init, signal: effectiveSignal });
+    }
+    return nativeFetch.call(this, input, init);
+  };
+  globalThis.__mediaFetchInterceptorInstalled = true;
+}
 
 /**
  * Safely parses media fileLength across numbers, numeric strings, Long objects and BigInt.
@@ -1093,66 +1118,70 @@ export function createMediaStore({
 
           let dlTimer;
           let abortListener;
+          const attemptController = new AbortController();
+
+          if (options?.signal) {
+            if (options.signal.aborted) {
+              const abortErr = new Error('Media download aborted by client');
+              abortErr.name = 'AbortError';
+              throw abortErr;
+            }
+            abortListener = () => {
+              attemptController.abort(options.signal.reason);
+            };
+            options.signal.addEventListener('abort', abortListener, { once: true });
+          }
+
+          dlTimer = setTimeout(() => {
+            const timeoutErr = new Error(`Media download timeout (${Math.round(attemptTimeoutMs / 1000)}s)`);
+            timeoutErr.name = 'TimeoutError';
+            attemptController.abort(timeoutErr);
+          }, attemptTimeoutMs);
+
           try {
-            const dlPromise = (async () => {
+            buffer = await mediaDownloadScope.run({ signal: attemptController.signal }, async () => {
               try {
                 return await downloadMediaMessage(
                   effectiveWaMessage,
                   'buffer',
-                  {},
+                  { signal: attemptController.signal },
                   { logger, reuploadRequest: sock?.updateMediaMessage }
                 );
               } catch (dlErr) {
+                if (attemptController.signal.aborted) {
+                  if (options?.signal?.aborted) {
+                    const abortErr = new Error('Media download aborted by client');
+                    abortErr.name = 'AbortError';
+                    throw abortErr;
+                  }
+                  throw new Error(`Media download timeout (${Math.round(attemptTimeoutMs / 1000)}s)`);
+                }
                 // Direct fallback via downloadContentFromMessage if Baileys wrapper failed
                 if ((media.directPath || media.url) && media.mediaKey) {
                   try {
-                    const stream = await downloadContentFromMessage(media, mediaType || 'image', {});
+                    const stream = await downloadContentFromMessage(media, mediaType || 'image', { signal: attemptController.signal });
                     let buf = Buffer.from([]);
                     for await (const chunk of stream) {
-                      if (options?.signal?.aborted) {
-                        const abortErr = new Error('Media download aborted by client');
-                        abortErr.name = 'AbortError';
-                        throw abortErr;
+                      if (attemptController.signal.aborted) {
+                        if (typeof stream?.destroy === 'function') stream.destroy();
+                        if (options?.signal?.aborted) {
+                          const abortErr = new Error('Media download aborted by client');
+                          abortErr.name = 'AbortError';
+                          throw abortErr;
+                        }
+                        throw new Error(`Media download timeout (${Math.round(attemptTimeoutMs / 1000)}s)`);
                       }
                       buf = Buffer.concat([buf, chunk]);
                     }
                     if (buf.length > 0) return buf;
                   } catch (directErr) {
+                    if (attemptController.signal.aborted) throw directErr;
                     logger?.debug({ directErr: directErr?.message, waMessageId }, 'downloadContentFromMessage fallback failed');
                   }
                 }
                 throw dlErr;
               }
-            })();
-
-            const dlTimeout = new Promise((_, reject) => {
-              dlTimer = setTimeout(
-                () => reject(new Error(`Media download timeout (${Math.round(attemptTimeoutMs / 1000)}s)`)),
-                attemptTimeoutMs
-              );
             });
-            dlTimeout.catch(() => {});
-
-            const races = [dlPromise, dlTimeout];
-            if (options?.signal) {
-              if (options.signal.aborted) {
-                const abortErr = new Error('Media download aborted by client');
-                abortErr.name = 'AbortError';
-                throw abortErr;
-              }
-              const abortPromise = new Promise((_, reject) => {
-                abortListener = () => {
-                  const abortErr = new Error('Media download aborted by client');
-                  abortErr.name = 'AbortError';
-                  reject(abortErr);
-                };
-                options.signal.addEventListener('abort', abortListener, { once: true });
-              });
-              abortPromise.catch(() => {});
-              races.push(abortPromise);
-            }
-
-            buffer = await Promise.race(races);
 
             // Validate stream integrity: verify hash and length, reject any truncated/corrupt buffer
             validateMediaBufferIntegrity(buffer, media, { isPreview });
