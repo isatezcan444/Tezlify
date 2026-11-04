@@ -1415,7 +1415,10 @@ class WhatsAppMessagingOrchestrator:
         # Commit the read transaction so the DB connection is released to the pool
         # while waiting on the gateway media download.
         await db.commit()
-        media_timeout = gw.gateway_media_timeout(mime_type=mime, preview=preview)
+        file_length = None
+        if isinstance(getattr(row, "quoted_message", None), dict):
+            file_length = row.quoted_message.get("fileLength") or row.quoted_message.get("file_length")
+        media_timeout = gw.gateway_media_timeout(mime_type=mime, preview=preview, file_length=file_length)
         try:
             data = await gateway_client.fetch_media(
                 gateway_id, target_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me, timeout=media_timeout

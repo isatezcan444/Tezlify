@@ -6,6 +6,7 @@ başarı döndürülmez (AGENTS.md Truthfulness savunması).
 """
 import asyncio
 import logging
+import math
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -55,37 +56,58 @@ def gateway_media_timeout(
 ) -> float:
     """Gateway medya indirme istekleri için dinamik HTTP timeout hesaplar.
 
-    Gateway içindeki Baileys zaman aşımı değerleri:
-    - Preview: 10s -> Backend timeout: 15.0s
-    - Video: 45s-180s -> Backend timeout: 195.0s
-    - Document / PDF: 35s-120s -> Backend timeout: 135.0s
-    - Audio: 30s-60s -> Backend timeout: 75.0s
-    - Image / Diğer: 20s-45s -> Backend timeout: 60.0s
+    AŞAMA 7.6 Koordinasyonu:
+    Backend HTTP proxy timeout'u, Gateway'in toplam deadline bütçesini (tüm retry ve
+    backoff süreçleri dahil) en az 15 saniyelik ağ iletişim marjıyla karşılamalıdır.
 
-    Gateway ve backend arasındaki ağ aktarımı için 15 saniyelik marj eklenir.
-    Dosya boyutu biliniyorsa (file_length > 0) asgari 100 KB/sn varsayımıyla ölçeklenir,
-    üst sınır 240.0s olarak kısıtlanır.
+    Gateway Toplam Bütçeleri & Backend HTTP Proxy Timeout Değerleri:
+    - Preview: Gateway 12s -> Backend timeout: 15.0s (3s marj)
+    - Video (50MB+ ve boyutu bilinmeyen): Gateway tavanı 420s (7 dk) -> Backend: 435.0s (15s marj)
+    - Document / PDF: Gateway tavanı 180s (3 dk) -> Backend: 195.0s (15s marj)
+    - Audio: Gateway tavanı 90s (1.5 dk) -> Backend: 105.0s (15s marj)
+    - Image / Diğer: Gateway tavanı 60s (1 dk) -> Backend: 75.0s (15s marj)
+
+    Dosya boyutu (file_length > 0) bilindiğinde kategori bant genişliği formülüne
+    göre ölçeklenir; bilinmediğinde veya geçersizse kategori güvenli tavanı kullanılır.
     """
     if preview:
         return 15.0
 
     raw_mime = (mime_type or "").strip().lower()
+
     if "video" in raw_mime:
-        timeout = 195.0
+        base_budget = 60.0
+        max_budget = 420.0
+        bytes_per_sec = 140 * 1024
+        category_default = 435.0
     elif "pdf" in raw_mime or "document" in raw_mime or "application/" in raw_mime or "text/" in raw_mime:
-        timeout = 135.0
+        base_budget = 45.0
+        max_budget = 180.0
+        bytes_per_sec = 150 * 1024
+        category_default = 195.0
     elif "audio" in raw_mime or "ogg" in raw_mime or "opus" in raw_mime:
-        timeout = 75.0
+        base_budget = 35.0
+        max_budget = 90.0
+        bytes_per_sec = 100 * 1024
+        category_default = 105.0
     elif "image" in raw_mime:
-        timeout = 60.0
+        base_budget = 25.0
+        max_budget = 60.0
+        bytes_per_sec = 100 * 1024
+        category_default = 75.0
     else:
-        timeout = 60.0
+        base_budget = 35.0
+        max_budget = 60.0
+        bytes_per_sec = 100 * 1024
+        category_default = 75.0
 
-    if file_length and file_length > 0:
-        scaled = (file_length / (100 * 1024)) + 20.0
-        timeout = max(timeout, min(240.0, float(scaled)))
+    if file_length is not None and isinstance(file_length, (int, float)) and file_length > 0:
+        transfer_secs = math.ceil(file_length / bytes_per_sec)
+        budget = max(base_budget, base_budget + transfer_secs)
+        capped_budget = min(max_budget, float(budget))
+        return float(capped_budget + 15.0)
 
-    return float(timeout)
+    return float(category_default)
 
 
 def gateway_auth_headers() -> Dict[str, str]:

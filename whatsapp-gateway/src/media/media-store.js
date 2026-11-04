@@ -18,14 +18,18 @@ import { downloadMediaMessage, downloadContentFromMessage } from '@whiskeysocket
 import { resolveDownloadableMedia, unwrapMessageContent } from '../messages/message-classifier.js';
 import {
   calculateMediaTimeout,
+  calculateTotalMediaBudget,
   isTransientMediaError,
   getRetryDelay,
+  MEDIA_TIMEOUT_BOUNDS,
 } from './media-timeout.js';
 
 export {
   calculateMediaTimeout,
+  calculateTotalMediaBudget,
   isTransientMediaError,
   getRetryDelay,
+  MEDIA_TIMEOUT_BOUNDS,
 };
 
 // Surec baslama ani: bu andan SONRA uretilmis bir mesaj onceden diskte olamaz.
@@ -886,13 +890,26 @@ export function createMediaStore({
 
       const fileLengthNum = media?.fileLength ? Number(media.fileLength) : 0;
       const isPreview = Boolean(options?.preferPreview);
-      const dynamicTimeoutMs = calculateMediaTimeout({
+
+      // Compute unified total deadline budget across all retries + nominal per-attempt timeout
+      const totalBudgetMs = calculateTotalMediaBudget({
         mediaType,
         mimetype: media.mimetype,
         fileLength: fileLengthNum,
         isPreview,
         customTimeout: options?.timeoutMs,
       });
+
+      const nominalAttemptTimeoutMs = calculateMediaTimeout({
+        mediaType,
+        mimetype: media.mimetype,
+        fileLength: fileLengthNum,
+        isPreview,
+        customTimeout: options?.timeoutMs,
+      });
+
+      const startTime = Date.now();
+      const deadline = startTime + totalBudgetMs;
 
       let buffer = null;
       let lastDlError = null;
@@ -901,17 +918,59 @@ export function createMediaStore({
       await acquireMediaDownloadSlot();
       try {
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-          const isRetryAttempt = attempt > 0;
-          if (isRetryAttempt) {
-            const delay = getRetryDelay(attempt - 1);
-            logger?.info(
-              { waMessageId, attempt: attempt + 1, delay, error: lastDlError?.message },
-              'Retrying media download after transient failure'
-            );
-            await new Promise((resolve) => setTimeout(resolve, delay));
+          // Check for client abortion before starting each attempt
+          if (options?.signal?.aborted) {
+            const abortErr = new Error('Media download aborted by client');
+            abortErr.name = 'AbortError';
+            throw abortErr;
           }
 
+          const isRetryAttempt = attempt > 0;
+          if (isRetryAttempt) {
+            const remainingBeforeSleep = deadline - Date.now();
+            if (remainingBeforeSleep < MEDIA_TIMEOUT_BOUNDS.MIN_RETRY_THRESHOLD_MS) {
+              logger?.info(
+                { waMessageId, attempt: attempt + 1, remainingMs: remainingBeforeSleep },
+                'Media download deadline exhausted; aborting remaining retries'
+              );
+              break;
+            }
+
+            const rawDelay = getRetryDelay(attempt - 1);
+            // Deduct backoff delay from remaining deadline budget, ensuring we leave at least 1s for an attempt
+            const maxAllowedDelay = Math.max(0, remainingBeforeSleep - MEDIA_TIMEOUT_BOUNDS.MIN_RETRY_THRESHOLD_MS);
+            const delay = Math.min(rawDelay, maxAllowedDelay);
+
+            if (delay > 0) {
+              logger?.info(
+                { waMessageId, attempt: attempt + 1, delay, error: lastDlError?.message },
+                'Retrying media download after transient failure within deadline budget'
+              );
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            }
+
+            if (options?.signal?.aborted) {
+              const abortErr = new Error('Media download aborted by client');
+              abortErr.name = 'AbortError';
+              throw abortErr;
+            }
+          }
+
+          // Calculate remaining budget for this attempt
+          const remainingForAttempt = deadline - Date.now();
+          if (remainingForAttempt < 1000) {
+            logger?.info(
+              { waMessageId, attempt: attempt + 1, remainingMs: remainingForAttempt },
+              'Media download deadline reached before attempt start; aborting'
+            );
+            break;
+          }
+
+          // Bound attempt timeout to both nominal attempt cap and remaining budget
+          const attemptTimeoutMs = Math.min(nominalAttemptTimeoutMs, remainingForAttempt);
+
           let dlTimer;
+          let abortListener;
           try {
             const dlPromise = (async () => {
               try {
@@ -928,6 +987,11 @@ export function createMediaStore({
                     const stream = await downloadContentFromMessage(media, mediaType || 'image', {});
                     let buf = Buffer.from([]);
                     for await (const chunk of stream) {
+                      if (options?.signal?.aborted) {
+                        const abortErr = new Error('Media download aborted by client');
+                        abortErr.name = 'AbortError';
+                        throw abortErr;
+                      }
                       buf = Buffer.concat([buf, chunk]);
                     }
                     if (buf.length > 0) return buf;
@@ -941,13 +1005,32 @@ export function createMediaStore({
 
             const dlTimeout = new Promise((_, reject) => {
               dlTimer = setTimeout(
-                () => reject(new Error(`Media download timeout (${Math.round(dynamicTimeoutMs / 1000)}s)`)),
-                dynamicTimeoutMs
+                () => reject(new Error(`Media download timeout (${Math.round(attemptTimeoutMs / 1000)}s)`)),
+                attemptTimeoutMs
               );
             });
             dlTimeout.catch(() => {});
 
-            buffer = await Promise.race([dlPromise, dlTimeout]);
+            const races = [dlPromise, dlTimeout];
+            if (options?.signal) {
+              if (options.signal.aborted) {
+                const abortErr = new Error('Media download aborted by client');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+              }
+              const abortPromise = new Promise((_, reject) => {
+                abortListener = () => {
+                  const abortErr = new Error('Media download aborted by client');
+                  abortErr.name = 'AbortError';
+                  reject(abortErr);
+                };
+                options.signal.addEventListener('abort', abortListener, { once: true });
+              });
+              abortPromise.catch(() => {});
+              races.push(abortPromise);
+            }
+
+            buffer = await Promise.race(races);
 
             // Validate stream integrity: if expected length is known and not preview, verify not truncated
             if (buffer && !isPreview && fileLengthNum > 0 && buffer.length < fileLengthNum * 0.9) {
@@ -989,6 +1072,9 @@ export function createMediaStore({
             }
           } finally {
             if (dlTimer) clearTimeout(dlTimer);
+            if (options?.signal && abortListener) {
+              options.signal.removeEventListener('abort', abortListener);
+            }
           }
         }
       } catch (dlErr) {

@@ -51,7 +51,7 @@ test('1. calculateMediaTimeout - preview, boundaries, and type scaling', () => {
   const video10MB = calculateMediaTimeout({ mediaType: 'video', fileLength: 10 * 1024 * 1024 });
   assert.ok(video10MB > 45_000 && video10MB <= 180_000, `video 10MB timeout expected in (45s, 180s], got ${video10MB}`);
   const video50MB = calculateMediaTimeout({ mediaType: 'video', fileLength: 50 * 1024 * 1024 });
-  assert.equal(video50MB, 180_000); // capped at max 180s
+  assert.ok(video50MB >= 180_000 && video50MB <= 360_000, `video 50MB timeout expected in [180s, 360s], got ${video50MB}`);
 
   // Document category
   assert.equal(calculateMediaTimeout({ mediaType: 'document' }), 35_000);

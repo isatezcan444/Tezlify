@@ -1170,6 +1170,12 @@ async def get_media(
     current_user: AuthUser = Depends(get_current_user),
 ) -> Response:
     """Kimlik dogrulamali medya proxy'si — gateway'deki gelen medyayi sunar."""
+    if await request.is_disconnected():
+        raise HTTPException(
+            status_code=499,
+            detail="İstemci bağlantıyı kapattı.",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     is_retry = bool(_retry or retry)
     try:
         data, mime, filename = await whatsapp_service.get_media_bytes(

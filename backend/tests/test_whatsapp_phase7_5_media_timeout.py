@@ -34,35 +34,34 @@ class TestGatewayMediaTimeout(unittest.TestCase):
 
     def test_media_type_category_timeouts(self):
         """Dynamic timeout must map properly to media categories."""
-        # Video
-        self.assertEqual(gateway_media_timeout(mime_type="video/mp4"), 195.0)
-        self.assertEqual(gateway_media_timeout(mime_type="video/3gpp"), 195.0)
+        # Video (covers 50MB+ video transfers at >=150 KB/s + retry overhead)
+        self.assertEqual(gateway_media_timeout(mime_type="video/mp4"), 435.0)
+        self.assertEqual(gateway_media_timeout(mime_type="video/3gpp"), 435.0)
 
         # Document / PDF / Text
-        self.assertEqual(gateway_media_timeout(mime_type="application/pdf"), 135.0)
-        self.assertEqual(gateway_media_timeout(mime_type="application/vnd.ms-excel"), 135.0)
-        self.assertEqual(gateway_media_timeout(mime_type="text/plain"), 135.0)
+        self.assertEqual(gateway_media_timeout(mime_type="application/pdf"), 195.0)
+        self.assertEqual(gateway_media_timeout(mime_type="application/vnd.ms-excel"), 195.0)
+        self.assertEqual(gateway_media_timeout(mime_type="text/plain"), 195.0)
 
         # Audio
-        self.assertEqual(gateway_media_timeout(mime_type="audio/ogg; codecs=opus"), 75.0)
-        self.assertEqual(gateway_media_timeout(mime_type="audio/mp4"), 75.0)
+        self.assertEqual(gateway_media_timeout(mime_type="audio/ogg; codecs=opus"), 105.0)
+        self.assertEqual(gateway_media_timeout(mime_type="audio/mp4"), 105.0)
 
         # Image
-        self.assertEqual(gateway_media_timeout(mime_type="image/jpeg"), 60.0)
-        self.assertEqual(gateway_media_timeout(mime_type="image/png"), 60.0)
+        self.assertEqual(gateway_media_timeout(mime_type="image/jpeg"), 75.0)
+        self.assertEqual(gateway_media_timeout(mime_type="image/png"), 75.0)
 
         # Default / Unknown
-        self.assertEqual(gateway_media_timeout(mime_type=None), 60.0)
-        self.assertEqual(gateway_media_timeout(mime_type="unknown/binary"), 60.0)
+        self.assertEqual(gateway_media_timeout(mime_type=None), 75.0)
+        self.assertEqual(gateway_media_timeout(mime_type="unknown/binary"), 75.0)
 
     def test_file_length_scaling_and_ceiling(self):
-        """Large media with known file_length must scale up and cap at 240.0s."""
-        # 25 MB document: (25 * 1024 * 1024) / (100 * 1024) + 20 = 256 + 20 = 276 -> capped at 240.0s
-        self.assertEqual(gateway_media_timeout(mime_type="application/pdf", file_length=25 * 1024 * 1024), 240.0)
+        """Large media with known file_length must scale up and cap at category max + 15s."""
+        # 25 MB document: 45 + ceil(25MB / 150KB/s) = 45 + 171 = 216 -> capped at 180s budget + 15s = 195.0s
+        self.assertEqual(gateway_media_timeout(mime_type="application/pdf", file_length=25 * 1024 * 1024), 195.0)
 
-        # 5 MB image: (5 * 1024 * 1024) / (100 * 1024) + 20 = 51.2 + 20 = 71.2s > base 60.0s
-        scaled = gateway_media_timeout(mime_type="image/jpeg", file_length=5 * 1024 * 1024)
-        self.assertAlmostEqual(scaled, 71.2, places=1)
+        # 5 MB image: 25 + ceil(5MB / 100KB/s) = 25 + 52 = 77 -> capped at 60s budget + 15s = 75.0s
+        self.assertEqual(gateway_media_timeout(mime_type="image/jpeg", file_length=5 * 1024 * 1024), 75.0)
 
 
 @pytest.mark.asyncio
@@ -171,11 +170,11 @@ class TestGetMediaBytesDynamicTimeout:
             await db.commit()
 
             try:
-                # 1. Full video download
+                # 1. Full video download (coordinated 435.0s timeout covering 50MB+ video transfer)
                 data, mime, fname = await get_media_bytes(db, user_id, media_id, preview=False)
                 assert data == b"fake-video-content"
                 assert len(calls) == 1
-                assert calls[0]["timeout"] == 195.0
+                assert calls[0]["timeout"] == 435.0
                 assert calls[0]["preview"] is False
 
                 # 2. Preview download

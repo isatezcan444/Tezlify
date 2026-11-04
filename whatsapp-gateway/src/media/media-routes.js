@@ -61,10 +61,23 @@ export function registerMediaRoutes(app, { sessionManager, logger }) {
     const isRetry = Boolean(options?.retry);
     const isFullMediaRequested = !options?.preferPreview;
 
+    const abortController = new AbortController();
+    const onReqClose = () => {
+      if (!res.writableEnded) {
+        abortController.abort();
+      }
+    };
+    req.on('close', onReqClose);
+    res.on('close', onReqClose);
+
+    const mergedOptions = { ...options, signal: abortController.signal };
+
     if (!isRetry) {
       try {
         filePath = await sessionManager.resolveMediaPath(sessionId, lookupId);
       } catch (err) {
+        req.removeListener('close', onReqClose);
+        res.removeListener('close', onReqClose);
         logger?.error({ err: err?.code || err?.message }, 'Media path resolution failed');
         return res.status(500).json({ error: 'Media lookup failed', code: 'MEDIA_LOOKUP_ERROR' });
       }
@@ -75,11 +88,21 @@ export function registerMediaRoutes(app, { sessionManager, logger }) {
 
     if (!filePath) {
       try {
-        filePath = await sessionManager.downloadMediaOnDemand(sessionId, lookupId, options);
+        filePath = await sessionManager.downloadMediaOnDemand(sessionId, lookupId, mergedOptions);
       } catch (err) {
+        req.removeListener('close', onReqClose);
+        res.removeListener('close', onReqClose);
+        if (abortController.signal.aborted || res.destroyed || res.writableEnded) {
+          return;
+        }
         logger?.error({ err: err?.code || err?.message }, 'On-demand media download failed');
         return res.status(500).json({ error: 'Media lookup failed', code: 'MEDIA_LOOKUP_ERROR' });
       }
+    }
+    if (abortController.signal.aborted || res.destroyed || res.writableEnded) {
+      req.removeListener('close', onReqClose);
+      res.removeListener('close', onReqClose);
+      return;
     }
     if (!filePath && isFullMediaRequested) {
       try {
@@ -89,12 +112,18 @@ export function registerMediaRoutes(app, { sessionManager, logger }) {
         // best effort
       }
     }
-    if (!filePath) return res.status(404).json({ error: 'Media not found', code: 'MEDIA_EXPIRED' });
+    if (!filePath) {
+      req.removeListener('close', onReqClose);
+      res.removeListener('close', onReqClose);
+      return res.status(404).json({ error: 'Media not found', code: 'MEDIA_EXPIRED' });
+    }
 
     let verified;
     try {
       verified = await sessionManager.openVerifiedMedia(lookupId, filePath);
     } catch (err) {
+      req.removeListener('close', onReqClose);
+      res.removeListener('close', onReqClose);
       logger?.error({ err: err?.code || err?.message }, 'Media integrity verification failed');
       return res.status(500).json({ error: 'Media integrity verification failed', code: 'MEDIA_VERIFY_ERROR' });
     }
