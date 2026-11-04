@@ -182,9 +182,13 @@ export function isTransientMediaError(err) {
     err.name === 'AbortError' ||
     code === 'ERR_ABORTED' ||
     code === 'ECANCELED' ||
+    code === 'ABORT_ERR' ||
     msg.includes('aborted by client') ||
     msg.includes('client aborted') ||
-    msg.includes('client cancellation')
+    msg.includes('client cancellation') ||
+    msg.includes('operation was aborted') ||
+    msg.includes('request was aborted') ||
+    msg.includes('the user aborted')
   ) {
     return false;
   }
@@ -207,6 +211,18 @@ export function isTransientMediaError(err) {
     return false;
   }
 
+  // Stream integrity failures (truncated, corrupt or hash mismatch in transit) are transient & retryable
+  if (
+    code === 'STREAM_TRUNCATED' ||
+    code === 'STREAM_CORRUPTED' ||
+    code === 'HASH_MISMATCH' ||
+    msg.includes('stream truncated') ||
+    msg.includes('stream corrupted') ||
+    msg.includes('hash mismatch')
+  ) {
+    return true;
+  }
+
   // Transient network errors
   if (
     code === 'ECONNRESET' ||
@@ -214,7 +230,8 @@ export function isTransientMediaError(err) {
     code === 'EAI_AGAIN' ||
     code === 'ENOTFOUND' ||
     code === 'ECONNREFUSED' ||
-    code === 'EPIPE'
+    code === 'EPIPE' ||
+    code === 'ECONNABORTED'
   ) {
     return true;
   }
@@ -230,9 +247,7 @@ export function isTransientMediaError(err) {
     msg.includes('etimedout') ||
     msg.includes('eai_again') ||
     msg.includes('network') ||
-    msg.includes('stream truncated') ||
-    msg.includes('premature close') ||
-    msg.includes('aborted')
+    msg.includes('premature close')
   ) {
     return true;
   }

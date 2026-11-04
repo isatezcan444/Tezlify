@@ -2518,8 +2518,14 @@ export function createSessionManager({
             };
             const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
             if (stored?.media_id) {
-              this._failedMediaCache?.delete(inFlightKey);
-              return mediaStore.resolveMediaPath(session.id, stored.media_id);
+              const resPath = await mediaStore.resolveMediaPath(session.id, stored.media_id);
+              if (resPath) {
+                const isThumb = path.basename(resPath).startsWith('thumb_');
+                if (options?.preferPreview || !isThumb) {
+                  this._failedMediaCache?.delete(inFlightKey);
+                  return resPath;
+                }
+              }
             }
           } else if (!foundRaw && foundJid && session.sock && !session.sock.isClosed && typeof session.sock.requestPlaceholderResend === 'function') {
             try {
@@ -2548,8 +2554,14 @@ export function createSessionManager({
                 };
                 const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
                 if (stored?.media_id) {
-                  this._failedMediaCache?.delete(inFlightKey);
-                  return mediaStore.resolveMediaPath(session.id, stored.media_id);
+                  const resPath = await mediaStore.resolveMediaPath(session.id, stored.media_id);
+                  if (resPath) {
+                    const isThumb = path.basename(resPath).startsWith('thumb_');
+                    if (options?.preferPreview || !isThumb) {
+                      this._failedMediaCache?.delete(inFlightKey);
+                      return resPath;
+                    }
+                  }
                 }
               }
             }

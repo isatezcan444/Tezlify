@@ -904,6 +904,7 @@ export const tr = {
     mediaRetrying: 'Yükleniyor...',
     mediaLoadFailed: 'Medya yüklenemedi',
     mediaExpiredOrUnavailable: 'Bu medya WhatsApp sunucularında artık mevcut değil veya süresi dolmuş.',
+    mediaTimeoutSlowNetwork: 'Ağ bağlantısı yavaş veya dosya çok büyük olduğu için zaman aşımına uğradı. Lütfen bağlantınızı kontrol edip tekrar deneyin.',
     mediaRetry: 'Yeniden Dene',
     mediaOpenLightbox: 'Tam ekran görüntüle',
     unsupportedMessage: 'Bu mesaj desteklenmiyor.',

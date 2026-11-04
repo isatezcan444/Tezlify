@@ -195,6 +195,12 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     Boolean(message.error_message && message.error_message.includes('MEDIA_EXPIRED')) ||
     isOutboundWithoutMedia ||
     isMediaExpired(mediaWaId);
+  const isTimeoutError = Boolean(
+    message.error_message &&
+    (message.error_message.includes('TIMEOUT') ||
+     message.error_message.includes('ZAMAN_ASIMI') ||
+     message.error_message.toLowerCase().includes('timeout'))
+  );
 
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [mediaRetrying, setMediaRetrying] = useState(false);
@@ -758,8 +764,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       setImageLoaded(false);
                       setImageLoadError(true);
                       setMediaRetrying(false);
-                      if (mediaWaId) markMediaExpired(mediaWaId);
-                      if (mediaRetryTs) {
+                      if (mediaWaId && mediaRetryTs) {
+                        markMediaExpired(mediaWaId);
                         setMediaRetryFailed(true);
                       }
                     }}
@@ -781,7 +787,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   </span>
                   {(mediaRetryFailed || isMediaExpired(mediaWaId)) ? (
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 text-center px-2">
-                      {t('whatsapp.mediaExpiredOrUnavailable')}
+                      {isTimeoutError
+                        ? t('whatsapp.mediaTimeoutSlowNetwork')
+                        : t('whatsapp.mediaExpiredOrUnavailable')}
                     </span>
                   ) : (
                     <button
@@ -987,8 +995,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onError={() => {
                       setVideoLoadError(true);
                       setMediaRetrying(false);
-                      if (mediaWaId) markMediaExpired(mediaWaId);
-                      if (mediaRetryTs) {
+                      if (mediaWaId && mediaRetryTs) {
+                        markMediaExpired(mediaWaId);
                         setMediaRetryFailed(true);
                       }
                       notifyVideoEnded();
@@ -1021,7 +1029,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">{t('whatsapp.mediaLoadFailed')}</span>
                   {(mediaRetryFailed || isMediaExpired(mediaWaId)) ? (
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 text-center px-2">
-                      {t('whatsapp.mediaExpiredOrUnavailable')}
+                      {isTimeoutError
+                        ? t('whatsapp.mediaTimeoutSlowNetwork')
+                        : t('whatsapp.mediaExpiredOrUnavailable')}
                     </span>
                   ) : (
                     <button
@@ -1048,7 +1058,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   {message.wa_message_id && (
                     (mediaRetryFailed || isMediaExpired(mediaWaId) || isPermanentlyExpired) ? (
                       <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 text-center px-2">
-                        {t('whatsapp.mediaExpiredOrUnavailable')}
+                        {isTimeoutError
+                          ? t('whatsapp.mediaTimeoutSlowNetwork')
+                          : t('whatsapp.mediaExpiredOrUnavailable')}
                       </span>
                     ) : (
                       <button

@@ -4,6 +4,7 @@ HTTP katmanı: doğrulama + query parsing; iş mantığı `whatsapp_service`'de.
 Tüm uç noktalar kimlik doğrulamalı ve çok kiracılı (user_id filtresi) çalışır.
 """
 from typing import Optional, Dict, Any
+import asyncio
 import logging
 import re
 import urllib.parse
@@ -1181,6 +1182,9 @@ async def get_media(
         data, mime, filename = await whatsapp_service.get_media_bytes(
             db, current_user.id, media_id, preview=preview, retry=is_retry
         )
+    except asyncio.CancelledError:
+        logger.info("[WA-MEDIA] İstemci bağlantıyı kapattığı için indirme iptal edildi (media_id=%s)", media_id)
+        raise
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
@@ -1202,6 +1206,14 @@ async def get_media(
         raise _bad_gateway(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
+
+    if await request.is_disconnected():
+        raise HTTPException(
+            status_code=499,
+            detail="İstemci bağlantıyı kapattı.",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
     headers = {}
     if filename:
         ascii_name = re.sub(r'[^\x20-\x7E]', '_', filename).replace('"', '').strip() or "document"

@@ -903,6 +903,7 @@ export const en = {
     mediaRetrying: 'Loading...',
     mediaLoadFailed: 'Failed to load media',
     mediaExpiredOrUnavailable: 'This media is no longer available on WhatsApp servers or has expired.',
+    mediaTimeoutSlowNetwork: 'Download timed out due to a slow connection or large file size. Please check your connection and try again.',
     mediaRetry: 'Retry',
     mediaOpenLightbox: 'View full screen',
     unsupportedMessage: 'This message is not supported.',

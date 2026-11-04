@@ -24,6 +24,114 @@ import {
   MEDIA_TIMEOUT_BOUNDS,
 } from './media-timeout.js';
 
+/**
+ * Safely parses media fileLength across numbers, numeric strings, Long objects and BigInt.
+ * Returns a positive integer or 0 if missing/invalid/negative.
+ */
+export function parseFileLength(fileLength) {
+  if (fileLength == null) return 0;
+  if (typeof fileLength === 'number') return Number.isFinite(fileLength) && fileLength > 0 ? Math.floor(fileLength) : 0;
+  if (typeof fileLength === 'bigint') return fileLength > 0n ? Number(fileLength) : 0;
+  if (typeof fileLength === 'string') {
+    const n = Number(fileLength.trim());
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  }
+  if (typeof fileLength === 'object') {
+    if (typeof fileLength.toNumber === 'function') {
+      try {
+        const n = fileLength.toNumber();
+        return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+      } catch { /* ignore */ }
+    }
+    if (typeof fileLength.low === 'number' && typeof fileLength.high === 'number') {
+      const unsigned = Boolean(fileLength.unsigned);
+      const low = fileLength.low >>> 0;
+      const high = unsigned ? (fileLength.high >>> 0) : fileLength.high;
+      const n = high * 4294967296 + low;
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Normalizes fileSha256 from Buffer, Uint8Array, hex string or base64 string to 64-char hex.
+ */
+export function parseExpectedSha256(fileSha256) {
+  if (!fileSha256) return null;
+  if (Buffer.isBuffer(fileSha256)) {
+    if (fileSha256.length === 32) return fileSha256.toString('hex').toLowerCase();
+  }
+  if (fileSha256 instanceof Uint8Array) {
+    if (fileSha256.byteLength === 32) return Buffer.from(fileSha256).toString('hex').toLowerCase();
+  }
+  if (typeof fileSha256 === 'string') {
+    const s = fileSha256.trim();
+    if (/^[0-9a-fA-F]{64}$/.test(s)) return s.toLowerCase();
+    if (/^[A-Za-z0-9+/=]{43,44}$/.test(s)) {
+      try {
+        const b = Buffer.from(s, 'base64');
+        if (b.length === 32) return b.toString('hex').toLowerCase();
+      } catch { /* ignore */ }
+    }
+  }
+  return null;
+}
+
+/**
+ * Validates integrity of downloaded media buffer:
+ * 1. Previews are low-res representations not subject to full media constraints.
+ * 2. Cryptographic hash match (Gold Standard) if fileSha256 is provided.
+ * 3. Exact length verification: if expectedLength is known and buffer.length < expectedLength,
+ *    rejects immediately with STREAM_TRUNCATED.
+ */
+export function validateMediaBufferIntegrity(buffer, media, { isPreview = false } = {}) {
+  if (!buffer || !Buffer.isBuffer(buffer)) {
+    const err = new Error('Media buffer is empty or not a buffer');
+    err.code = 'INVALID_BUFFER';
+    throw err;
+  }
+
+  if (isPreview) {
+    if (buffer.length === 0) {
+      const err = new Error('Preview buffer is empty');
+      err.code = 'STREAM_TRUNCATED';
+      throw err;
+    }
+    return true;
+  }
+
+  const expectedLength = parseFileLength(media?.fileLength);
+  const expectedSha256 = parseExpectedSha256(media?.fileSha256);
+
+  // 1. Cryptographic hash verification (Gold Standard)
+  if (expectedSha256) {
+    const actualSha256 = createHash('sha256').update(buffer).digest('hex');
+    if (actualSha256 !== expectedSha256) {
+      if (expectedLength > 0 && buffer.length < expectedLength) {
+        const truncErr = new Error(`Media stream truncated: received ${buffer.length} of ${expectedLength} bytes (hash mismatch)`);
+        truncErr.code = 'STREAM_TRUNCATED';
+        throw truncErr;
+      }
+      const corruptErr = new Error(`Media corrupted: sha256 mismatch (expected ${expectedSha256}, got ${actualSha256})`);
+      corruptErr.code = 'STREAM_CORRUPTED';
+      throw corruptErr;
+    }
+    return true;
+  }
+
+  // 2. Length verification when reliable expected length is known
+  if (expectedLength > 0) {
+    if (buffer.length < expectedLength) {
+      const truncErr = new Error(`Media stream truncated: received ${buffer.length} of ${expectedLength} bytes`);
+      truncErr.code = 'STREAM_TRUNCATED';
+      throw truncErr;
+    }
+  }
+
+  return true;
+}
+
 export {
   calculateMediaTimeout,
   calculateTotalMediaBudget,
@@ -684,11 +792,18 @@ export function createMediaStore({
     const ext = (resolvedMime.split('/')[1] || 'bin').split(';')[0];
     const resolvedFilename = filename || `media_${mediaId}.${ext}`;
     const filePath = path.join(mediaDir, `${mediaId}.${ext}`);
+    const tempFilePath = path.join(mediaDir, `.tmp.${mediaId}.${ext}`);
     try {
-      fs.writeFileSync(filePath, buffer);
+      fs.writeFileSync(tempFilePath, buffer);
+      fs.renameSync(tempFilePath, filePath);
     } catch (writeErr) {
       // Disk dolu (ENOSPC) veya yazilamaz: kismi dosya birakma. Yalnizca BU
       // cagride olusturulan dosya temizlenir; mevcut dosyalara dokunulmaz.
+      try {
+        fs.rmSync(tempFilePath, { force: true });
+      } catch {
+        // cleanup best-effort
+      }
       try {
         fs.rmSync(filePath, { force: true });
       } catch {
@@ -711,12 +826,19 @@ export function createMediaStore({
       savedAt: Date.now(),
     };
     const metaPath = path.join(mediaDir, `${mediaId}.meta.json`);
+    const tempMetaPath = path.join(mediaDir, `.tmp.${mediaId}.meta.json`);
     try {
-      fs.writeFileSync(metaPath, JSON.stringify(meta), 'utf8');
+      fs.writeFileSync(tempMetaPath, JSON.stringify(meta), 'utf8');
+      fs.renameSync(tempMetaPath, metaPath);
     } catch (metaErr) {
       // Hash/butunluk kaniti yazilamadi. Yeni dosyayi geri al: aksi halde
       // dogrulanamayan bir dosyaya DB referansi baglanabilirdi. Mevcut
       // dosyalar ve sidecar'lar ETKILENMEZ.
+      try {
+        fs.rmSync(tempMetaPath, { force: true });
+      } catch {
+        // cleanup best-effort
+      }
       try {
         fs.rmSync(filePath, { force: true });
       } catch {
@@ -888,7 +1010,7 @@ export function createMediaStore({
         media.url = 'https://mmg.whatsapp.net';
       }
 
-      const fileLengthNum = media?.fileLength ? Number(media.fileLength) : 0;
+      const fileLengthNum = parseFileLength(media?.fileLength);
       const isPreview = Boolean(options?.preferPreview);
 
       // Compute unified total deadline budget across all retries + nominal per-attempt timeout
@@ -1032,13 +1154,8 @@ export function createMediaStore({
 
             buffer = await Promise.race(races);
 
-            // Validate stream integrity: if expected length is known and not preview, verify not truncated
-            if (buffer && !isPreview && fileLengthNum > 0 && buffer.length < fileLengthNum * 0.9) {
-              const truncErr = new Error(`Media stream truncated: received ${buffer.length} of ${fileLengthNum} bytes`);
-              truncErr.code = 'STREAM_TRUNCATED';
-              buffer = null;
-              throw truncErr;
-            }
+            // Validate stream integrity: verify hash and length, reject any truncated/corrupt buffer
+            validateMediaBufferIntegrity(buffer, media, { isPreview });
 
             // Successful download! Break out of retry loop
             if (buffer && buffer.length > 0) {
@@ -1193,5 +1310,8 @@ export function createMediaStore({
     calculateMediaTimeout,
     isTransientMediaError,
     getRetryDelay,
+    parseFileLength,
+    parseExpectedSha256,
+    validateMediaBufferIntegrity,
   };
 }
