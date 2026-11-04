@@ -533,16 +533,16 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         className="mb-1.5 p-2 rounded-lg bg-black/[0.05] dark:bg-black/25 border-l-[4px] border-[#00a884] dark:border-[#25D366] cursor-pointer hover:bg-black/[0.08] dark:hover:bg-black/35 transition-colors flex items-center justify-between gap-2.5 overflow-hidden text-xs max-w-full group/quote select-none"
       >
         <div className="min-w-0 flex-1 py-0.5">
-          <div className={`font-semibold truncate text-[11.5px] leading-tight mb-1 ${senderColorClass}`}>
-            {displayName}
+          <div className={`font-semibold truncate text-[11.5px] leading-tight mb-1 ${senderColorClass}`} dir="auto">
+            <bdi>{displayName}</bdi>
           </div>
-          <div className="flex items-center gap-1.5 text-[#54656f] dark:text-[#aebac1] text-xs font-normal leading-snug line-clamp-2">
+          <div className="flex items-center gap-1.5 text-[#54656f] dark:text-[#aebac1] text-xs font-normal leading-snug line-clamp-2" dir="auto">
             {mType === 'VIDEO' && <Video className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
             {mType === 'IMAGE' && <ImageIcon className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
             {mType === 'DOCUMENT' && <FileText className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
             {mType === 'AUDIO' && <Music className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
             {mType === 'LOCATION' && <MapPin className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
-            <span className="truncate">{mediaLabel}</span>
+            <span className="truncate" dir="auto"><bdi>{mediaLabel}</bdi></span>
           </div>
         </div>
 
@@ -599,9 +599,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         const quotePart = resolvedText.substring(2, splitIdx).trim();
         resolvedText = resolvedText.substring(splitIdx + 2).trim();
         quotedBlock = (
-          <div className="mb-1.5 p-2 rounded-lg bg-black/[0.05] dark:bg-black/25 border-l-4 border-[#25D366] text-xs">
-            <p className="line-clamp-2 text-[#54656f] dark:text-[#aebac1] font-medium italic">
-              {quotePart}
+          <div className="mb-1.5 p-2 rounded-lg bg-black/[0.05] dark:bg-black/25 border-l-4 border-[#25D366] text-xs" dir="auto">
+            <p className="line-clamp-2 text-[#54656f] dark:text-[#aebac1] font-medium italic" dir="auto">
+              <bdi>{quotePart}</bdi>
             </p>
           </div>
         );
@@ -615,20 +615,46 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       resolvedText = resolvedText.replace(/@183695935828021/g, '@Cenk Kara');
     }
 
-    const mentionRegex = /(@[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ+]+(?:\s+[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ]+)?)/g;
+    const renderSegment = (textChunk: string, keyPrefix: string | number) => {
+      // Isolate LTR tokens (URLs, international phone numbers) in mixed text
+      const ltrTokenRegex = /(https?:\/\/[^\s]+|\+\d[\d\s-]{7,}\d)/g;
+      const subparts = textChunk.split(ltrTokenRegex);
+      if (subparts.length === 1) {
+        return <React.Fragment key={keyPrefix}>{highlightMatches(textChunk)}</React.Fragment>;
+      }
+      return subparts.map((subpart, subIdx) => {
+        if (/^https?:\/\//.test(subpart)) {
+          return (
+            <bdi key={`${keyPrefix}-${subIdx}`} dir="ltr" className="select-text">
+              {highlightMatches(subpart)}
+            </bdi>
+          );
+        }
+        if (/^\+\d[\d\s-]{7,}\d$/.test(subpart.trim())) {
+          return (
+            <bdi key={`${keyPrefix}-${subIdx}`} dir="ltr" className="select-text">
+              {highlightMatches(subpart)}
+            </bdi>
+          );
+        }
+        return <React.Fragment key={`${keyPrefix}-${subIdx}`}>{highlightMatches(subpart)}</React.Fragment>;
+      });
+    };
+
+    const mentionRegex = /(@[\p{L}\p{M}\p{N}_+]+(?:\s+[\p{L}\p{M}\p{N}_+]+)?)/gu;
     const parts = resolvedText.split(mentionRegex);
-    const content = parts.length === 1 ? highlightMatches(resolvedText) : parts.map((part, idx) => {
+    const content = parts.map((part, idx) => {
       if (part.startsWith('@') && part.length > 1) {
         return (
           <span
             key={idx}
             className="font-semibold text-[#00a884] dark:text-[#25D366] bg-[#00a884]/10 dark:bg-[#25D366]/20 px-1 py-0.5 rounded text-[13px] inline-flex items-center my-0.5 mx-0.5 align-baseline"
           >
-            {highlightMatches(part)}
+            <bdi>{highlightMatches(part)}</bdi>
           </span>
         );
       }
-      return <React.Fragment key={idx}>{highlightMatches(part)}</React.Fragment>;
+      return renderSegment(part, idx);
     });
 
     return (
@@ -640,8 +666,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   };
 
   const renderTextWithPreview = (body: string) => (
-    <div className="space-y-1.5 min-w-0">
-      <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0">
+    <div className="space-y-1.5 min-w-0" dir="auto">
+      <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0" dir="auto">
         {formatBodyWithMentions(body)}
       </p>
       {message.link_preview && (
@@ -805,8 +831,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               )}
             </div>
             {message.media_caption && (
-              <p className="whitespace-pre-wrap break-words font-medium text-xs">
-                {highlightMatches(message.media_caption)}
+              <p className="whitespace-pre-wrap break-words font-medium text-xs" dir="auto">
+                <bdi>{highlightMatches(message.media_caption)}</bdi>
               </p>
             )}
           </div>
@@ -863,8 +889,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 </div>
               )}
               {message.media_caption && (
-                <p className="whitespace-pre-wrap break-words font-medium text-xs">
-                  {highlightMatches(message.media_caption)}
+                <p className="whitespace-pre-wrap break-words font-medium text-xs" dir="auto">
+                  <bdi>{highlightMatches(message.media_caption)}</bdi>
                 </p>
               )}
             </div>
@@ -881,8 +907,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               isOutbound={!isInbound}
             />
             {message.media_caption && (
-              <p className="whitespace-pre-wrap break-words font-medium text-xs">
-                {highlightMatches(message.media_caption)}
+              <p className="whitespace-pre-wrap break-words font-medium text-xs" dir="auto">
+                <bdi>{highlightMatches(message.media_caption)}</bdi>
               </p>
             )}
           </div>
@@ -1045,8 +1071,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               )}
             </div>
             {message.media_caption && (
-              <p className="whitespace-pre-wrap break-words font-medium text-xs">
-                {highlightMatches(message.media_caption)}
+              <p className="whitespace-pre-wrap break-words font-medium text-xs" dir="auto">
+                <bdi>{highlightMatches(message.media_caption)}</bdi>
               </p>
             )}
           </div>
@@ -1429,8 +1455,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
           {/* Group Sender Name */}
           {senderLabel && (
-            <div className={`text-[12.5px] font-semibold leading-tight tracking-wide mb-1 select-none flex items-center gap-1 ${getSenderColorClass(senderLabel, message.sender_phone)}`}>
-              <span>{senderLabel}</span>
+            <div data-testid={`msg-sender-${message.id}`} className={`text-[12.5px] font-semibold leading-tight tracking-wide mb-1 select-none flex items-center gap-1 ${getSenderColorClass(senderLabel, message.sender_phone)}`} dir="auto">
+              <bdi>{senderLabel}</bdi>
             </div>
           )}
 

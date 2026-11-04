@@ -215,8 +215,8 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
                 <span>{t('whatsapp.group')}</span>
               </span>
             )}
-            <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
-              {name}
+            <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate" dir="auto">
+              <bdi>{name}</bdi>
             </h4>
           </div>
           {/* WhatsApp Web paritesi: ok gorunurken SAAT gizlenir — ikisi ayni
@@ -233,8 +233,8 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
         <div className="flex items-center justify-between mt-0.5 min-w-0">
           <div className="flex-1 min-w-0 pr-1.5">
             {lastMsg === '__typing__' ? (
-              <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate animate-pulse">
-                {isGroup && typingSenderName ? `${typingSenderName} ` : ''}{t('whatsapp.peerTyping')}
+              <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate animate-pulse" dir="auto">
+                <bdi>{isGroup && typingSenderName ? `${typingSenderName} ` : ''}{t('whatsapp.peerTyping')}</bdi>
               </p>
             ) : (() => {
               const isReactionSnippet = lastMsg.includes('ifadesini') || lastMsg.includes('reacted');
@@ -247,8 +247,8 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
                 : lastMsg;
               const showEmojiBadge = Boolean(lastReactionEmoji && !displayText.includes(lastReactionEmoji));
               return (
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 min-w-0">
-                  <span className="truncate min-w-0">{displayText}</span>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 min-w-0" dir="auto">
+                  <span className="truncate min-w-0" dir="auto"><bdi>{displayText}</bdi></span>
                   {showEmojiBadge ? (
                     <span
                       className="shrink-0 text-[12px] leading-none select-none"

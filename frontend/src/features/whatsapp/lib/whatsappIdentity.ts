@@ -157,26 +157,33 @@ export function isRawWhatsAppJid(value?: string | null): boolean {
     v.includes('@lid') ||
     v.includes('@g.us') ||
     v.includes('@s.whatsapp.net') ||
-    v.includes('@c.us')
+    v.includes('@c.us') ||
+    v.includes('@newsletter') ||
+    v === 'status@broadcast'
   );
 }
 
 export function isRealContactName(name?: string | null): boolean {
   if (!name) return false;
-  const trimmed = String(name).trim();
-  if (!trimmed) return false;
-  if (isRawWhatsAppJid(trimmed)) return false;
+  const normalized = String(name).normalize('NFC').trim();
+  if (!normalized) return false;
+  if (isRawWhatsAppJid(normalized)) return false;
 
   // Strip self suffix if present before verifying whether it's pure phone digits
-  const strippedSelf = trimmed.replace(/\s*\((Siz|You)\)$/i, '').trim();
-  const digitsOnly = strippedSelf.replace(/\D/g, '');
-  const lettersOnly = strippedSelf.replace(/[^a-zA-ZğüşıöçĞÜŞİÖÇ]/g, '');
-  if (digitsOnly.length >= 5 && lettersOnly.length === 0) {
+  const strippedSelf = normalized.replace(/\s*\((Siz|You)\)$/i, '').trim();
+  if (!strippedSelf) return false;
+
+  // System session names like 'Hat 1', 'Hat 2', or 'Tezlify'
+  if (/^Hat\s*\d+$/i.test(strippedSelf) || strippedSelf.toLowerCase() === 'tezlify') {
     return false;
   }
 
-  const lower = trimmed.toLowerCase();
+  const lower = strippedSelf.toLowerCase();
   if (
+    lower === 'unknown' ||
+    lower === 'null' ||
+    lower === 'undefined' ||
+    lower === 'none' ||
     lower === 'lead' ||
     lower === 'kişi' ||
     lower === 'kisi' ||
@@ -191,6 +198,25 @@ export function isRealContactName(name?: string | null): boolean {
     lower.includes('kisi kimligi') ||
     lower.includes('resolving identity')
   ) {
+    return false;
+  }
+
+  // Unicode letter & mark categories support:
+  // Arabic, Chinese, Japanese, Korean, Cyrillic, Greek, Hebrew, Devanagari, Latin, and combining marks.
+  // Must contain at least one Unicode letter, combining mark, or emoji.
+  // This automatically excludes strings that are purely digits, punctuation, or whitespace.
+  const hasLetterOrMarkOrEmoji = /[\p{L}\p{M}\p{Extended_Pictographic}]/u.test(strippedSelf);
+  if (!hasLetterOrMarkOrEmoji) {
+    return false;
+  }
+
+  // If there are NO letters or combining marks at all (e.g. only emoji + digits like '123456789 📱'),
+  // reject if digits >= 5 (it is a phone number decorated with an emoji).
+  // But if there ARE letters/marks (e.g. 'قناة الأخبار 12345' or '新闻频道 12345' or 'محمد 2026'),
+  // digits are allowed and do NOT cause rejection.
+  const lettersAndMarks = (strippedSelf.match(/[\p{L}\p{M}]/gu) || []).join('');
+  const digits = strippedSelf.replace(/\D/gu, '');
+  if (digits.length >= 5 && lettersAndMarks.length === 0) {
     return false;
   }
 
@@ -214,8 +240,16 @@ export function getConversationDisplayName(
   // 1. Group conversation check
   const isGroup = Boolean(conv.is_group || (rawPhone && rawPhone.includes('@g.us')));
   if (isGroup) {
-    if (rawName && !isRawWhatsAppJid(rawName)) {
-      return rawName;
+    const trimmedGroup = rawName ? String(rawName).trim() : '';
+    if (
+      trimmedGroup &&
+      !isRawWhatsAppJid(trimmedGroup) &&
+      trimmedGroup.toLowerCase() !== 'unknown' &&
+      trimmedGroup.toLowerCase() !== 'null' &&
+      trimmedGroup.toLowerCase() !== 'undefined' &&
+      trimmedGroup !== '@g.us'
+    ) {
+      return trimmedGroup;
     }
     return t('whatsapp.groupFallback');
   }

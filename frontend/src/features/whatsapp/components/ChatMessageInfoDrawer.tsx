@@ -446,12 +446,12 @@ export const ChatMessageInfoDrawer: React.FC<ChatMessageInfoDrawerProps> = ({
                     >
                       <Avatar name={item.name} image={item.avatar_url} phone={item.phone} size="sm" />
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-800 dark:text-[#e9edef] truncate">
-                          {item.name}
+                        <p className="text-sm font-medium text-slate-800 dark:text-[#e9edef] truncate" dir="auto">
+                          <bdi>{item.name}</bdi>
                         </p>
                         {item.phone && formatPhoneNumber(item.phone) !== item.name && (
-                          <p className="text-[11px] text-slate-400 font-mono truncate">
-                            {formatPhoneNumber(item.phone)}
+                          <p className="text-[11px] text-slate-400 font-mono truncate" dir="ltr">
+                            <bdi>{formatPhoneNumber(item.phone)}</bdi>
                           </p>
                         )}
                       </div>
@@ -491,12 +491,12 @@ export const ChatMessageInfoDrawer: React.FC<ChatMessageInfoDrawerProps> = ({
                     >
                       <Avatar name={item.name} image={item.avatar_url} phone={item.phone} size="sm" />
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-800 dark:text-[#e9edef] truncate">
-                          {item.name}
+                        <p className="text-sm font-medium text-slate-800 dark:text-[#e9edef] truncate" dir="auto">
+                          <bdi>{item.name}</bdi>
                         </p>
                         {item.phone && formatPhoneNumber(item.phone) !== item.name && (
-                          <p className="text-[11px] text-slate-400 font-mono truncate">
-                            {formatPhoneNumber(item.phone)}
+                          <p className="text-[11px] text-slate-400 font-mono truncate" dir="ltr">
+                            <bdi>{formatPhoneNumber(item.phone)}</bdi>
                           </p>
                         )}
                       </div>

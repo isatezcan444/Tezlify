@@ -860,8 +860,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                   className="p-3.5 rounded-2xl bg-white dark:bg-[#202c33] border border-slate-200/80 dark:border-white/[0.06] shadow-sm hover:border-[#7367F0]/40 transition-all cursor-pointer group/star"
                 >
                   <div className="flex items-center justify-between text-[11px] mb-2">
-                    <span className="font-bold text-slate-700 dark:text-slate-200 truncate max-w-[160px]">
-                      {sender}
+                    <span className="font-bold text-slate-700 dark:text-slate-200 truncate max-w-[160px]" dir="auto">
+                      <bdi>{sender}</bdi>
                     </span>
                     <div className="flex items-center space-x-2 text-slate-400">
                       <span>{formatMessageTime(msg.created_at || msg.external_timestamp, language)}</span>
@@ -881,7 +881,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                     </div>
                   </div>
                   {msg.body && (
-                    <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3 select-text leading-relaxed">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3 select-text leading-relaxed" dir="auto">
                       {msg.body}
                     </p>
                   )}
@@ -1015,8 +1015,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
             </div>
           ) : (
             <div className="mt-3.5 flex items-center justify-center gap-1.5 max-w-full">
-              <h4 className="font-extrabold text-base text-slate-800 dark:text-slate-100 break-words">
-                {isGroup ? (groupSubject || displayName) : displayName}
+              <h4 className="font-extrabold text-base text-slate-800 dark:text-slate-100 break-words" dir="auto">
+                <bdi>{isGroup ? (groupSubject || displayName) : displayName}</bdi>
               </h4>
               {isGroup && isCurrentUserAdmin && (
                 <button
@@ -1044,8 +1044,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               <span>{t('whatsapp.group')}</span>
             </div>
           ) : cleanPhone ? (
-            <p className="mt-1 font-mono text-xs text-slate-500 dark:text-slate-400 font-medium">
-              {formatPhoneNumber(cleanPhone)}
+            <p className="mt-1 font-mono text-xs text-slate-500 dark:text-slate-400 font-medium" dir="ltr">
+              <bdi>{formatPhoneNumber(cleanPhone)}</bdi>
             </p>
           ) : null}
 
@@ -1349,14 +1349,14 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                             className="w-9 h-9 text-xs shrink-0"
                           />
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center space-x-1.5">
+                            <div className="flex items-center space-x-1.5" dir="auto">
                               <span className={`text-xs font-bold truncate ${senderColor}`}>
-                                {partName}
+                                <bdi>{partName}</bdi>
                               </span>
                             </div>
                             {partSub && (
-                              <p className="text-[10px] text-slate-400 dark:text-slate-400 font-mono truncate">
-                                {partSub}
+                              <p className="text-[10px] text-slate-400 dark:text-slate-400 font-mono truncate" dir="ltr">
+                                <bdi>{partSub}</bdi>
                               </p>
                             )}
                           </div>

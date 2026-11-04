@@ -42,7 +42,7 @@ await writeFile(
   [
     `export { mapConversationItem, buildConversationUpdatedPayload } from '${SRC}/features/whatsapp/api/whatsappApi';`,
     `export { compareConversationsByActivityDesc, getConversationActivityTimestamp, getConversationIdentityKey, dedupeConversationsByCanonicalIdentity, restoreConversationActivity } from '${SRC}/features/whatsapp/lib/whatsappOrdering';`,
-    `export { getConversationDisplayName, extractCleanPhone, formatPhoneNumber, isRawWhatsAppJid, stripJidPrefix } from '${SRC}/features/whatsapp/lib/whatsappIdentity';`,
+    `export { getConversationDisplayName, extractCleanPhone, formatPhoneNumber, isRawWhatsAppJid, stripJidPrefix, isRealContactName } from '${SRC}/features/whatsapp/lib/whatsappIdentity';`,
     `export { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '${SRC}/features/whatsapp/lib/whatsappSync';`,
     `export { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '${SRC}/features/whatsapp/lib/whatsappPreview';`,
     `export { resolveUnreadCount } from '${SRC}/features/whatsapp/lib/whatsappUnread';`,
@@ -126,6 +126,7 @@ try {
     formatPhoneNumber,
     isRawWhatsAppJid,
     stripJidPrefix,
+    isRealContactName,
     buildChatPreview,
     normalizePreviewText,
     shouldApplyPreview,
@@ -479,6 +480,127 @@ try {
     assert.equal(extractCleanPhone('120363012345678901@g.us'), null);
     assert.equal(extractCleanPhone('+905321234567'), '+905321234567');
     assert.equal(formatPhoneNumber('+905321234567'), '+90 532 123 45 67');
+  });
+
+  // -------------------------------------------------------------------------
+  // 5.1 Phase 7.2 — Unicode Multilingual Name Recognition & Classification
+  // -------------------------------------------------------------------------
+  check('Phase 7.2: isRealContactName supports multilingual Unicode scripts and handles digits correctly', () => {
+    // 1. Valid non-Latin and multilingual names required by audit
+    const validRequired = [
+      'قناة الأخبار 12345',
+      '新闻频道 12345',
+      'Иван Петров',
+      'Γιώργος Παπαδόπουλος',
+      'नमस्ते दुनिया',
+      '日本語の名前',
+      '김민수',
+      'İsa Tezcan',
+      'Şeyma Aden',
+      'محمد 2026',
+      'Ahmet Yılmaz',
+      'John Doe (You)',
+      'Mehmet Kaya (Siz)',
+      '🌟 VIP Client 🌟',
+      'Chef 👨‍🍳',
+    ];
+    for (const name of validRequired) {
+      assert.equal(isRealContactName(name), true, `expected valid contact name for: ${name}`);
+    }
+
+    // 2. Invalid names (empty, pure digits, pure punctuation, JIDs/LIDs, technical fallbacks)
+    const invalidRequired = [
+      '',
+      '   ',
+      '123456789',
+      '12345',
+      '...',
+      '---',
+      '!@#$%^&*()',
+      '218107046027315@lid',
+      '905413749073@s.whatsapp.net',
+      '120363025442111111@g.us',
+      'unknown',
+      'null',
+      'undefined',
+      'none',
+      'kişi',
+      'kisi',
+      'contact',
+      'Hat 1',
+      'Hat 12',
+      'Tezlify',
+      'status@broadcast',
+      '+90 541 374 90 73',
+      '+905413749073',
+      '05413749073',
+      '123456789 📱',
+    ];
+    for (const name of invalidRequired) {
+      assert.equal(isRealContactName(name), false, `expected invalid contact name for: ${name}`);
+    }
+  });
+
+  check('Phase 7.2: getConversationDisplayName correctly classifies multilingual contacts vs groups', () => {
+    // Multilingual group retains its full name including numbers
+    assert.equal(
+      getConversationDisplayName({ id: 101, is_group: true, lead_name: 'قناة الأخبار 12345', lead_phone: '1203@g.us' }, fakeT),
+      'قناة الأخبار 12345'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 102, is_group: true, lead_name: '新闻频道 12345', lead_phone: '1204@g.us' }, fakeT),
+      '新闻频道 12345'
+    );
+
+    // Multilingual individual contacts resolve to their full Unicode names
+    assert.equal(
+      getConversationDisplayName({ id: 103, is_group: false, lead_name: 'محمد 2026', lead_phone: '+905321110001' }, fakeT),
+      'محمد 2026'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 104, is_group: false, lead_name: 'Иван Петров', lead_phone: '+79991234567' }, fakeT),
+      'Иван Петров'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 105, is_group: false, lead_name: 'Γιώργος Παπαδόπουλος', lead_phone: '+302101234567' }, fakeT),
+      'Γιώργος Παπαδόπουλος'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 106, is_group: false, lead_name: 'नमस्ते दुनिया', lead_phone: '+919876543210' }, fakeT),
+      'नमस्ते दुनिया'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 107, is_group: false, lead_name: '日本語の名前', lead_phone: '+819012345678' }, fakeT),
+      '日本語の名前'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 108, is_group: false, lead_name: '김민수', lead_phone: '+821012345678' }, fakeT),
+      '김민수'
+    );
+
+    // Turkish name regressions preserved
+    assert.equal(
+      getConversationDisplayName({ id: 109, is_group: false, lead_name: 'İsa Tezcan', lead_phone: '+905413749073' }, fakeT),
+      'İsa Tezcan'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 110, is_group: false, lead_name: 'Şeyma Aden', lead_phone: 'jid:218107046027315@lid' }, fakeT),
+      'Şeyma Aden'
+    );
+
+    // Placeholder names cleanly fall back to phone or generic fallback
+    assert.equal(
+      getConversationDisplayName({ id: 111, is_group: false, lead_name: 'unknown', lead_phone: '+905413749073' }, fakeT),
+      '+90 541 374 90 73'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 112, is_group: true, lead_name: 'unknown', lead_phone: '1203@g.us' }, fakeT),
+      'Group'
+    );
+    assert.equal(
+      getConversationDisplayName({ id: 113, is_group: true, lead_name: '120363025442111111@g.us', lead_phone: '120363025442111111@g.us' }, fakeT),
+      'Group'
+    );
   });
 
   // -------------------------------------------------------------------------

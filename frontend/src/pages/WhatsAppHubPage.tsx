@@ -3882,8 +3882,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                                     <span>{t('whatsapp.group')}</span>
                                   </span>
                                 )}
-                                <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate group-hover/header:text-[#7367F0] transition-colors">
-                                  {headerDisplayName}
+                                <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate group-hover/header:text-[#7367F0] transition-colors" dir="auto">
+                                  <bdi>{headerDisplayName}</bdi>
                                 </h4>
                                 {selectedConv.status !== 'ACTIVE' && (
                                   <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
@@ -3892,19 +3892,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                                 )}
                               </div>
                               {isPeerTyping ? (
-                                <p className="text-[11px] font-medium text-[#00a884] dark:text-[#25D366] animate-pulse truncate">
-                                  {selectedConv.is_group && typingSender ? `${typingSender} ${t('whatsapp.peerTyping')}` : t('whatsapp.peerTyping')}
+                                <p className="text-[11px] font-medium text-[#00a884] dark:text-[#25D366] animate-pulse truncate" dir="auto">
+                                  <bdi>{selectedConv.is_group && typingSender ? `${typingSender} ${t('whatsapp.peerTyping')}` : t('whatsapp.peerTyping')}</bdi>
                                 </p>
                               ) : selectedConv.is_group ? (
                                 <p
                                   title={groupParticipantsText}
                                   className="text-[11px] text-slate-500 dark:text-[#8696a0] font-normal truncate"
+                                  dir="auto"
                                 >
-                                  {groupParticipantsText}
+                                  <bdi>{groupParticipantsText}</bdi>
                                 </p>
                               ) : headerCleanPhone && formatPhoneNumber(headerCleanPhone) !== headerDisplayName ? (
-                                <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
-                                  {formatPhoneNumber(headerCleanPhone)}
+                                <p className="text-[11px] font-mono text-slate-400 font-medium truncate" dir="ltr">
+                                  <bdi>{formatPhoneNumber(headerCleanPhone)}</bdi>
                                 </p>
                               ) : null}
                             </div>
