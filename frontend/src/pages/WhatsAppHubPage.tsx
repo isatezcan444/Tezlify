@@ -1039,7 +1039,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const { controller } = request;
     const timeout = window.setTimeout(() => controller.abort(), MESSAGE_LOAD_TIMEOUT_MS);
     startWaLatency('chat_request_to_commit_ms', convId);
-    setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: true } }));
+    setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: true, error: false } }));
     try {
       const res = await WhatsAppRepository.getConversationMessages(convId, {
         limit: 50,
@@ -1070,6 +1070,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }));
     } catch (err: any) {
       if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;
+      if (controller.signal.aborted) {
+        setMessagePaging((prev) => ({
+          ...prev,
+          [convId]: { ...(prev[convId] || activePaging), loading: false },
+        }));
+        return;
+      }
       const isNotFound = err?.status === 404 || err?.response?.status === 404;
       if (isNotFound) {
         setMessagePaging((prev) => ({
@@ -1079,7 +1086,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } else {
         setMessagePaging((prev) => ({
           ...prev,
-          [convId]: { ...(prev[convId] || activePaging), loading: false, error: false },
+          [convId]: { ...(prev[convId] || activePaging), loading: false, error: true },
         }));
       }
       console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
@@ -3260,6 +3267,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           // (sync job + loading gate) and let them answer.
           void refreshSyncStatus();
           void refreshLoadingGate();
+          void loadConversations(true);
         }
       }
 
@@ -3464,6 +3472,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         fetchSessions(true);
         onRefreshStatsRef.current();
         refreshSyncStatus();
+        if (eventData?.event === 'session_sync_completed') {
+          void loadConversations(true);
+        }
       }
     };
     window.addEventListener('tezlify:ws_event', handleWs);

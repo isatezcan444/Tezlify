@@ -665,7 +665,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (nearBottom) setShowNewMessagePill(false);
     trackAnchor();
     if (programmaticRef.current) { programmaticRef.current = false; return; }   // our own pin's echo
-    if (scrollTop < 350 && hasMore && !loadingOlder && initialScrollDoneRef.current) { handleLoadOlder(); return; }
+    if (scrollTop < 350 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) { handleLoadOlder(); return; }
     const topsArr = topsOf();
     const r = deriveRange(topsArr, scrollTop, clientHeight);
     if (r.start !== winRef.current.start || r.end !== winRef.current.end) {
@@ -695,7 +695,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     // (see `legacyProgrammaticUntilRef`). Position tracking above still runs —
     // only the pagination trigger is suppressed.
     if (Date.now() < legacyProgrammaticUntilRef.current) return;
-    if (scrollTop < 350 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
+    if (scrollTop < 350 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) {
       handleLoadOlder();
     }
   };
@@ -1122,6 +1122,17 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const olderMessagesAffordance = loadingOlder ? (
     <div className="flex justify-center py-2 shrink-0" data-testid="loading-older-indicator">
       <Loader2 className="w-4 h-4 animate-spin text-[#7367F0]" />
+    </div>
+  ) : (pagingError && onLoadOlder) ? (
+    <div className="flex justify-center py-2 shrink-0" data-testid="load-older-retry-affordance">
+      <button
+        type="button"
+        onClick={() => handleLoadOlder()}
+        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold text-rose-500 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 border border-rose-300 dark:border-rose-800 shadow-xs transition-all cursor-pointer select-none"
+      >
+        <RotateCcw className="w-3.5 h-3.5" />
+        <span>{t('whatsapp.paginationRetry')}</span>
+      </button>
     </div>
   ) : (hasMore && onLoadOlder) ? (
     <div className="flex justify-center py-2 shrink-0" data-testid="load-older-affordance">

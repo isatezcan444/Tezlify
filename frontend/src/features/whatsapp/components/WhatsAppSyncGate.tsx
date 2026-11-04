@@ -121,9 +121,9 @@ export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
                 <p className="text-xs font-bold text-rose-400">
                   {t('whatsapp.syncFailedTitle')}
                 </p>
-                {sync?.error && (
+                {(sync?.error || loadingGate?.error) && (
                   <p className="mt-1 text-[11px] text-rose-300/80 break-words">
-                    {sync.error}
+                    {sync?.error || loadingGate?.error}
                   </p>
                 )}
               </div>

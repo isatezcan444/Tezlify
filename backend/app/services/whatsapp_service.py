@@ -51,7 +51,7 @@ from backend.app.services import whatsapp_data_audit as _data_audit
 # 11'inde fark 0 sn idi.
 HISTORY_GAP_THRESHOLD_SECONDS = 600
 
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, update, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 
@@ -311,6 +311,8 @@ def resolve_gate_phase(
         return "error", job_stage
     if initial_sync_completed:
         return "ready", "complete"
+    if session_status in ("DISCONNECTED", "BANNED", "ERROR", "RELINK_REQUIRED", "UNAVAILABLE"):
+        return "error", "disconnected"
     if session_status in ("CONNECTING", "RESTORING"):
         # Connecting is still connecting. Reporting "loading avatars" while the
         # socket is still coming up would name a wait that is not happening yet.
@@ -414,11 +416,52 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     )
     if is_no_session_err and session.get("status") == "CONNECTED":
         logger.info("[WhatsApp] Recovering from transient pre-promotion sync failure for user %s", user_id)
-        _sync_orchestrator._schedule_initial_sync(user_id)
+        _sync_orchestrator._schedule_initial_sync(user_id, session_key=session.get("gateway_id"))
         job_snap = _sync_orchestrator.get_sync_job(user_id) or {}
         job_state = str(job_snap.get("state") or "SYNCING")
         job_stage = str(job_snap.get("stage") or "starting")
         job_error = None
+
+    # Durable stamp recovery and idle sync recovery for connected sessions:
+    is_sync_inflight = str(user_id) in _sync_orchestrator._initial_sync_inflight or job_state == "SYNCING"
+    if session.get("status") == "CONNECTED" and not session.get("initial_sync_completed"):
+        conv_cnt_query = select(func.count(Conversation.id)).where(
+            Conversation.session_id == session["id"],
+            get_user_filter(Conversation.user_id, user_id),
+        )
+        conv_count = (await db.execute(conv_cnt_query)).scalar() or 0
+        if conv_count > 0:
+            # Chats were previously synced into DB, but initial_sync_completed_at was not stamped
+            # (e.g. backend restart or uncompleted finalize). Stamp it now so the gate opens cleanly.
+            _stamp_now = utc_now_naive()
+            await db.execute(
+                update(WhatsAppSession)
+                .where(
+                    WhatsAppSession.id == session["id"],
+                    WhatsAppSession.initial_sync_completed_at.is_(None),
+                )
+                .values(initial_sync_completed_at=_stamp_now)
+            )
+            await db.commit()
+            session["initial_sync_completed"] = True
+            logger.info(
+                "[WhatsApp] Auto-stamped initial_sync_completed_at for connected session %s (%d chats exist)",
+                session["id"],
+                conv_count,
+            )
+        elif job_state in ("IDLE", "COMPLETED") and not is_sync_inflight and not job_error:
+            # Connected line with 0 chats in DB and no sync job currently in flight:
+            # schedule initial sync to recover from missed triggers or backend restarts.
+            logger.info(
+                "[WhatsApp] Recovering idle unsynced connected session %s for user %s: scheduling initial sync",
+                session["id"],
+                user_id,
+            )
+            _sync_orchestrator._schedule_initial_sync(user_id, session_key=session.get("gateway_id"))
+            is_sync_inflight = True
+            job_snap = _sync_orchestrator.get_sync_job(user_id) or {}
+            job_state = str(job_snap.get("state") or "SYNCING")
+            job_stage = str(job_snap.get("stage") or "starting")
 
     phase, stage = resolve_gate_phase(
         job_state=job_state,

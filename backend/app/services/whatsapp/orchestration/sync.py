@@ -835,6 +835,30 @@ class WhatsAppSyncOrchestrator:
 
     def get_sync_job(self, user_id: str) -> Optional[Dict[str, Any]]:
         job = self._sync_jobs.get(str(user_id))
+        if job and job.state == "SYNCING":
+            if job.task and job.task.done():
+                if job.task.cancelled():
+                    job.state = "FAILED"
+                    job.stage = "cancelled"
+                    job.error = "Sync job was cancelled"
+                    if not job.done.is_set():
+                        job.done.set()
+                elif job.task.exception():
+                    job.state = "FAILED"
+                    job.stage = "error"
+                    job.error = str(job.task.exception())
+                    if not job.done.is_set():
+                        job.done.set()
+            elif job.started_at and (datetime.now(timezone.utc) - job.started_at).total_seconds() > 900:
+                logger.warning("Sync job for %s timed out after 15 minutes", user_id)
+                job.state = "FAILED"
+                job.stage = "timeout"
+                job.error = "Sync job timed out"
+                job.cancel_requested = True
+                if job.task and not job.task.done():
+                    job.task.cancel()
+                if not job.done.is_set():
+                    job.done.set()
         return job.snapshot() if job else None
 
     def _cancel_stale_sync_jobs(self, user_id: str, gateway_id: Optional[str] = None) -> int:

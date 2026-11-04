@@ -135,6 +135,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
     messages,
     hasMore,
     loadingOlder,
+    pagingError,
     loading: chatLoading,
     loadOlderMessages,
     updateStatus,
@@ -657,6 +658,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               loading={chatLoading}
               hasMore={hasMore}
               loadingOlder={loadingOlder}
+              pagingError={pagingError}
               onLoadOlder={loadOlderMessages}
               leadName={lead.name}
               leadPhone={lead.phone_e164 || lead.phone}

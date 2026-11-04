@@ -30,6 +30,7 @@ export function useWhatsAppConversation({
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
+  const [pagingError, setPagingError] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const isFetchingOlderRef = useRef(false);
   const conversationRef = useRef<ConversationDetail | null>(conversation);
@@ -46,6 +47,7 @@ export function useWhatsAppConversation({
     olderControllerRef.current?.abort();
     isFetchingOlderRef.current = false;
     setLoadingOlder(false);
+    setPagingError(false);
     if (!enabled || (!leadId && !conversationId)) {
       fetchGenerationRef.current += 1;
       setConversation(null);
@@ -128,6 +130,7 @@ export function useWhatsAppConversation({
 
     isFetchingOlderRef.current = true;
     setLoadingOlder(true);
+    setPagingError(false);
     const targetConversationId = conversation.id;
     const generation = fetchGenerationRef.current;
     const controller = new AbortController();
@@ -169,6 +172,12 @@ export function useWhatsAppConversation({
     } catch (err: any) {
       if (controller.signal.aborted) return;
       console.error('[useWhatsAppConversation] Load older messages error:', err);
+      const isNotFound = err?.status === 404 || err?.response?.status === 404;
+      if (isNotFound) {
+        setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
+      } else {
+        setPagingError(true);
+      }
     } finally {
       if (olderControllerRef.current === controller) {
         olderControllerRef.current = null;
@@ -509,6 +518,7 @@ export function useWhatsAppConversation({
     hasMore: Boolean(conversation?.messages && conversation.messages.length > 0 && conversation.has_more),
     loading,
     loadingOlder,
+    pagingError,
     error,
     refresh: fetchConversation,
     loadOlderMessages,

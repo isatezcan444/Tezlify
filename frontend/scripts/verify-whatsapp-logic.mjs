@@ -41,7 +41,7 @@ await writeFile(
   entry,
   [
     `export { mapConversationItem, buildConversationUpdatedPayload } from '${SRC}/features/whatsapp/api/whatsappApi';`,
-    `export { compareConversationsByActivityDesc, getConversationActivityTimestamp, getConversationIdentityKey, dedupeConversationsByCanonicalIdentity, restoreConversationActivity } from '${SRC}/features/whatsapp/lib/whatsappOrdering';`,
+    `export { compareConversationsByActivityDesc, getConversationActivityTimestamp, getConversationIdentityKey, dedupeConversationsByCanonicalIdentity, restoreConversationActivity, compareMessagesChronological, getMessageTimestampMs, normalizeMessageTimestampMs, isRealDbId } from '${SRC}/features/whatsapp/lib/whatsappOrdering';`,
     `export { getConversationDisplayName, extractCleanPhone, formatPhoneNumber, isRawWhatsAppJid, stripJidPrefix, isRealContactName } from '${SRC}/features/whatsapp/lib/whatsappIdentity';`,
     `export { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '${SRC}/features/whatsapp/lib/whatsappSync';`,
     `export { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '${SRC}/features/whatsapp/lib/whatsappPreview';`,
@@ -121,6 +121,10 @@ try {
     getConversationIdentityKey,
     dedupeConversationsByCanonicalIdentity,
     restoreConversationActivity,
+    compareMessagesChronological,
+    getMessageTimestampMs,
+    normalizeMessageTimestampMs,
+    isRealDbId,
     getConversationDisplayName,
     extractCleanPhone,
     formatPhoneNumber,
@@ -601,6 +605,55 @@ try {
       getConversationDisplayName({ id: 113, is_group: true, lead_name: '120363025442111111@g.us', lead_phone: '120363025442111111@g.us' }, fakeT),
       'Group'
     );
+  });
+
+  check('Phase 7.4: normalizeMessageTimestampMs properly normalizes 10-digit unix seconds and 13-digit ms', () => {
+    assert.equal(normalizeMessageTimestampMs(1730000000), 1730000000000);
+    assert.equal(normalizeMessageTimestampMs('1730000000'), 1730000000000);
+    assert.equal(normalizeMessageTimestampMs(1730000000123), 1730000000123);
+    assert.equal(normalizeMessageTimestampMs('1730000000123'), 1730000000123);
+    assert.equal(normalizeMessageTimestampMs(new Date('2026-11-04T12:00:00Z')), 1793793600000);
+    assert.equal(normalizeMessageTimestampMs(null), 0);
+  });
+
+  check('Phase 7.4: isRealDbId distinguishes real database IDs from optimistic IDs', () => {
+    assert.equal(isRealDbId(1), true);
+    assert.equal(isRealDbId(42), true);
+    assert.equal(isRealDbId('42'), true);
+    assert.equal(isRealDbId(999999999), true);
+    assert.equal(isRealDbId('optimistic_cmsg_123'), false);
+    assert.equal(isRealDbId('temp_456'), false);
+    assert.equal(isRealDbId(1730723849123), false);
+    assert.equal(isRealDbId('1730723849123'), false);
+    assert.equal(isRealDbId(-100), false);
+    assert.equal(isRealDbId(null), false);
+  });
+
+  check('Phase 7.4: compareMessagesChronological orders by timestamp and deterministic causality tie-breakers', () => {
+    const t0 = '2026-11-04T12:00:00.000Z';
+    const t1 = '2026-11-04T12:00:01.000Z';
+
+    const msgOlder = { id: 10, created_at: t0, direction: 'OUTBOUND' };
+    const msgNewer = { id: 5, created_at: t1, direction: 'INBOUND' };
+    assert.ok(compareMessagesChronological(msgOlder, msgNewer) < 0);
+    assert.ok(compareMessagesChronological(msgNewer, msgOlder) > 0);
+
+    const msgInbound = { id: 20, created_at: t0, direction: 'INBOUND' };
+    const msgOutbound = { id: 10, created_at: t0, direction: 'OUTBOUND' };
+    assert.ok(compareMessagesChronological(msgInbound, msgOutbound) < 0, 'inbound must precede outbound when timestamp matches');
+    assert.ok(compareMessagesChronological(msgOutbound, msgInbound) > 0);
+
+    const msgRealDb = { id: 45, created_at: t0, direction: 'OUTBOUND' };
+    const msgOptimistic = { id: 1730723849123, created_at: t0, direction: 'OUTBOUND' };
+    const msgOptimisticStr = { id: 'optimistic_cmsg_1', created_at: t0, direction: 'OUTBOUND' };
+    assert.ok(compareMessagesChronological(msgRealDb, msgOptimistic) < 0, 'confirmed server row must precede optimistic row');
+    assert.ok(compareMessagesChronological(msgRealDb, msgOptimisticStr) < 0);
+    assert.ok(compareMessagesChronological(msgOptimistic, msgRealDb) > 0);
+
+    const msgDb1 = { id: 10, created_at: t0, direction: 'INBOUND' };
+    const msgDb2 = { id: 25, created_at: t0, direction: 'INBOUND' };
+    assert.ok(compareMessagesChronological(msgDb1, msgDb2) < 0);
+    assert.ok(compareMessagesChronological(msgDb2, msgDb1) > 0);
   });
 
   // -------------------------------------------------------------------------

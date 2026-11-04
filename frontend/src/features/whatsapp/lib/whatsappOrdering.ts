@@ -3,19 +3,74 @@ import { parseServerTime } from '../../../lib/utils';
 import { extractCleanPhone } from './whatsappIdentity';
 
 /**
- * Returns epoch milliseconds for a message timestamp honoring server UTC parsing.
+ * Normalizes any timestamp representation into epoch milliseconds.
+ * Accurately detects:
+ * - 10-digit unix seconds (e.g. 1730000000 -> Nov 2024) and scales by 1000
+ * - 13-digit epoch milliseconds
+ * - ISO-8601 strings, server naive UTC representations
  */
-export function getMessageTimestampMs(m: Partial<Message> | null | undefined): number {
-  if (!m) return 0;
-  const raw = m.external_timestamp || m.created_at;
-  const d = parseServerTime(raw);
-  if (d && !isNaN(d.getTime())) return d.getTime();
+export function normalizeMessageTimestampMs(raw: string | number | Date | null | undefined): number {
+  if (!raw) return 0;
+  if (raw instanceof Date) {
+    const t = raw.getTime();
+    return isNaN(t) ? 0 : t;
+  }
+  if (typeof raw === 'number') {
+    if (isNaN(raw) || raw <= 0) return 0;
+    return raw < 100_000_000_000 ? raw * 1000 : raw;
+  }
+  const s = String(raw).trim();
+  if (!s) return 0;
+  if (/^\d+$/.test(s)) {
+    const num = Number(s);
+    if (isNaN(num) || num <= 0) return 0;
+    return num < 100_000_000_000 ? num * 1000 : num;
+  }
+  const d = parseServerTime(s);
+  if (d && !isNaN(d.getTime())) {
+    const t = d.getTime();
+    if (t > 0 && t < 100_000_000_000) return t * 1000;
+    return t;
+  }
   return 0;
 }
 
 /**
+ * Returns epoch milliseconds for a message timestamp honoring server UTC parsing
+ * and unix second/millisecond normalization.
+ */
+export function getMessageTimestampMs(m: Partial<Message> | null | undefined): number {
+  if (!m) return 0;
+  return normalizeMessageTimestampMs(m.external_timestamp || m.created_at);
+}
+
+/**
+ * Distinguishes genuine database-persisted integer IDs from optimistic client IDs.
+ * Real DB IDs are positive integers < 1,000,000,000.
+ */
+export function isRealDbId(id: string | number | undefined | null): boolean {
+  if (id === null || id === undefined) return false;
+  if (typeof id === 'number') {
+    return Number.isInteger(id) && id > 0 && id < 1_000_000_000;
+  }
+  if (typeof id === 'string') {
+    if (id.startsWith('optimistic_') || id.startsWith('temp_')) return false;
+    if (/^\d+$/.test(id)) {
+      const n = Number(id);
+      return Number.isInteger(n) && n > 0 && n < 1_000_000_000;
+    }
+  }
+  return false;
+}
+
+/**
  * Deterministically sorts messages chronologically ascending (oldest first, newest last).
- * Handles tie-breaks by database integer ID, then client message id.
+ * Ordering contract:
+ * 1. Normalized timestamp ascending (primary key)
+ * 2. Conversational causality: INBOUND before OUTBOUND when timestamps match
+ * 3. Database integer ID ascending for confirmed server rows
+ * 4. Confirmed server message before unconfirmed optimistic message
+ * 5. Stable string key fallback (wa_message_id / client_message_id / id) for total order
  */
 export function compareMessagesChronological(a: Message, b: Message): number {
   const timeA = getMessageTimestampMs(a);
@@ -25,19 +80,35 @@ export function compareMessagesChronological(a: Message, b: Message): number {
     return timeA - timeB;
   }
 
-  const idA = typeof a.id === 'number' ? a.id : Number(a.id);
-  const idB = typeof b.id === 'number' ? b.id : Number(b.id);
-  const validA = !isNaN(idA) && idA > 0;
-  const validB = !isNaN(idB) && idB > 0;
-
-  if (validA && validB && idA !== idB) {
-    return idA - idB;
+  // Same timestamp: Conversational causality tie-breaker.
+  // When an inbound question and outbound reply share the same second/instant,
+  // the inbound message from the contact came first.
+  const dirA = a.direction;
+  const dirB = b.direction;
+  if (dirA !== dirB) {
+    if (dirA === 'INBOUND' && dirB === 'OUTBOUND') return -1;
+    if (dirA === 'OUTBOUND' && dirB === 'INBOUND') return 1;
   }
 
-  if (validA && !validB) return -1;
-  if (!validA && validB) return 1;
+  // Differentiate real DB IDs from 13-digit optimistic timestamps/strings:
+  const isRealA = isRealDbId(a.id);
+  const isRealB = isRealDbId(b.id);
 
-  return 0;
+  if (isRealA && isRealB) {
+    const numA = Number(a.id);
+    const numB = Number(b.id);
+    if (numA !== numB) return numA - numB;
+  } else if (isRealA && !isRealB) {
+    // Confirmed database row happened before pending optimistic message
+    return -1;
+  } else if (!isRealA && isRealB) {
+    return 1;
+  }
+
+  // Both are optimistic or same ID: use stable identity string
+  const keyA = a.wa_message_id || a.client_message_id || String(a.id || '');
+  const keyB = b.wa_message_id || b.client_message_id || String(b.id || '');
+  return keyA.localeCompare(keyB);
 }
 
 /**

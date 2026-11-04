@@ -1,5 +1,5 @@
 import type { Message, ConversationMessageStatus } from '../../../types';
-import { compareMessagesChronological } from './whatsappOrdering';
+import { compareMessagesChronological, isRealDbId } from './whatsappOrdering';
 
 export function mergeDeliveryStatus(current: ConversationMessageStatus, incoming: ConversationMessageStatus): ConversationMessageStatus {
   const rank: Record<ConversationMessageStatus, number> = { PENDING: 0, FAILED: 0, SENT: 1, DELIVERED: 2, READ: 3, RECEIVED: 3 };
@@ -37,7 +37,7 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
     result[slot] = previous ? {
       ...previous,
       ...message,
-      id: Number(previous.id) > 0 && !(Number(message.id) > 0) ? previous.id : message.id,
+      id: isRealDbId(previous.id) && !isRealDbId(message.id) ? previous.id : message.id,
       body: (message.body && message.body.trim() !== '') ? message.body : previous.body,
       message_type: (message.message_type && message.message_type !== 'TEXT') ? message.message_type : (previous.message_type || message.message_type),
       wa_message_id: message.wa_message_id || previous.wa_message_id,
