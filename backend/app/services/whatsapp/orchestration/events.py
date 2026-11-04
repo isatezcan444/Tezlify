@@ -942,6 +942,13 @@ class WhatsAppEventOrchestrator:
         if is_degenerate_jid(jid_str):
             return _skip_event(event, f"message_new: dejenere jid ({jid_str})")
 
+        # Phase 8.0.1: Sandbox ping/pong mesajı production DB'sine yazılmaz
+        from backend.app.services.whatsapp.sandbox import sandbox_service
+        msg_body = msg.get("body")
+        if sandbox_service.is_sandbox_message(msg_body):
+            sandbox_service.handle_inbound_message(msg_body, jid_to_phone(jid_str) or jid_str)
+            return _skip_event(event, f"message_new: sandbox ping/pong handled without db mutation ({jid_str})")
+
         owner, ws_session_id = await resolve_event_owner_and_session(
             db, jid_str, event.get("gateway_session_id")
         )
@@ -1629,6 +1636,13 @@ class WhatsAppEventOrchestrator:
         if not wa_message_id:
             return _skip_event(event, "message_receipt_updated: wa_message_id yok")
 
+        # Phase 8.0.1: Sandbox mesaj teslimat bildirimi
+        from backend.app.services.whatsapp.sandbox import sandbox_service
+        if sandbox_service.is_tracked_wa_message(str(wa_message_id)):
+            st = "READ" if event.get("read_timestamp") else "DELIVERED"
+            sandbox_service.handle_status_or_receipt(str(wa_message_id), st)
+            return _skip_event(event, f"message_receipt_updated: sandbox receipt handled ({wa_message_id})")
+
         read_ts_str = event.get("read_timestamp")
         receipt_ts_str = event.get("receipt_timestamp")
 
@@ -2264,6 +2278,12 @@ class WhatsAppEventOrchestrator:
             await db.commit()
         elif event.get("event") == "message_status_updated":
             wa_id = event.get("wa_message_id")
+            # Phase 8.0.1: Sandbox mesaj statü güncellemesi
+            from backend.app.services.whatsapp.sandbox import sandbox_service
+            if wa_id and sandbox_service.is_tracked_wa_message(str(wa_id)):
+                sandbox_service.handle_status_or_receipt(str(wa_id), event.get("status") or "")
+                return _skip_event(event, f"message_status_updated: sandbox status handled ({wa_id})")
+
             new_status = (event.get("status") or "").upper()
             if wa_id and new_status in ConversationMessageStatus.__members__:
                 row = matching_msg

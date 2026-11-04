@@ -18,6 +18,7 @@ from backend.app.api.v1.endpoints import (
     billing,
     tasks,
     escrow,
+    whatsapp_sandbox,
 )
 
 api_router = APIRouter()
@@ -32,6 +33,7 @@ api_router.include_router(analytics.router, prefix="/analytics", tags=["Analytic
 api_router.include_router(settings.router, prefix="/settings", tags=["Settings"])
 api_router.include_router(smart_outreach.router, prefix="/smart-outreach", tags=["Smart Outreach"])
 api_router.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp"])
+api_router.include_router(whatsapp_sandbox.router, prefix="/whatsapp/sandbox", tags=["WhatsApp Sandbox"])
 api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])

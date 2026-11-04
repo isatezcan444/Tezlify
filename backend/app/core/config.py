@@ -334,5 +334,89 @@ class Settings(BaseSettings):
         )
         return False
 
+    # WhatsApp Sandbox E2E Verification (Aşama 8.0.1)
+    # Kontrollü ve güvenli Sandbox E2E test altyapısı konfigürasyonu.
+    # Varsayılan KAPALIDIR (fail-closed).
+    WHATSAPP_SANDBOX_ENABLED: bool = False
+    WHATSAPP_SANDBOX_SESSION_ID: Optional[int] = None
+    WHATSAPP_SANDBOX_ALLOWED_TARGETS: list[str] = Field(default_factory=list)
+    WHATSAPP_SANDBOX_MAX_MESSAGES: int = 10
+    WHATSAPP_SANDBOX_TIMEOUT_MS: int = 15000
+
+    @field_validator("WHATSAPP_SANDBOX_ENABLED", mode="before")
+    @classmethod
+    def _sandbox_enabled_fail_closed(cls, value: object) -> bool:
+        """Yalnızca AÇIKÇA `true` veya `1` sandbox modunu açar; her şey kapalıdır (fail-closed)."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().strip('"').strip("'").strip().lower()
+        if text in {"1", "true"}:
+            return True
+        if text in {"0", "false", "no", "off", "n", "f", ""}:
+            return False
+
+        logging.getLogger(__name__).warning(
+            "WHATSAPP_SANDBOX_ENABLED çözülemedi; güvenli tarafta "
+            "KAPALI kabul edildi (fail-closed). Yalnızca `true` veya `1` açar."
+        )
+        return False
+
+    @field_validator("WHATSAPP_SANDBOX_SESSION_ID", mode="before")
+    @classmethod
+    def _sandbox_session_id_parser(cls, value: object) -> Optional[int]:
+        if value is None or value == "":
+            return None
+        try:
+            return int(str(value).strip())
+        except (ValueError, TypeError):
+            logging.getLogger(__name__).warning(
+                "WHATSAPP_SANDBOX_SESSION_ID geçersiz bir tamsayı; None olarak ayarlandı."
+            )
+            return None
+
+    @field_validator("WHATSAPP_SANDBOX_ALLOWED_TARGETS", mode="before")
+    @classmethod
+    def _sandbox_allowed_targets_parser(cls, value: object) -> list[str]:
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    import json
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+                except Exception:
+                    pass
+            return [p.strip() for p in text.split(",") if p.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    @field_validator("WHATSAPP_SANDBOX_MAX_MESSAGES", mode="before")
+    @classmethod
+    def _sandbox_max_messages_validator(cls, value: object) -> int:
+        if value is None or value == "":
+            return 10
+        try:
+            val = int(str(value).strip())
+            return val if val > 0 else 10
+        except Exception:
+            return 10
+
+    @field_validator("WHATSAPP_SANDBOX_TIMEOUT_MS", mode="before")
+    @classmethod
+    def _sandbox_timeout_ms_validator(cls, value: object) -> int:
+        if value is None or value == "":
+            return 15000
+        try:
+            val = int(str(value).strip())
+            return val if val > 0 else 15000
+        except Exception:
+            return 15000
+
 
 settings = Settings()
