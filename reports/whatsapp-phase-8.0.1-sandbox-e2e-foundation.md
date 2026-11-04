@@ -230,3 +230,4 @@ Canlı bir hatta Ping/Pong testi yapabilmek için gereken sonraki adımlar:
 ---
 
 **SONUÇ:** AŞAMA 8.0.1 başarıyla tamamlanmış, kontrollü ve güvenli Sandbox E2E test altyapısı kurulmuş, tüm testler geçmiş ve üretim sunucusuna güvenli şekilde deploy edilmiştir. Aşama kuralları gereği AŞAMA 8.0.2'ye geçilmemiş ve yeni talimat beklenmektedir.
+
