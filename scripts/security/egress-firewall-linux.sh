@@ -9,7 +9,49 @@
 
 set -euo pipefail
 
-NS_NAME="${1:-tezlify-egress-isolated}"
+NS_NAME="tezlify-egress-isolated"
+ACTION="setup"
+
+for arg in "$@"; do
+  case "$arg" in
+    --cleanup|--delete|-d)
+      ACTION="cleanup"
+      ;;
+    --name=*)
+      NS_NAME="${arg#*=}"
+      ;;
+    --help|-h)
+      echo "Usage: $0 [--cleanup] [--name=<namespace_name>]"
+      exit 0
+      ;;
+    *)
+      if [ -n "$arg" ] && [ "$arg" != "cleanup" ]; then
+        NS_NAME="$arg"
+      fi
+      ;;
+  esac
+done
+
+if [ "${1:-}" = "cleanup" ]; then
+  ACTION="cleanup"
+fi
+
+if [ "$ACTION" = "cleanup" ]; then
+  echo "Rolling back and destroying Linux Kernel Network Namespace: ${NS_NAME}..."
+  if command -v ip >/dev/null 2>&1 && ip netns list | grep -q "${NS_NAME}"; then
+    ip netns del "${NS_NAME}"
+    echo "Namespace ${NS_NAME} deleted. Host firewall untouched."
+  else
+    echo "Namespace ${NS_NAME} does not exist. Nothing to clean."
+  fi
+  exit 0
+fi
+
+# Ensure root privileges on Linux
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Error: Linux kernel namespace configuration requires root privileges (sudo)." >&2
+  exit 1
+fi
 
 echo "Configuring Linux Kernel Network Namespace: ${NS_NAME}..."
 
@@ -21,7 +63,8 @@ fi
 # 2. Bring up loopback interface only (no external veth or bridge to WAN)
 ip -n "${NS_NAME}" link set lo up
 
-# 3. Configure nftables with strict default DROP policy for OUTPUT
+# 3. Configure nftables with strict default DROP policy for OUTPUT inside the namespace
+# Note: table inet filter is scoped EXCLUSIVELY to $NS_NAME; host tables are NOT affected.
 ip netns exec "${NS_NAME}" nft -f - <<EOF
 table inet filter {
     chain output {
