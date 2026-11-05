@@ -181,14 +181,26 @@ class SandboxMediaManager:
         """İzole sandbox medya dosyasını ve sidecar meta verisini okur."""
         s_filename = self._sanitize_path_segment(filename, "filename")
         test_dir = self._resolve_test_directory(tenant_id, test_id)
-        target_file_path = os.path.realpath(os.path.join(test_dir, s_filename))
+        raw_path = os.path.join(test_dir, s_filename)
+
+        # Symlink attack protection: neither the file nor its sidecar may be a symlink
+        if os.path.islink(raw_path) or os.path.islink(f"{raw_path}.meta.json"):
+            raise SandboxPathTraversalError(f"Symlinks are strictly forbidden in sandbox media: {s_filename}")
+
+        target_file_path = os.path.realpath(raw_path)
+        if not target_file_path.startswith(test_dir + os.sep):
+            raise SandboxPathTraversalError(f"Resolved file path escapes test directory: {target_file_path}")
+
         meta_file_path = f"{target_file_path}.meta.json"
 
         if not os.path.isfile(target_file_path) or not os.path.isfile(meta_file_path):
             raise SandboxMediaError(f"Media file or sidecar not found: {s_filename} for test {test_id}")
 
-        with open(meta_file_path, "r", encoding="utf-8") as f:
-            meta_dict = json.load(f)
+        try:
+            with open(meta_file_path, "r", encoding="utf-8") as f:
+                meta_dict = json.load(f)
+        except Exception as exc:
+            raise SandboxMediaIntegrityError(f"Corrupted or unreadable sidecar metadata for {s_filename}: {exc}")
 
         with open(target_file_path, "rb") as f:
             content = f.read()

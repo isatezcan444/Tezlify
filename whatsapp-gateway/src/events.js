@@ -408,6 +408,9 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
   }
 
   return {
+    isOpen() {
+      return isOpen();
+    },
     attachClient(socket) {
       clients.add(socket);
       socket.send(JSON.stringify({
@@ -417,6 +420,17 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     },
     detachClient(socket) { clients.delete(socket); },
     async cleanup() { return eventOutbox ? eventOutbox.cleanup() : 0; },
+    disconnect() {
+      manuallyClosed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (backendSocket) {
+        backendSocket.close();
+        backendSocket = null;
+      }
+    },
     close() {
       manuallyClosed = true;
       if (retryTimer) clearInterval(retryTimer);
@@ -424,6 +438,10 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (backendSocket) backendSocket.close();
       unsubscribe();
+    },
+    reconnect() {
+      manuallyClosed = false;
+      connectToBackend();
     },
   };
 }

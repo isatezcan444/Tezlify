@@ -605,6 +605,45 @@ export function createSessionManager({
       return () => this._listeners.delete(listener);
     },
 
+    registerTestSession(id, sessionData = {}) {
+      if (String(id) === '201') {
+        throw new Error('BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED');
+      }
+      const session = {
+        id: String(id),
+        session_name: sessionData.session_name || `test-session-${id}`,
+        ephemeral: false,
+        status: sessionData.status || 'CONNECTED',
+        qr_code: null,
+        phone_number: sessionData.phone_number || '+905551234567',
+        self_jid: `${(sessionData.phone_number || '+905551234567').replace(/[^0-9]/g, '')}@s.whatsapp.net`,
+        self_lid: null,
+        is_active: true,
+        is_phone_online: true,
+        battery_level: 100,
+        error_message: null,
+        error_reason: null,
+        sync: { phase: 'idle' },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        sock: sessionData.sock || {
+          sendMessage: async (jid, content, options) => {
+            return {
+              key: { id: options?.messageId || `TEST_WA_${Date.now()}`, remoteJid: jid, fromMe: true },
+              message: content,
+            };
+          },
+        },
+        store: sessionData.store || createSessionStore({
+          sessionDir: getSessionDir(sessionsDir, id),
+          logger,
+        }),
+        ...sessionData,
+      };
+      sessions.set(String(id), session);
+      return session;
+    },
+
     async shutdown() {
       const leaseReleases = [];
       const credentialFlushes = [];

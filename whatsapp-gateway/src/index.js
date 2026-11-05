@@ -807,6 +807,53 @@ wss.on('connection', (ws) => {
 });
 
 // ---------------------------------------------------------------------------
+// Isolated Test Adapter (L4 Integration Testing — disabled by default in production)
+// ---------------------------------------------------------------------------
+if (process.env.GATEWAY_TEST_MODE === 'true') {
+  app.post('/test/sessions/register', async (req, res) => {
+    const { id, session_name, phone_number } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'id is required' });
+    if (String(id) === '201' || String(session_name || '').includes('Hat 1')) {
+      return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
+    }
+    try {
+      const registered = sessionManager.registerTestSession(id, req.body);
+      res.json({ success: true, session: registered });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/test/events/emit', async (req, res) => {
+    const event = req.body || {};
+    const sid = String(event.gateway_session_id || event.session_id || '');
+    if (sid === '201' || sid.includes('201')) {
+      return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
+    }
+    try {
+      const result = await sessionManager._emit(event);
+      res.json({ success: true, result });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/test/bridge/status', (_req, res) => {
+    res.json({ connected: eventBridge.isOpen() });
+  });
+
+  app.post('/test/bridge/disconnect', (_req, res) => {
+    eventBridge.disconnect();
+    res.json({ success: true, connected: false });
+  });
+
+  app.post('/test/bridge/reconnect', (_req, res) => {
+    eventBridge.reconnect();
+    res.json({ success: true, connected: true });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Start server
 // ---------------------------------------------------------------------------
 server.listen(PORT, HOST, () => {
