@@ -33,7 +33,7 @@ const getAvatarColor = (name: string) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
-const getInitials = (name: string) => {
+export const getInitials = (name?: string | null) => {
   if (!name) return "?";
   const parts = name.trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
@@ -56,28 +56,36 @@ export function loadAvatarSessionCache(): void {
     if (typeof window === 'undefined' || !window.sessionStorage) return;
     const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        for (const [k, v] of Object.entries(parsed)) {
-          if (
-            typeof v === 'string' &&
-            v &&
-            !['changed', 'remove', 'null', 'undefined'].includes(v.trim().toLowerCase()) &&
-            !isWhatsAppUrlExpired(v) &&
-            !failedAvatarUrls.has(v)
-          ) {
-            resolvedAvatarCache.set(k, v);
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (
+              typeof v === 'string' &&
+              v &&
+              !['changed', 'remove', 'null', 'undefined'].includes(v.trim().toLowerCase()) &&
+              !isWhatsAppUrlExpired(v) &&
+              !failedAvatarUrls.has(v)
+            ) {
+              resolvedAvatarCache.set(k, v);
+            }
           }
         }
+      } catch {
+        /* corrupted JSON in tezlify_avatar_cache */
       }
     }
     const rawFailed = window.sessionStorage.getItem(AVATAR_FAILED_SESSION_CACHE_KEY);
     if (rawFailed) {
-      const parsedFailed = JSON.parse(rawFailed);
-      if (Array.isArray(parsedFailed)) {
-        for (const u of parsedFailed) {
-          if (typeof u === 'string' && u) failedAvatarUrls.add(u);
+      try {
+        const parsedFailed = JSON.parse(rawFailed);
+        if (Array.isArray(parsedFailed)) {
+          for (const u of parsedFailed) {
+            if (typeof u === 'string' && u) failedAvatarUrls.add(u);
+          }
         }
+      } catch {
+        /* corrupted JSON in tezlify_failed_avatars */
       }
     }
   } catch {
@@ -90,7 +98,15 @@ export function saveAvatarToSessionCache(phoneKey: string, url: string): void {
   try {
     if (typeof window === 'undefined' || !window.sessionStorage) return;
     const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
+    let parsed: Record<string, string> = {};
+    if (raw) {
+      try {
+        const p = JSON.parse(raw);
+        if (p && typeof p === 'object' && !Array.isArray(p)) parsed = p;
+      } catch {
+        parsed = {};
+      }
+    }
     parsed[phoneKey] = url;
     window.sessionStorage.setItem(AVATAR_SESSION_CACHE_KEY, JSON.stringify(parsed));
   } catch {
@@ -104,10 +120,14 @@ export function removeAvatarFromSessionCache(phoneKey: string): void {
     if (typeof window === 'undefined' || !window.sessionStorage) return;
     const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
     if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      delete parsed[phoneKey];
-      window.sessionStorage.setItem(AVATAR_SESSION_CACHE_KEY, JSON.stringify(parsed));
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        delete parsed[phoneKey];
+        window.sessionStorage.setItem(AVATAR_SESSION_CACHE_KEY, JSON.stringify(parsed));
+      }
+    } catch {
+      /* corrupted cache, ignore */
     }
   } catch {
     /* sessionStorage disabled */
@@ -116,11 +136,22 @@ export function removeAvatarFromSessionCache(phoneKey: string): void {
 
 export function saveFailedAvatarToSessionCache(url: string): void {
   if (!url) return;
+  if (failedAvatarUrls.size > 500) {
+    const first = failedAvatarUrls.values().next().value;
+    if (first) failedAvatarUrls.delete(first);
+  }
   try {
     if (typeof window === 'undefined' || !window.sessionStorage) return;
     const raw = window.sessionStorage.getItem(AVATAR_FAILED_SESSION_CACHE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    const list: string[] = Array.isArray(parsed) ? parsed : [];
+    let list: string[] = [];
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) list = parsed;
+      } catch {
+        list = [];
+      }
+    }
     if (!list.includes(url)) {
       list.push(url);
       if (list.length > 200) list.shift();

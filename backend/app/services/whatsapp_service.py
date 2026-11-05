@@ -1156,6 +1156,9 @@ def resolve_has_more(
         # The provider has not been queried yet and this thread has messages:
         # allow upward scroll to query older provider history.
         return True
+    if ev.get("has_more") is True and rows_returned > 0 and not ev.get("provider_exhausted"):
+        # Provider has more history and is not exhausted: keep the affordance.
+        return True
     return False
 
 
@@ -1487,6 +1490,7 @@ async def get_messages(
                         "provider_checked": bool(evidence.get("provider_checked", False)),
                         "provider_exhausted": bool(evidence.get("provider_exhausted", False)),
                         "provider_msgs_returned": int(evidence.get("provider_msgs_returned", 0)),
+                        "has_more": bool(evidence.get("has_more", True)),
                     }
                     # Provider evidence may explain why there is no more, but it
                     # must not be able to hide history we already hold. See
