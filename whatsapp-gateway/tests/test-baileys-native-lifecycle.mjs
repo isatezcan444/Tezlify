@@ -127,7 +127,7 @@ test('Scenario 2: Real sock.ev listener binding across Baileys events', async (t
   try { sock.end(); } catch (_) {}
 });
 
-test('Scenario 3 & 4: Native connection.update and socket close on loopback disconnect', async (t) => {
+test('Scenario 3: Native connection.update on loopback disconnect', async (t) => {
   const logger = createMockLogger();
   const updates = [];
 
@@ -135,7 +135,7 @@ test('Scenario 3 & 4: Native connection.update and socket close on loopback disc
     auth: createMockAuthState(),
     logger,
     printQRInTerminal: false,
-    waWebSocketUrl: 'ws://127.0.0.1:59996/unreachable',
+    waWebSocketUrl: 'ws://127.0.0.1:59996/unreachable-3',
   });
 
   await new Promise((resolve) => {
@@ -156,7 +156,28 @@ test('Scenario 3 & 4: Native connection.update and socket close on loopback disc
   assert.ok(closeUpdate.lastDisconnect, 'close update contains lastDisconnect');
   assert.ok(closeUpdate.lastDisconnect.error, 'lastDisconnect contains native error');
 
-  // Scenario 4: WS is closed
+  try { sock.end(); } catch (_) {}
+});
+
+test('Scenario 4: Native socket close and WS state transitions on loopback disconnect', async (t) => {
+  const logger = createMockLogger();
+  const sock = makeWASocket({
+    auth: createMockAuthState(),
+    logger,
+    printQRInTerminal: false,
+    waWebSocketUrl: 'ws://127.0.0.1:59996/unreachable-4',
+  });
+
+  await new Promise((resolve) => {
+    sock.ev.on('connection.update', (update) => {
+      if (update.connection === 'close') {
+        resolve();
+      }
+    });
+    setTimeout(resolve, 2500);
+  });
+
+  // Verify WS is closed
   if (sock.ws) {
     assert.strictEqual(sock.ws.isClosed, true, 'WebSocket isClosed is true on disconnect');
     assert.strictEqual(sock.ws.isOpen, false, 'WebSocket isOpen is false on disconnect');
@@ -211,7 +232,7 @@ test('Scenario 6: sock.ev.destroy() clears event buffer and removes listeners na
   assert.strictEqual(invokedAfterDestroy, false, 'Native sock.ev.destroy() successfully removed all event listeners');
 });
 
-test('Scenario 7 & 8: SocketLifecycle generation transition and stale event rejection', async (t) => {
+test('Scenario 7: SocketLifecycle generation transition (Gen N -> Gen N+1)', async (t) => {
   const lifecycle = new SocketLifecycle();
   assert.strictEqual(lifecycle.generation, 0, 'Initial generation is 0');
 
@@ -239,9 +260,36 @@ test('Scenario 7 & 8: SocketLifecycle generation transition and stale event reje
   assert.strictEqual(gen2, 2, 'Advanced to generation 2');
   assert.strictEqual(lifecycle.isCurrent(2, sockGen2), true, 'sockGen2 is current for generation 2');
 
-  // Scenario 8: Stale generation 1 rejection
+  try { sockGen1.end(); } catch (_) {}
+  try { sockGen2.end(); } catch (_) {}
+});
+
+test('Scenario 8: Stale generation event rejection via isCurrent guard', async (t) => {
+  const lifecycle = new SocketLifecycle();
+  const logger = createMockLogger();
+
+  const sockGen1 = makeWASocket({
+    auth: createMockAuthState(),
+    logger,
+    printQRInTerminal: false,
+    waWebSocketUrl: 'ws://127.0.0.1:59993/stale-1',
+  });
+  const gen1 = lifecycle.beginAttempt();
+  lifecycle.attach(gen1, sockGen1);
+
+  const sockGen2 = makeWASocket({
+    auth: createMockAuthState(),
+    logger,
+    printQRInTerminal: false,
+    waWebSocketUrl: 'ws://127.0.0.1:59993/stale-2',
+  });
+  const gen2 = lifecycle.beginAttempt();
+  lifecycle.attach(gen2, sockGen2);
+
+  // Stale generation 1 rejection
   assert.strictEqual(lifecycle.isCurrent(1, sockGen1), false, 'sockGen1 rejected as stale for generation 1');
   assert.strictEqual(lifecycle.isCurrent(2, sockGen1), false, 'sockGen1 rejected for generation 2 (mismatched socket)');
+  assert.strictEqual(lifecycle.isCurrent(2, sockGen2), true, 'sockGen2 is current for generation 2');
 
   try { sockGen1.end(); } catch (_) {}
   try { sockGen2.end(); } catch (_) {}
