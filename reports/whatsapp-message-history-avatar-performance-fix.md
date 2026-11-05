@@ -10,7 +10,8 @@
 
 ## 1. Başlangıç, Bitiş ve Git Durumu
 
-- **Temel Commit:** `6e8d28d` (`docs(whatsapp): record final commit hash in performance fix report`)
+- **Temel Commit:** `6e8d28d`
+- **Nihai Doğrulama Commit:** `de34765` (`test(whatsapp): verify local-first hydration scenarios, keyset explain and avatar cache bounds`)
 - **Çalışma Branch:** `main`
 - **İnceleme Kapsamı:** Local-first pagination (`elif rows: pass`), provider hydration durum makineleri, `resolve_has_more` mantığı, keyset indeks EXPLAIN analizi, `Avatar.tsx` bozuk JSON ve cache sınırları.
 
