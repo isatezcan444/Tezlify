@@ -819,8 +819,16 @@ if (isTestModeAllowed) {
       return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
     }
     try {
-      const registered = sessionManager.registerTestSession(id, req.body);
-      res.json({ success: true, session: registered });
+      const registered = await sessionManager.registerTestSession(id, req.body);
+      res.json({
+        success: true,
+        session: {
+          id: registered.id,
+          session_name: registered.session_name,
+          status: registered.status,
+          phone_number: registered.phone_number,
+        },
+      });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -877,7 +885,7 @@ if (isTestModeAllowed) {
       return res.status(500).json({ error: 'Session has no Baileys event emitter attached' });
     }
     const eventName = event ? String(event) : null;
-    const count = eventName ? session.sock.ev.listenerCount(eventName) : null;
+    const count = eventName && session.sock.ev.listenerCount ? session.sock.ev.listenerCount(eventName) : null;
     const eventNames = session.sock.ev.eventNames ? session.sock.ev.eventNames() : [];
     res.json({
       sessionId: sid,
@@ -885,6 +893,96 @@ if (isTestModeAllowed) {
       listenerCount: count,
       registeredEvents: eventNames,
     });
+  });
+
+  // Baileys Real Socket Provenance & Info (Phase 8.0.10)
+  app.get('/test/provider/socket/info', (req, res) => {
+    const { sessionId } = req.query || {};
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+    const sid = String(sessionId);
+    if (sid === '201' || sid.includes('201')) {
+      return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
+    }
+    const session = sessionManager.getSession(sid);
+    if (!session) return res.status(404).json({ error: `Session ${sessionId} not found` });
+    if (!session.sock) return res.status(404).json({ error: `Session ${sessionId} has no socket attached` });
+
+    const isRealBaileys = Boolean(
+      session.sock.type === 'md' &&
+      typeof session.sock.generateMessageTag === 'function' &&
+      typeof session.sock.query === 'function'
+    );
+
+    res.json({
+      sessionId: sid,
+      baileys_package_version: '7.0.0-rc14',
+      make_wa_socket_provenance: '@whiskeysockets/baileys/lib/Socket/index.js',
+      socket_constructor: session.sock.constructor?.name || typeof session.sock,
+      socket_type: session.sock.type || 'unknown',
+      sock_ev_type: session.sock.ev?.constructor?.name || typeof session.sock.ev,
+      socket_generation: session.lifecycle?.generation || 1,
+      is_real_baileys_socket: isRealBaileys,
+      has_ws_transport: Boolean(session.sock.ws),
+      network_egress_blocked: Boolean(
+        process.env.GATEWAY_BAILEYS_WS_URL &&
+        process.env.GATEWAY_BAILEYS_WS_URL.includes('127.0.0.1')
+      ),
+      wa_websocket_url: process.env.GATEWAY_BAILEYS_WS_URL || 'default',
+      status: session.status,
+      registered_events: session.sock.ev?.eventNames ? session.sock.ev.eventNames() : [],
+      listener_count_upsert: session.sock.ev?.listenerCount ? session.sock.ev.listenerCount('messages.upsert') : 0,
+    });
+  });
+
+  // Socket Replacement Test Adapter (Phase 8.0.10)
+  app.post('/test/provider/socket/replace', async (req, res) => {
+    const { sessionId } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+    const sid = String(sessionId);
+    if (sid === '201' || sid.includes('201')) {
+      return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
+    }
+    try {
+      const result = await sessionManager.replaceTestSessionSocket(sid);
+      res.json({
+        success: true,
+        sessionId: sid,
+        old_generation: result.old_generation,
+        new_generation: result.new_generation,
+        socket_type: result.session.sock.type,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Socket Close Test Adapter (Phase 8.0.10)
+  app.post('/test/provider/socket/close', async (req, res) => {
+    const { sessionId } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+    const sid = String(sessionId);
+    if (sid === '201' || sid.includes('201')) {
+      return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
+    }
+    const session = sessionManager.getSession(sid);
+    if (!session) return res.status(404).json({ error: `Session ${sessionId} not found` });
+    try {
+      if (session.sock) {
+        try { session.sock.ev?.removeAllListeners(); } catch (e) {}
+        try { session.sock.end(); } catch (e) {}
+      }
+      session.status = 'DISCONNECTED';
+      session.is_phone_online = false;
+      session.lifecycle.invalidate();
+      res.json({
+        success: true,
+        sessionId: sid,
+        status: session.status,
+        generation: session.lifecycle.generation,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.get('/test/bridge/status', (_req, res) => {

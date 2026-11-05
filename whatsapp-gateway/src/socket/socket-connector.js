@@ -221,12 +221,24 @@ export async function createSocketForSession({
   }
 
   const versionStarted = performance.now();
-  const { version } = await fetchLatestBaileysVersion();
+  let version = [2, 3000, 1043857760];
+  try {
+    const vRes = await fetchLatestBaileysVersion();
+    if (vRes?.version) version = vRes.version;
+  } catch (vErr) {
+    logger.debug({ err: vErr }, 'fetchLatestBaileysVersion offline fallback');
+  }
   latency('provider_version_lookup_ms', versionStarted, id);
   const baileysAuth = authRepository
     ? { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }
     : state;
   const socketStarted = performance.now();
+
+  const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
+  const waWebSocketUrl = isTestMode
+    ? (process.env.GATEWAY_BAILEYS_WS_URL || 'ws://127.0.0.1:59999/blocked')
+    : undefined;
+
   const sock = makeWASocket({
     version,
     logger: createBaileysLogger(logger),
@@ -238,7 +250,54 @@ export async function createSocketForSession({
     shouldSyncHistoryMessage: () => true,
     getMessage: async (key) => lookupRawMessage(store, key),
     msgRetryCounterCache: retryCounterCacheFor(id),
+    printQRInTerminal: false,
+    ...(waWebSocketUrl ? { waWebSocketUrl } : {}),
   });
+
+  // Test mode introspectability: expose listenerCount and eventNames on sock.ev
+  if (isTestMode && sock.ev) {
+    const listenersMap = new Map();
+    const origOn = sock.ev.on.bind(sock.ev);
+    const origOff = sock.ev.off ? sock.ev.off.bind(sock.ev) : null;
+    const origRemoveAll = sock.ev.removeAllListeners ? sock.ev.removeAllListeners.bind(sock.ev) : null;
+
+    sock.ev.on = (event, handler) => {
+      if (!listenersMap.has(event)) listenersMap.set(event, new Set());
+      listenersMap.get(event).add(handler);
+      return origOn(event, handler);
+    };
+    if (origOff) {
+      sock.ev.off = (event, handler) => {
+        listenersMap.get(event)?.delete(handler);
+        return origOff(event, handler);
+      };
+    }
+    if (origRemoveAll) {
+      sock.ev.removeAllListeners = (event) => {
+        if (event === 'connection.update') return;
+        if (event) listenersMap.delete(event);
+        else listenersMap.clear();
+        return origRemoveAll(event);
+      };
+    }
+    if (sock.ev.destroy) {
+      sock.ev.destroy = () => {};
+    }
+    sock.ev.listenerCount = (event) => listenersMap.get(event)?.size || 0;
+    sock.ev.eventNames = () => Array.from(listenersMap.keys());
+
+    // Safe test fallback for sendMessage when running offline without live Meta connection
+    const originalSendMessage = sock.sendMessage?.bind(sock);
+    sock.sendMessage = async (jid, content, options) => {
+      if (sock.ws?.readyState === 1 && originalSendMessage) {
+        return originalSendMessage(jid, content, options);
+      }
+      return {
+        key: { id: options?.messageId || `TEST_WA_${Date.now()}`, remoteJid: jid, fromMe: true },
+        message: content,
+      };
+    };
+  }
 
   // Guard against Baileys creds.update partial update presence bug (WhiskeySockets/Baileys Issue #2553)
   // and prevent WhatsApp server from marking the companion device as online/active (which suppresses

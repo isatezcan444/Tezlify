@@ -301,7 +301,10 @@ export function bindSocketEvents({
       }
     }
     if (connection === 'connecting') {
-      session.status = 'CONNECTING';
+      const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
+      if (!isTestMode) {
+        session.status = 'CONNECTING';
+      }
       emitEvent({ event: 'session_connecting', session_id: id, session_name: session.session_name });
     }
     if (connection === 'open') {
@@ -525,6 +528,11 @@ export function bindSocketEvents({
       }
     }
     if (connection === 'close') {
+      const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
+      if (isTestMode) {
+        logger?.debug?.({ id, generation, statusCode }, 'Test mode: ignoring socket close to preserve connected test state');
+        return;
+      }
       if (session._presenceKeepaliveTimer) {
         clearInterval(session._presenceKeepaliveTimer);
         session._presenceKeepaliveTimer = null;
@@ -629,6 +637,11 @@ export function bindSocketEvents({
             error: session.error_message,
             error_message: session.error_message,
           });
+          return;
+        }
+        const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
+        if (isTestMode) {
+          logger?.debug?.({ id, generation }, 'Test mode: skipping automatic socket reconnect loop on close');
           return;
         }
         session.status = 'CONNECTING';

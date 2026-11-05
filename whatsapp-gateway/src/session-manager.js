@@ -606,31 +606,18 @@ export function createSessionManager({
       return () => this._listeners.delete(listener);
     },
 
-    registerTestSession(id, sessionData = {}) {
-      if (String(id) === '201') {
+    async registerTestSession(id, sessionData = {}) {
+      const sid = String(id);
+      if (sid === '201' || sid.includes('201')) {
         throw new Error('BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED');
       }
       const selfJid = `${(sessionData.phone_number || '+905551234567').replace(/[^0-9]/g, '')}@s.whatsapp.net`;
       const selfLid = sessionData.self_lid || null;
       const lifecycle = sessionData.lifecycle || new SocketLifecycle();
-      const ev = sessionData.sock?.ev || new EventEmitter();
-      const sock = {
-        ev,
-        user: { id: selfJid, lid: selfLid },
-        sendPresenceUpdate: async () => {},
-        sendMessage: async (jid, content, options) => {
-          return {
-            key: { id: options?.messageId || `TEST_WA_${Date.now()}`, remoteJid: jid, fromMe: true },
-            message: content,
-          };
-        },
-        end: () => {},
-        query: async () => {},
-        requestPairingCode: async () => '1234-5678',
-        ...sessionData.sock,
-      };
+      const generation = lifecycle.beginAttempt();
+
       const session = {
-        id: String(id),
+        id: sid,
         session_name: sessionData.session_name || `test-session-${id}`,
         ephemeral: false,
         status: sessionData.status || 'CONNECTED',
@@ -646,7 +633,7 @@ export function createSessionManager({
         sync: { phase: 'idle' },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        sock,
+        sock: null,
         lifecycle,
         store: sessionData.store || createSessionStore({
           sessionDir: getSessionDir(sessionsDir, id),
@@ -654,21 +641,48 @@ export function createSessionManager({
         }),
         ...sessionData,
       };
-      const generation = lifecycle.beginAttempt();
+
+      let sock = sessionData.sock;
+      let state = sessionData.state || { creds: { registered: true, me: { id: selfJid, name: session.session_name } }, keys: {} };
+      let saveCreds = sessionData.saveCreds || (async () => {});
+      let connectStarted = performance.now();
+      let sessionDir = getSessionDir(sessionsDir, sid);
+
+      if (!sock) {
+        // Instantiate real Baileys Multi-Device socket via production createSocketForSession
+        const created = await createSocketForSession({
+          id: sid,
+          session,
+          generation,
+          sessionsDir,
+          aesKey,
+          authRepository: null,
+          logger,
+          retryCounterCacheFor: () => new Map(),
+          onLidMappingDiscovered: () => {},
+        });
+        sock = created.sock;
+        state = created.state;
+        saveCreds = created.saveCreds;
+        connectStarted = created.connectStarted;
+        sessionDir = created.sessionDir;
+      }
+
       lifecycle.attach(generation, sock);
-      sessions.set(String(id), session);
+      session.sock = sock;
+      sessions.set(sid, session);
 
       // Wire real Baileys socket event listeners to this session's sock.ev
       bindSocketEvents({
-        id: String(id),
+        id: sid,
         session,
         generation,
         sock,
-        state: { creds: { registered: true, me: { id: selfJid, name: session.session_name } }, keys: {} },
-        saveCreds: async () => {},
-        connectStarted: performance.now(),
-        sessionDir: getSessionDir(sessionsDir, String(id)),
-        manager: sessionManager,
+        state,
+        saveCreds,
+        connectStarted,
+        sessionDir,
+        manager: this,
         sessions,
         leaseCoordinator,
         lidRepository,
@@ -687,6 +701,77 @@ export function createSessionManager({
       });
 
       return session;
+    },
+
+    async replaceTestSessionSocket(id) {
+      const sid = String(id);
+      if (sid === '201' || sid.includes('201')) {
+        throw new Error('BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED');
+      }
+      const session = sessions.get(sid);
+      if (!session) throw new Error(`Session ${id} not found`);
+
+      const previousSocket = session.sock;
+      const oldGeneration = session.lifecycle.generation;
+      const generation = session.lifecycle.beginAttempt();
+
+      // Create new real Baileys socket for the new generation
+      const created = await createSocketForSession({
+        id: sid,
+        session,
+        generation,
+        sessionsDir,
+        aesKey,
+        authRepository: null,
+        logger,
+        retryCounterCacheFor: () => new Map(),
+        onLidMappingDiscovered: () => {},
+      });
+
+      const replaced = session.lifecycle.attach(generation, created.sock);
+      if (replaced) {
+        try { replaced.ev?.removeAllListeners(); } catch (err) {}
+        try { replaced.end(); } catch (err) {}
+      } else if (previousSocket) {
+        try { previousSocket.ev?.removeAllListeners(); } catch (err) {}
+        try { previousSocket.end(); } catch (err) {}
+      }
+
+      session.sock = created.sock;
+
+      bindSocketEvents({
+        id: sid,
+        session,
+        generation,
+        sock: created.sock,
+        state: created.state,
+        saveCreds: created.saveCreds,
+        connectStarted: created.connectStarted,
+        sessionDir: created.sessionDir,
+        manager: this,
+        sessions,
+        leaseCoordinator,
+        lidRepository,
+        mediaStore,
+        authRepository,
+        leaseRepository,
+        instanceId,
+        aesKey,
+        logger,
+        pendingHistoryWaiters,
+        inFlightHistoryFetches,
+        resetRetryCounterCache: () => {},
+        clearSessionHistoryFetches: () => {},
+        deactivatePersistentSession: () => {},
+        armLeaseRenewal: () => {},
+      });
+
+      return {
+        session,
+        old_generation: oldGeneration,
+        new_generation: generation,
+        previous_socket: previousSocket,
+      };
     },
 
     async shutdown() {
