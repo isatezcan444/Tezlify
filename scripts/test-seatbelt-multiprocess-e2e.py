@@ -172,7 +172,7 @@ async def main():
         proc_backend = subprocess.Popen(b_cmd, env=b_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         backend_ready = False
-        for _ in range(60):
+        for _ in range(150):
             time.sleep(0.1)
             try:
                 r = httpx.get(f"http://127.0.0.1:{BACKEND_PORT}/health", timeout=0.5)
@@ -213,7 +213,7 @@ async def main():
         proc_gateway = subprocess.Popen(gw_cmd, cwd=GATEWAY_DIR, env=gw_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         gw_ready = False
-        for _ in range(60):
+        for _ in range(150):
             time.sleep(0.1)
             try:
                 r = httpx.get(
