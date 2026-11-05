@@ -38,3 +38,15 @@ class SandboxPingResponse(BaseModel):
     error_code: Optional[str] = Field(None, description="Hata kodu")
     error_detail: Optional[str] = Field(None, description="Maskelenmiş hata detayı")
 
+
+class SandboxMediaUploadResponse(BaseModel):
+    """İzole sandbox medya yükleme yanıtı."""
+    file_id: str = Field(..., description="Benzersiz medya dosya ID'si")
+    tenant_id: str = Field(..., description="İzole kiracı ID'si")
+    test_id: str = Field(..., description="İlişkili test ID'si")
+    filename: str = Field(..., description="Medya dosya adı")
+    mime_type: str = Field(..., description="MIME türü")
+    size_bytes: int = Field(..., description="Bayt boyutu")
+    sha256: str = Field(..., description="SHA-256 bütünlük özeti")
+    created_at: str = Field(..., description="Oluşturulma zamanı")
+

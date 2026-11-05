@@ -21,6 +21,19 @@ from backend.app.services.whatsapp.identity import is_system_session_name
 logger = logging.getLogger("whatsapp.sandbox")
 
 # Korumalı üretim oturumları: bu oturumlar KESİNLİKLE sandbox için kullanılamaz.
+def get_protected_session_ids() -> Set[int]:
+    """Returns dynamically configured protected session IDs, always including 201."""
+    configured = getattr(settings, "WHATSAPP_PROTECTED_SESSION_IDS", [201]) or [201]
+    s: Set[int] = set()
+    for item in configured:
+        try:
+            s.add(int(str(item).strip()))
+        except Exception:
+            pass
+    s.add(201)
+    return s
+
+
 PROTECTED_PRODUCTION_SESSION_IDS: Set[int] = {201}
 
 SANDBOX_PREFIX = "TEZLIFY_SANDBOX"
@@ -37,8 +50,9 @@ def is_session_sandbox_eligible(
     if session_id is None:
         return False, "Session ID is None (missing session)"
 
-    if session_id in PROTECTED_PRODUCTION_SESSION_IDS:
-        return False, f"Session {session_id} is in PROTECTED_PRODUCTION_SESSION_IDS"
+    protected_ids = get_protected_session_ids()
+    if session_id in protected_ids:
+        return False, f"Session {session_id} is in PROTECTED_PRODUCTION_SESSION_IDS ({sorted(protected_ids)})"
 
     cfg_sess = settings.WHATSAPP_SANDBOX_SESSION_ID
     if cfg_sess is None or session_id != cfg_sess:
@@ -264,10 +278,11 @@ class WhatsAppSandboxService:
         if session_id is None:
             raise SandboxSessionNotConfiguredError("No sandbox session ID provided or configured.")
 
-        if session_id in PROTECTED_PRODUCTION_SESSION_IDS:
+        protected_ids = get_protected_session_ids()
+        if session_id in protected_ids:
             logger.error("[AUDIT] Sandbox security violation: attempt to use protected production session %s", session_id)
             raise ProductionSessionBlockedError(
-                f"Production session {session_id} is strictly protected and cannot be used for sandbox."
+                f"Production session {session_id} is strictly protected ({sorted(protected_ids)}) and cannot be used for sandbox."
             )
 
         # Üretim oturumu ismi / deseni kontrolü (P2)
@@ -441,7 +456,7 @@ class WhatsAppSandboxService:
             )
             return False
 
-        # 5. Gateway session kimliği doğrulaması (Fail-Closed)
+        # 5. Gateway session kimliği doğrulaması (Fail-Closed, strict identity match)
         if not gateway_session_id or not str(gateway_session_id).strip():
             logger.warning(
                 "[AUDIT] Sandbox inbound PONG rejected: missing or empty gateway_session_id corr=%s",
@@ -450,14 +465,13 @@ class WhatsAppSandboxService:
             return False
 
         ev_gw = str(gateway_session_id).strip()
-        test_gw = str(test.gateway_session_id).strip() if test.gateway_session_id else ""
-        expected_alias = f"sandbox-session-{test.session_id}" if test.session_id else ""
-        valid_sids = {s for s in (test_gw, expected_alias) if s}
+        expected_gw = str(test.gateway_session_id).strip() if test.gateway_session_id else ""
 
-        if not valid_sids or ev_gw not in valid_sids:
+        # Fail-closed: synthetic session aliases masquerading as real gateway sessions are strictly rejected.
+        if not expected_gw or ev_gw != expected_gw:
             logger.warning(
                 "[AUDIT] Sandbox PONG session mismatch: event_session=%s expected=%s corr=%s",
-                ev_gw, valid_sids, corr_id,
+                ev_gw, expected_gw, corr_id,
             )
             return False
 
@@ -506,7 +520,7 @@ class WhatsAppSandboxService:
         is_admin: bool = False,
     ) -> List[Dict[str, Any]]:
         """Son yapılandırılmış operational health sonuçlarını döner (tenant isolated)."""
-        if is_admin:
+        if is_admin and user_id is None:
             return list(self._results_history)
         if not user_id:
             return []
@@ -515,6 +529,26 @@ class WhatsAppSandboxService:
             item for item in self._results_history
             if item.get("user_id") and str(item.get("user_id")) == uid_str
         ]
+
+    def clear_results_history(
+        self,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Kiracının kendi sandbox test geçmişini temizler (tenant isolated)."""
+        if is_admin and user_id is None:
+            count = len(self._results_history)
+            self._results_history.clear()
+            return count
+        if not user_id:
+            return 0
+        uid_str = str(user_id)
+        initial_len = len(self._results_history)
+        self._results_history = collections.deque(
+            [r for r in self._results_history if str(r.get("user_id") or "") != uid_str],
+            maxlen=self._results_history.maxlen,
+        )
+        return initial_len - len(self._results_history)
 
     async def run_ping_pong_test(
         self,

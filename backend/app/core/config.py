@@ -334,7 +334,7 @@ class Settings(BaseSettings):
         )
         return False
 
-    # WhatsApp Sandbox E2E Verification (Aşama 8.0.1)
+    # WhatsApp Sandbox E2E Verification (Aşama 8.0.1 / 8.0.8)
     # Kontrollü ve güvenli Sandbox E2E test altyapısı konfigürasyonu.
     # Varsayılan KAPALIDIR (fail-closed).
     WHATSAPP_SANDBOX_ENABLED: bool = False
@@ -342,6 +342,9 @@ class Settings(BaseSettings):
     WHATSAPP_SANDBOX_ALLOWED_TARGETS: list[str] = Field(default_factory=list)
     WHATSAPP_SANDBOX_MAX_MESSAGES: int = 10
     WHATSAPP_SANDBOX_TIMEOUT_MS: int = 15000
+    WHATSAPP_PROTECTED_SESSION_IDS: list[int] = Field(default_factory=lambda: [201])
+    WHATSAPP_SANDBOX_MEDIA_DIR: str = "/tmp/tezlify_sandbox_media"
+    WHATSAPP_SANDBOX_TENANT_ID: Optional[str] = None
 
     @field_validator("WHATSAPP_SANDBOX_ENABLED", mode="before")
     @classmethod
@@ -417,6 +420,26 @@ class Settings(BaseSettings):
             return val if val > 0 else 15000
         except Exception:
             return 15000
+
+
+    @field_validator("WHATSAPP_PROTECTED_SESSION_IDS", mode="before")
+    @classmethod
+    def _protected_session_ids_validator(cls, value: object) -> list[int]:
+        ids: set[int] = {201}  # 201 is unconditionally protected
+        if value is None or value == "":
+            return sorted(ids)
+        if isinstance(value, str):
+            for part in value.split(","):
+                part_clean = part.strip()
+                if part_clean.isdigit():
+                    ids.add(int(part_clean))
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                try:
+                    ids.add(int(str(item).strip()))
+                except Exception:
+                    pass
+        return sorted(ids)
 
 
 settings = Settings()

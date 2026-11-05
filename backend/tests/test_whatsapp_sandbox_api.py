@@ -135,3 +135,60 @@ async def test_api_sandbox_results_endpoint(mock_admin):
     finally:
         app.dependency_overrides.clear()
 
+
+@pytest.mark.asyncio
+async def test_api_sandbox_clear_results_endpoint(mock_admin):
+    """DELETE /api/v1/whatsapp/sandbox/results sonuç geçmişini temizler."""
+    app.dependency_overrides[require_admin] = lambda: mock_admin
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            res = await ac.delete("/api/v1/whatsapp/sandbox/results")
+
+        assert res.status_code == 200
+        assert res.json()["status"] == "ok"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_api_sandbox_media_lifecycle(mock_admin, monkeypatch, tmp_path):
+    """POST/GET/DELETE /api/v1/whatsapp/sandbox/media yaşam döngüsü doğrulanır."""
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox.settings.WHATSAPP_SANDBOX_ENABLED", True)
+    monkeypatch.setattr("backend.app.services.whatsapp.sandbox_media.settings.WHATSAPP_SANDBOX_MEDIA_DIR", str(tmp_path))
+    from backend.app.services.whatsapp.sandbox_media import SandboxMediaManager
+    import backend.app.api.v1.endpoints.whatsapp_sandbox as sandbox_ep
+    sandbox_ep.sandbox_media_manager = SandboxMediaManager(base_dir=str(tmp_path))
+
+    app.dependency_overrides[require_admin] = lambda: mock_admin
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            # 1. Upload
+            files = {"file": ("test_doc.pdf", b"%PDF-1.4 test document content", "application/pdf")}
+            data = {"test_id": "test_phase808"}
+            res_up = await ac.post("/api/v1/whatsapp/sandbox/media/upload", data=data, files=files)
+            assert res_up.status_code == 200
+            up_data = res_up.json()
+            assert up_data["filename"] == "test_doc.pdf"
+            assert up_data["mime_type"] == "application/pdf"
+
+            # 2. Get Media
+            res_get = await ac.get("/api/v1/whatsapp/sandbox/media/test_phase808/test_doc.pdf")
+            assert res_get.status_code == 200
+            assert res_get.content == b"%PDF-1.4 test document content"
+
+            # 3. Cleanup
+            res_del = await ac.delete("/api/v1/whatsapp/sandbox/media/test_phase808")
+            assert res_del.status_code == 200
+            assert res_del.json()["deleted_files"] == 2  # pdf + meta.json
+
+            # 4. Verify gone
+            res_gone = await ac.get("/api/v1/whatsapp/sandbox/media/test_phase808/test_doc.pdf")
+            assert res_gone.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
