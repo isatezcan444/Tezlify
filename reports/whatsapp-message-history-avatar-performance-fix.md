@@ -11,8 +11,8 @@
 ## 1. Başlangıç ve Bitiş Commit Bilgileri
 
 - **Başlangıç Commit:** `0ad8652` (`docs(whatsapp): add phase 8.1.3 production deployment report`)
+- **Bitiş Commit:** `6a95601` (`fix(whatsapp): optimize message history pagination and avatar 404 resilience`)
 - **Çalışma Branch:** `main`
-- **Hedef Bitiş Durumu:** Bu rapor ve yapılan hata düzeltmeleri tek, temiz bir commit ile bağlanacaktır.
 
 ---
 
