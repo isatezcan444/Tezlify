@@ -474,8 +474,8 @@ export const tr = {
     msgRead: 'Okundu',
     msgFailed: 'Başarısız',
     loadOlderMessages: 'Daha Eski Mesajları Yükle',
+    loadingOlderMessages: 'Daha eski mesajlar yükleniyor...',
     paginationRetry: 'Daha eski mesajları tekrar yükle',
-    loadingOlderMessages: 'Eski mesajlar yükleniyor...',
     newMessageAlert: 'Yeni Mesaj',
     openLeadDetail: 'Müşteri Detayı',
     enrichmentTitle: 'Web & Sosyal Medya İstihbaratı',
@@ -548,6 +548,7 @@ export const tr = {
     // `leads.loadOlderMessages` altında olduğu için buton ham anahtar yolunu
     // gösteriyordu ("[i18n] Missing translation for key" konsol hatası).
     loadOlderMessages: 'Daha Eski Mesajları Yükle',
+    loadingOlderMessages: 'Daha eski mesajlar yükleniyor...',
     paginationRetry: 'Daha eski mesajları tekrar yükle',
     searchInChat: 'Bu sohbette ara',
     searchMatches: '{current} / {total}',

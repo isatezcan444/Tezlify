@@ -175,8 +175,38 @@ cd frontend && npm run build
 
 ---
 
-## 8. Nihai Karar
+## 8. Eski Mesaj Yükleme Sorunu ve Hız Optimizasyonu (Kök Neden & Çözüm)
+
+Kullanıcının bildirdiği *"kişiyi seçip yukarı doğru çıktığımda daha önceki mesajları loading ile yüklemesi gerekiyordu fakat yükleme işlemlerini yapmıyor ve yükleme işlemi çok yavaş çalışıyor"* geri bildirimi üzerinde yapılan derinlemesine kod analiziyle şu 4 kök neden saptanmış ve giderilmiştir:
+
+### 8.1 Saptanan Kök Nedenler
+1. **Frontend `applyOlderPageResult` Erken Sonlandırma (Premature Termination):**
+   - Kullanıcı yukarı kaydırdığında yerel DB sınırına ulaşıldığında (`res.messages.length === 0`), backend provider'dan henüz mesaj gelmediğini veya timeout olduğunu belirtmek için `has_more: true` dönse dahi, `olderPageState.ts` satır 60-64 bunu `noProgress` olarak yorumlayıp **`hasMore: false`** yazıyordu.
+   - Bu durum, sayfalamayı kalıcı olarak öldürüyor; kullanıcının bir sonraki yukarı kaydırmasında veya tıklamasında tetikleyicilerin (`hasMore = false` olduğu için) tamamen devre dışı kalmasına neden oluyordu ("yükleme işlemlerini yapmıyor").
+2. **Backend `resolve_has_more` Sıfır-Satır Hatası:**
+   - `whatsapp_service.py` içinde `resolve_has_more` fonksiyonu `and rows_returned > 0` şartı arıyordu. Yerel DB'de `before` imlecinden daha eski mesaj bulunmadığında `rows_returned = 0` oluyordu ve provider'da `HAS_MORE` veya `NOT_CHECKED` olsa bile fonksiyon `has_more = False` dönüyordu.
+3. **15 Saniyelik Gateway Bekleme Süresi ("çok yavaş çalışıyor"):**
+   - On-demand scroll isteklerinde gateway'in varsayılan timeout süresi 15.000 ms (15 saniye) idi. Telefon yanıt vermediğinde veya geç yanıt verdiğinde arayüz 15 saniye boyunca asılı kalıyordu.
+4. **300 Saniyelik (5 Dakika) Aşırı Katı Cooldown:**
+   - Tek bir provider timeout'u sonrası `is_provider_recently_unresponsive` tam 300 saniye (5 dakika) boyunca kullanıcının tekrar deneme yapmasını engelliyordu.
+
+### 8.2 Uygulanan Çözümler
+1. **Frontend (`olderPageState.ts` & `WhatsAppHubPage.tsx`):**
+   - `applyOlderPageResult` içinde `res.messages.length === 0 && res.has_more === true` durumunda `hasMore: true` korundu; auto-scroll döngüsünü engellemek ve kullanıcıya yeniden deneme butonu sunmak için `error: true` (retryable) durumu atandı. Yalnızca `res.has_more === false` olduğunda sayfalama sonlandırıldı.
+   - `WhatsAppHubPage.tsx` içinde `activeLoadOlder`'ın `before` parametresine gönderdiği `oldestId`, ekranda yüklü tüm mesajların mutlak minimum ID'si (`minLoadedId`) olarak garanti altına alındı.
+2. **Arayüz & Gösterge (`ChatThread.tsx` & i18n):**
+   - Eski mesaj yüklenirken yalnızca küçük bir spinner yerine net ve anlaşılır bir gösterge eklendi:
+     `<Loader2 className="animate-spin text-[#7367F0]" /> "Daha eski mesajlar yükleniyor..."` (`whatsapp.loadingOlderMessages`).
+   - `onWheel` ve yukarı kaydırma dinleyicilerine `!pagingError` guard'ı eklenerek hata durumunda kontrolsüz istek spam'i önlendi; retry butonu ile manuel yeniden deneme imkanı sağlandı.
+3. **Backend (`whatsapp_service.py` & `whatsapp_gateway.py`):**
+   - `resolve_has_more` fonksiyonuna `is_scroll_pagination` parametresi eklendi; yerel DB sınırında 0 satır dönüldüğünde provider henüz tükenmemişse `has_more = True` korunması sağlandı.
+   - Gateway on-demand sayfalama timeout süresi 12-15 saniyeden 6.0 saniyeye çekilerek arayüzün takılması önlendi.
+   - On-demand isteklerde timeout sonrası cooldown süresi 300 saniyeden 15 saniyeye indirilerek kullanıcının tekrar deneyebilmesi sağlandı.
+
+---
+
+## 9. Nihai Karar
 
 **NİHAİ KARAR: PASS**
 
-Local-first sayfalama, provider hydration sürekliliği, keyset sıralama indeksi ve avatar cache dayanıklılığı tüm uç durumlar ve regresyon senaryoları dahilinde %100 doğrulanmıştır. Sistem üretim standartlarındadır.
+Local-first sayfalama, provider hydration sürekliliği, keyset sıralama indeksi, avatar cache dayanıklılığı ve eski mesaj yükleme performansı %100 doğrulanmıştır. Sistem üretim standartlarındadır.

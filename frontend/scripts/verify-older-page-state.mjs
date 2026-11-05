@@ -57,9 +57,10 @@ try {
 
   const state = (over) => ({ hasMore: true, oldest: 1000, loading: true, ...over });
 
-  check('an empty page with has_more true is terminal (the loop)', () => {
-    // This is the exact backend answer when it cannot prove exhaustion: no rows,
-    // `has_more: true`, no cursor.
+  check('an empty page with has_more true preserves hasMore and sets error for retry', () => {
+    // When the backend returns no rows but has_more is true (e.g. provider timeout or pending chunk),
+    // hasMore must NOT be killed permanently. Setting error: true prevents auto-scroll looping
+    // while keeping the affordance reachable via manual retry.
     const next = applyOlderPageResult(state(), {
       messages: [],
       has_more: true,
@@ -67,11 +68,23 @@ try {
     });
     assert.equal(
       next.hasMore,
-      false,
-      'an empty page that does not move the cursor must end the affordance, not loop it',
+      true,
+      'hasMore must remain true so older messages can be retried',
     );
+    assert.equal(next.error, true, 'error must be set to prevent auto-scroll looping');
     assert.equal(next.oldest, 1000, 'the cursor must be left alone when nothing arrived');
     assert.equal(next.loading, false, 'the spinner must always be cleared');
+  });
+
+  check('an empty page with has_more false terminates the affordance', () => {
+    const next = applyOlderPageResult(state(), {
+      messages: [],
+      has_more: false,
+      oldest_message_id: null,
+    });
+    assert.equal(next.hasMore, false, 'an empty page with has_more false must end the affordance');
+    assert.equal(next.error, false, 'no error when cleanly exhausted');
+    assert.equal(next.loading, false);
   });
 
   check('a page that adds rows advances the cursor and follows the server', () => {

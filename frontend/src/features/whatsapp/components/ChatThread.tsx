@@ -1120,8 +1120,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
 
   const olderMessagesAffordance = loadingOlder ? (
-    <div className="flex justify-center py-2 shrink-0" data-testid="loading-older-indicator">
+    <div className="flex items-center justify-center gap-2 py-3 shrink-0" data-testid="loading-older-indicator">
       <Loader2 className="w-4 h-4 animate-spin text-[#7367F0]" />
+      <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+        {t('whatsapp.loadingOlderMessages')}
+      </span>
     </div>
   ) : (pagingError && onLoadOlder) ? (
     <div className="flex justify-center py-2 shrink-0" data-testid="load-older-retry-affordance">
@@ -1173,7 +1176,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
           onScroll={handleScroll}
           onWheel={(e) => {
             markUserInteracting();
-            if (e.deltaY < 0 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
+            if (e.deltaY < 0 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) {
               if (!containerRef.current || containerRef.current.scrollTop < 50) {
                 handleLoadOlder();
               }
@@ -1222,7 +1225,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         onScroll={handleScroll}
         onWheel={(e) => {
           markUserInteracting();
-          if (e.deltaY < 0 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
+          if (e.deltaY < 0 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) {
             if (!containerRef.current || containerRef.current.scrollTop < 50) {
               handleLoadOlder();
             }

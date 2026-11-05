@@ -60,12 +60,19 @@ export function applyOlderPageResult(
   const noProgress =
     res.messages.length === 0 && (cursor === undefined || cursor === prev.oldest);
   if (noProgress) {
-    return { hasMore: false, oldest: prev.oldest, loading: false };
+    if (res.has_more === false) {
+      return { hasMore: false, oldest: prev.oldest, loading: false, error: false };
+    }
+    // Server reports there may still be older messages (e.g. provider timeout or pending chunk).
+    // Keep hasMore: true so the affordance remains reachable, but set error: true so
+    // auto-scroll does NOT spin in an infinite loop, and the retry button is presented to the user.
+    return { hasMore: true, oldest: prev.oldest, loading: false, error: true };
   }
 
   return {
     hasMore: Boolean(res.has_more),
     oldest: cursor ?? prev.oldest,
     loading: false,
+    error: false,
   };
 }

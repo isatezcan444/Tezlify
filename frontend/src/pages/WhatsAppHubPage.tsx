@@ -638,7 +638,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         WhatsAppRepository.getConversationMessages(convId, { limit: 50, signal: init.signal }),
       onMessages: (convId, messages, meta) => {
         setMessagePaging((prev) => {
-          const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest;
+          const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest && prev[convId]?.error !== true;
           const hasMore = Boolean(!alreadyExhausted && meta.has_more !== false);
           return {
             ...prev,
@@ -1025,7 +1025,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeConv = selectedConv;
 
   const activeLoadOlder = useCallback(async () => {
-    const oldestId = activePaging?.oldest ?? (activeMessages[0] ? (activeMessages[0].id as number) : undefined);
+    const minLoadedId = activeMessages.reduce<number | undefined>((min, m) => {
+      return typeof m.id === 'number' && m.id > 0
+        ? (min === undefined ? m.id : Math.min(min, m.id))
+        : min;
+    }, undefined);
+    const oldestId = minLoadedId ?? activePaging?.oldest;
     if (!selectedConv || activePaging?.hasMore === false || !oldestId || activePaging?.loading) return;
     const convId = selectedConv.id;
     // Claim the lock BEFORE reading any state. The `activePaging.loading` check

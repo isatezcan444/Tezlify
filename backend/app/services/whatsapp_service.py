@@ -1115,6 +1115,7 @@ def resolve_has_more(
     page_size: int,
     rows_returned: int,
     evidence: Optional[Dict[str, Any]] = None,
+    is_scroll_pagination: bool = False,
 ) -> bool:
     """Decide whether older messages are still reachable, for one page.
 
@@ -1152,11 +1153,11 @@ def resolve_has_more(
         return False
     if state in ("TIMEOUT", "PROVIDER_ERROR"):
         return True
-    if not ev.get("provider_checked") and rows_returned > 0:
-        # The provider has not been queried yet and this thread has messages:
+    if not ev.get("provider_checked") and (rows_returned > 0 or is_scroll_pagination):
+        # The provider has not been queried yet and this thread has messages or is paginating:
         # allow upward scroll to query older provider history.
         return True
-    if ev.get("has_more") is True and rows_returned > 0 and not ev.get("provider_exhausted"):
+    if ev.get("has_more") is True and not ev.get("provider_exhausted") and (rows_returned > 0 or is_scroll_pagination):
         # Provider has more history and is not exhausted: keep the affordance.
         return True
     return False
@@ -1316,7 +1317,7 @@ async def get_messages(
                                 and j_val
                                 and history_session_id
                                 and await is_provider_recently_unresponsive(
-                                    db, j_val, session_id=history_session_id
+                                    db, j_val, session_id=history_session_id, cooldown_s=15
                                 )
                             ):
                                 logger.info(
@@ -1500,6 +1501,7 @@ async def get_messages(
                         page_size=page_size,
                         rows_returned=len(rows),
                         evidence=evidence,
+                        is_scroll_pagination=before is not None,
                     )
         except Exception as e:
             logger.debug("history_sync_states check failed: %s", e)

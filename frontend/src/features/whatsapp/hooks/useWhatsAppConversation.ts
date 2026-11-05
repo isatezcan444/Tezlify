@@ -166,8 +166,10 @@ export function useWhatsAppConversation({
             messages: merged,
           };
         });
-      } else {
+      } else if (!res.has_more) {
         setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
+      } else {
+        setPagingError(true);
       }
     } catch (err: any) {
       if (controller.signal.aborted) return;

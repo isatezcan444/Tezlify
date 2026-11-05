@@ -650,3 +650,62 @@ async def test_measured_performance_comparison(tmp_path, monkeypatch):
             print(f"\n[MEASURED PERF] Local-first get_messages latency: {t_elapsed_ms:.2f} ms")
             assert t_elapsed_ms < 50.0, f"Expected <50ms, took {t_elapsed_ms:.2f}ms"
 
+
+def test_resolve_has_more_scroll_pagination_zero_rows_invariants():
+    """Verifies that resolve_has_more never causes premature pagination termination
+    when scroll pagination reaches a local DB boundary with 0 older rows."""
+    # 1. Scroll pagination with 0 rows returned, provider has more -> True
+    assert ws.resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "HAS_MORE", "has_more": True, "provider_exhausted": False},
+        is_scroll_pagination=True,
+    ) is True
+
+    # 2. Scroll pagination with 0 rows returned, provider unverified NOT_CHECKED -> True
+    assert ws.resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "NOT_CHECKED", "provider_checked": False, "provider_exhausted": False},
+        is_scroll_pagination=True,
+    ) is True
+
+    # 3. Scroll pagination with 0 rows returned, provider EXHAUSTION_CANDIDATE (unconfirmed) -> True
+    assert ws.resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "EXHAUSTION_CANDIDATE", "has_more": True, "provider_exhausted": False},
+        is_scroll_pagination=True,
+    ) is True
+
+    # 4. Scroll pagination with 0 rows returned, provider TIMEOUT -> True (retryable)
+    assert ws.resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "TIMEOUT", "provider_exhausted": False},
+        is_scroll_pagination=True,
+    ) is True
+
+    # 5. Scroll pagination with 0 rows returned, provider FULLY_EXHAUSTED -> False (real end of history)
+    assert ws.resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "FULLY_EXHAUSTED", "provider_exhausted": True},
+        is_scroll_pagination=True,
+    ) is False
+
+    # 6. Initial open (not scroll pagination) with 0 rows returned and empty conversation -> False
+    assert ws.resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "NOT_CHECKED", "provider_checked": False},
+        is_scroll_pagination=False,
+    ) is False
+
+

@@ -474,8 +474,8 @@ export const en = {
     msgRead: 'Read',
     msgFailed: 'Failed',
     loadOlderMessages: 'Load Older Messages',
-    paginationRetry: 'Retry loading older messages',
     loadingOlderMessages: 'Loading older messages...',
+    paginationRetry: 'Retry loading older messages',
     newMessageAlert: 'New Message',
     openLeadDetail: 'Lead Details',
     enrichmentTitle: 'Web & Social Intelligence',
@@ -547,6 +547,7 @@ export const en = {
     // `ChatThread.tsx` calls `whatsapp.loadOlderMessages`. The key existed only
     // as `leads.loadOlderMessages`, so the button rendered the raw key path.
     loadOlderMessages: 'Load Older Messages',
+    loadingOlderMessages: 'Loading older messages...',
     paginationRetry: 'Retry loading older messages',
     searchInChat: 'Search in this chat',
     searchMatches: '{current} of {total}',

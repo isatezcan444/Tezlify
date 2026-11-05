@@ -369,9 +369,9 @@ async def get_messages(
         params["timeout_ms"] = int(timeout_ms)
         http_timeout = max(4.0, (timeout_ms / 1000.0) + 2.0)
     elif fetch_provider:
-        # Full provider history window (~12-15s) so the primary phone has enough time to respond.
-        params["timeout_ms"] = 12000
-        http_timeout = 15.0
+        # Provider history window for responsive on-demand hydration
+        params["timeout_ms"] = 6000
+        http_timeout = 8.5
     else:
         http_timeout = 5.0
     try:
