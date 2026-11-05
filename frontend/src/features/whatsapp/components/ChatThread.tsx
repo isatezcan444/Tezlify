@@ -915,8 +915,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const cont = containerRef.current;
     if (!cont) return;
     userScrolledUpRef.current = false;
-    markLegacyProgrammatic(150);
-    cont.scrollTop = cont.scrollHeight;
+    markLegacyProgrammatic(behavior === 'smooth' ? 300 : 150);
+    if (behavior === 'smooth' && typeof cont.scrollTo === 'function') {
+      cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
+    } else {
+      cont.scrollTop = cont.scrollHeight;
+    }
     setIsNearBottom(true);
     setShowNewMessagePill(false);
   }, [geomOp, markLegacyProgrammatic]);
@@ -1162,6 +1166,19 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       >
         <span>{t('leads.newMessageAlert')}</span>
         <ChevronDown className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  ) : !isNearBottom ? (
+    <div className="absolute bottom-4 right-4 z-10 transition-all duration-200">
+      <button
+        type="button"
+        onClick={() => scrollToBottomNow('smooth')}
+        title={t('whatsapp.scrollToBottom')}
+        aria-label={t('whatsapp.scrollToBottom')}
+        data-testid="scroll-to-bottom-button"
+        className="p-2.5 rounded-full bg-white dark:bg-[#1E2333] hover:bg-slate-50 dark:hover:bg-[#2B3145] text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80 shadow-md transition-all cursor-pointer select-none"
+      >
+        <ChevronDown className="w-4 h-4" />
       </button>
     </div>
   ) : null;

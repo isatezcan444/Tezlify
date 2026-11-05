@@ -139,6 +139,43 @@ try {
     assert.notEqual(next.error, true, 'a successful page must clear a previous paging error');
   });
 
+  check('chronological cursor extraction outranks numeric id when older history has larger ids', async () => {
+    // When older WhatsApp history is backfilled into Postgres after initial sync,
+    // the older messages receive HIGHER auto-increment DB IDs.
+    // e.g. initial message id=171455 (time: 13:55), older backfilled messages id=171929..171978 (time: 12:39..13:55).
+    // Math.min would get stuck on 171455 forever.
+    // Chronological selection correctly selects 171929 as the oldest loaded message.
+    const orderingSrc = path.join(frontendRoot, 'src', 'features', 'whatsapp', 'lib', 'whatsappOrdering.ts');
+    const orderingOut = path.join(outDir, 'ordering.mjs');
+    await build({
+      entryPoints: [orderingSrc],
+      outfile: orderingOut,
+      bundle: true,
+      format: 'esm',
+      platform: 'neutral',
+      logLevel: 'silent',
+    });
+    const { compareMessagesChronological, isRealDbId } = await import(orderingOut);
+
+    const activeMessages = [
+      { id: 171929, created_at: '2026-11-05T12:39:27', direction: 'OUTBOUND' },
+      { id: 171978, created_at: '2026-11-05T13:55:13', direction: 'INBOUND' },
+      { id: 171455, created_at: '2026-11-05T13:55:35', direction: 'INBOUND' },
+    ];
+
+    const oldestLoadedMsg = activeMessages.reduce((oldest, m) => {
+      if (!isRealDbId(m.id) || typeof m.id !== 'number' || m.id <= 0) return oldest;
+      if (!oldest) return m;
+      return compareMessagesChronological(m, oldest) < 0 ? m : oldest;
+    }, null);
+
+    assert.equal(
+      oldestLoadedMsg?.id,
+      171929,
+      'Oldest message must be 171929 (timestamp 12:39:27), NOT Math.min id 171455 (timestamp 13:55:35)',
+    );
+  });
+
   console.log(`\n${passed} checks passed`);
 } finally {
   await rm(outDir, { recursive: true, force: true });

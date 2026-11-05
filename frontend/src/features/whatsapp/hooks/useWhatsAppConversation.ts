@@ -4,7 +4,7 @@ import { translateApiError } from '../lib/translateError';
 import { WhatsAppRepository } from '../data/whatsappRepository';
 import { mapMessageItem } from '../api/whatsappApi';
 import { ConversationDetail, Message, ConversationStatus } from '../../../types';
-import { compareMessagesChronological } from '../lib/whatsappOrdering';
+import { compareMessagesChronological, isRealDbId } from '../lib/whatsappOrdering';
 
 // Kanonik kronolojik siralama `lib/whatsappOrdering.compareMessagesChronological`
 // içinde yaşar (tek kaynak); buradaki kopya kaldırıldı (AGENTS.md component/
@@ -123,9 +123,17 @@ export function useWhatsAppConversation({
     }
 
     // Pagination cursors are always real numeric DB ids; optimistic string
-    // rows must never be sent as `before`.
-    const firstNumericId = conversation.messages.find((m) => typeof m.id === 'number' && m.id > 0)?.id;
-    const oldestId = conversation.oldest_message_id || firstNumericId;
+    // rows must never be sent as `before`. We find the chronologically oldest real row.
+    const oldestLoadedMsg = conversation.messages.reduce<Message | null>((oldest, m) => {
+      if (!isRealDbId(m.id) || typeof m.id !== 'number' || m.id <= 0) return oldest;
+      if (!oldest) return m;
+      return compareMessagesChronological(m, oldest) < 0 ? m : oldest;
+    }, null);
+    const oldestId = (oldestLoadedMsg && typeof oldestLoadedMsg.id === 'number')
+      ? oldestLoadedMsg.id
+      : (typeof conversation.oldest_message_id === 'number' && conversation.oldest_message_id > 0
+          ? conversation.oldest_message_id
+          : undefined);
     if (typeof oldestId !== 'number' || oldestId <= 0) return;
 
     isFetchingOlderRef.current = true;

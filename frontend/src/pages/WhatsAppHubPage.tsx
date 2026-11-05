@@ -30,7 +30,12 @@ import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
-import { compareConversationsByActivityDesc, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
+import {
+  compareConversationsByActivityDesc,
+  restoreConversationActivity,
+  compareMessagesChronological,
+  isRealDbId,
+} from '../features/whatsapp/lib/whatsappOrdering';
 import {
   createConversationHydrator,
   type ConversationHydrator,
@@ -1025,12 +1030,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeConv = selectedConv;
 
   const activeLoadOlder = useCallback(async () => {
-    const minLoadedId = activeMessages.reduce<number | undefined>((min, m) => {
-      return typeof m.id === 'number' && m.id > 0
-        ? (min === undefined ? m.id : Math.min(min, m.id))
-        : min;
-    }, undefined);
-    const oldestId = minLoadedId ?? activePaging?.oldest;
+    // In chronological order (ascending: oldest first, newest last),
+    // the oldest loaded server message is the earliest real DB row.
+    // We must NEVER use `Math.min` on auto-increment IDs because older WhatsApp history
+    // hydrated later receives LARGER DB IDs than newer messages received during initial sync.
+    const oldestLoadedMsg = activeMessages.reduce<Message | null>((oldest, m) => {
+      if (!isRealDbId(m.id) || typeof m.id !== 'number' || m.id <= 0) return oldest;
+      if (!oldest) return m;
+      return compareMessagesChronological(m, oldest) < 0 ? m : oldest;
+    }, null);
+    const oldestId = (oldestLoadedMsg && typeof oldestLoadedMsg.id === 'number')
+      ? oldestLoadedMsg.id
+      : activePaging?.oldest;
     if (!selectedConv || activePaging?.hasMore === false || !oldestId || activePaging?.loading) return;
     const convId = selectedConv.id;
     // Claim the lock BEFORE reading any state. The `activePaging.loading` check
