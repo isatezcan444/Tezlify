@@ -5,7 +5,7 @@ delivery receipts, and ping/pong correlation without risking production lines.
 All routes require administrator authorization (require_admin).
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
