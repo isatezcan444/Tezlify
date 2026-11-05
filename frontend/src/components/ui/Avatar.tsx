@@ -49,22 +49,34 @@ export const negativeAvatarPhones = new Map<string, number>();
 export const resolvedAvatarCache = new Map<string, string>();
 
 const AVATAR_SESSION_CACHE_KEY = 'tezlify_avatar_cache';
+const AVATAR_FAILED_SESSION_CACHE_KEY = 'tezlify_failed_avatars';
 
 export function loadAvatarSessionCache(): void {
   try {
     if (typeof window === 'undefined' || !window.sessionStorage) return;
     const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      for (const [k, v] of Object.entries(parsed)) {
-        if (
-          typeof v === 'string' &&
-          v &&
-          !['changed', 'remove', 'null', 'undefined'].includes(v.trim().toLowerCase()) &&
-          !isWhatsAppUrlExpired(v)
-        ) {
-          resolvedAvatarCache.set(k, v);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (
+            typeof v === 'string' &&
+            v &&
+            !['changed', 'remove', 'null', 'undefined'].includes(v.trim().toLowerCase()) &&
+            !isWhatsAppUrlExpired(v) &&
+            !failedAvatarUrls.has(v)
+          ) {
+            resolvedAvatarCache.set(k, v);
+          }
+        }
+      }
+    }
+    const rawFailed = window.sessionStorage.getItem(AVATAR_FAILED_SESSION_CACHE_KEY);
+    if (rawFailed) {
+      const parsedFailed = JSON.parse(rawFailed);
+      if (Array.isArray(parsedFailed)) {
+        for (const u of parsedFailed) {
+          if (typeof u === 'string' && u) failedAvatarUrls.add(u);
         }
       }
     }
@@ -74,7 +86,7 @@ export function loadAvatarSessionCache(): void {
 }
 
 export function saveAvatarToSessionCache(phoneKey: string, url: string): void {
-  if (!url || isWhatsAppUrlExpired(url)) return;
+  if (!url || isWhatsAppUrlExpired(url) || failedAvatarUrls.has(url)) return;
   try {
     if (typeof window === 'undefined' || !window.sessionStorage) return;
     const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
@@ -83,6 +95,39 @@ export function saveAvatarToSessionCache(phoneKey: string, url: string): void {
     window.sessionStorage.setItem(AVATAR_SESSION_CACHE_KEY, JSON.stringify(parsed));
   } catch {
     /* sessionStorage quota or disabled */
+  }
+}
+
+export function removeAvatarFromSessionCache(phoneKey: string): void {
+  if (!phoneKey) return;
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      delete parsed[phoneKey];
+      window.sessionStorage.setItem(AVATAR_SESSION_CACHE_KEY, JSON.stringify(parsed));
+    }
+  } catch {
+    /* sessionStorage disabled */
+  }
+}
+
+export function saveFailedAvatarToSessionCache(url: string): void {
+  if (!url) return;
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    const raw = window.sessionStorage.getItem(AVATAR_FAILED_SESSION_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const list: string[] = Array.isArray(parsed) ? parsed : [];
+    if (!list.includes(url)) {
+      list.push(url);
+      if (list.length > 200) list.shift();
+      window.sessionStorage.setItem(AVATAR_FAILED_SESSION_CACHE_KEY, JSON.stringify(list));
+    }
+  } catch {
+    /* sessionStorage disabled */
   }
 }
 
@@ -146,6 +191,7 @@ export const clearFailedAvatarUrlsCache = () => {
   try {
     if (typeof window !== 'undefined' && window.sessionStorage) {
       window.sessionStorage.removeItem(AVATAR_SESSION_CACHE_KEY);
+      window.sessionStorage.removeItem(AVATAR_FAILED_SESSION_CACHE_KEY);
     }
   } catch {
     /* ignore */
@@ -167,20 +213,22 @@ export const Avatar: React.FC<AvatarProps> = ({
   onRefresh,
 }) => {
   const isInputExpired = React.useMemo(() => isWhatsAppUrlExpired(image), [image]);
+  const isInputFailed = React.useMemo(() => Boolean(image && failedAvatarUrls.has(image)), [image]);
 
   const resolved = React.useMemo(() => {
-    if (isInputExpired && image) {
+    if ((isInputExpired || isInputFailed) && image) {
       failedAvatarUrls.add(image);
       return undefined;
     }
     return resolveMediaUrl(image);
-  }, [image, isInputExpired]);
+  }, [image, isInputExpired, isInputFailed]);
 
   const cached = React.useMemo(() => {
     if (!phone) return undefined;
     const c = resolvedAvatarCache.get(phone);
-    if (c && isWhatsAppUrlExpired(c)) {
+    if (c && (isWhatsAppUrlExpired(c) || failedAvatarUrls.has(c))) {
       resolvedAvatarCache.delete(phone);
+      removeAvatarFromSessionCache(phone);
       failedAvatarUrls.add(c);
       return undefined;
     }
@@ -190,7 +238,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   const initialEffective = resolved || cached;
 
   const [currentImage, setCurrentImage] = React.useState<string | undefined>(() => {
-    if (initialEffective && !failedAvatarUrls.has(initialEffective) && !isWhatsAppUrlExpired(initialEffective)) {
+    if (initialEffective && !failedAvatarUrls.has(initialEffective)) {
       if (!resolved && cached) avatarMetrics.avatar_cache_hit++;
       return initialEffective;
     }
@@ -198,11 +246,11 @@ export const Avatar: React.FC<AvatarProps> = ({
   });
 
   const [imageError, setImageError] = React.useState<boolean>(() => {
-    return initialEffective ? (failedAvatarUrls.has(initialEffective) || isWhatsAppUrlExpired(initialEffective)) : false;
+    return initialEffective ? failedAvatarUrls.has(initialEffective) : false;
   });
 
   const [isImageLoaded, setIsImageLoaded] = React.useState<boolean>(() => {
-    return Boolean(initialEffective && !failedAvatarUrls.has(initialEffective) && !isWhatsAppUrlExpired(initialEffective));
+    return Boolean(initialEffective && !failedAvatarUrls.has(initialEffective));
   });
 
   React.useEffect(() => {
@@ -224,7 +272,7 @@ export const Avatar: React.FC<AvatarProps> = ({
       // a verified avatar URL in the client cache — preserve it!
       const cachedUrl = resolvedAvatarCache.get(phone);
       const resolvedCached = resolveMediaUrl(cachedUrl);
-      if (resolvedCached && !isWhatsAppUrlExpired(resolvedCached)) {
+      if (resolvedCached && !isWhatsAppUrlExpired(resolvedCached) && !failedAvatarUrls.has(resolvedCached)) {
         avatarMetrics.avatar_url_preserved_after_empty_update++;
         setCurrentImage((prev) => {
           if (prev !== resolvedCached) {
@@ -237,6 +285,7 @@ export const Avatar: React.FC<AvatarProps> = ({
       } else {
         if (cachedUrl) {
           resolvedAvatarCache.delete(phone);
+          removeAvatarFromSessionCache(phone);
           failedAvatarUrls.add(cachedUrl);
         }
         setCurrentImage(undefined);
@@ -280,15 +329,25 @@ export const Avatar: React.FC<AvatarProps> = ({
             onRefresh?.(nextResolved);
           } else {
             avatarMetrics.avatar_request_failed++;
-            negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
+            negativeAvatarPhones.set(phone, Date.now() + 15 * 60 * 1000);
+            if (phone) {
+              resolvedAvatarCache.delete(phone);
+              removeAvatarFromSessionCache(phone);
+            }
+            onRefresh?.('');
           }
         } else {
           avatarMetrics.avatar_request_failed++;
-          negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
+          negativeAvatarPhones.set(phone, Date.now() + 15 * 60 * 1000);
+          if (phone) {
+            resolvedAvatarCache.delete(phone);
+            removeAvatarFromSessionCache(phone);
+          }
+          onRefresh?.('');
         }
       } catch (err) {
         avatarMetrics.avatar_request_failed++;
-        negativeAvatarPhones.set(phone, Date.now() + 2 * 60 * 1000);
+        negativeAvatarPhones.set(phone, Date.now() + 5 * 60 * 1000);
         console.debug("[Avatar] Refresh attempt failed:", err);
       } finally {
         inFlightAvatarRefreshes.delete(phone);
@@ -298,11 +357,19 @@ export const Avatar: React.FC<AvatarProps> = ({
 
   const handleImageError = React.useCallback(() => {
     avatarMetrics.avatar_retry_scheduled++;
-    if (currentImage) failedAvatarUrls.add(currentImage);
+    if (currentImage) {
+      failedAvatarUrls.add(currentImage);
+      saveFailedAvatarToSessionCache(currentImage);
+    }
+    if (phone) {
+      resolvedAvatarCache.delete(phone);
+      removeAvatarFromSessionCache(phone);
+    }
     setImageError(true);
     setIsImageLoaded(false);
-    fetchAvatar(true);
-  }, [currentImage, fetchAvatar]);
+    onRefresh?.('');
+    fetchAvatar(false);
+  }, [currentImage, phone, onRefresh, fetchAvatar]);
 
   // Proactive hydration: when priority === 'high' and avatar URL is missing, request immediately
   React.useEffect(() => {

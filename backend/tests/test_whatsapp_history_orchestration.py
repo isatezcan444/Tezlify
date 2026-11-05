@@ -276,6 +276,59 @@ async def test_04_multiple_older_pages(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_04b_partial_older_page_returns_immediately_without_blocking_provider(tmp_path, monkeypatch):
+    """TEST 4b: When local DB has partial older rows (len(rows) < page_size but > 0),
+    get_messages returns immediately without blocking on a 15-second provider roundtrip."""
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        async with sessions() as db:
+            session = WhatsAppSession(user_id=owner, gateway_id="gw-test", session_name="Test Session", status=SessionStatus.CONNECTED)
+            db.add(session)
+            contact = Contact(user_id=owner, phone_e164="+905551112233")
+            db.add(contact)
+            await db.flush()
+            conv = Conversation(user_id=owner, contact_id=contact.id, channel="WHATSAPP", session_id=session.id)
+            db.add(conv)
+            await db.flush()
+
+            t0 = datetime(2026, 1, 1, 10, 0, 0)
+            # Add 8 messages
+            for i in range(8):
+                db.add(Message(
+                    user_id=owner,
+                    conversation_id=conv.id,
+                    direction=MessageDirection.INBOUND,
+                    status=ConversationMessageStatus.RECEIVED,
+                    sender_phone="+905551112233",
+                    recipient_phone="ME",
+                    external_timestamp=t0 + timedelta(seconds=i),
+                    body=f"msg-{i}",
+                    wa_message_id=f"wa-{i}",
+                ))
+            await db.commit()
+
+            # First page with limit=5 returns msg-3 to msg-7
+            p1 = await ws.get_messages(db, owner, conv.id, limit=5)
+            assert len(p1["messages"]) == 5
+            oldest_id = p1["oldest_message_id"]
+
+            gw_mock = AsyncMock()
+            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
+
+            # Second page with limit=5 and before=oldest_id: DB has 3 older rows (msg-0, msg-1, msg-2)
+            # It must return the 3 rows immediately and NEVER call gw_mock!
+            t_start = time.monotonic()
+            p2 = await ws.get_messages(db, owner, conv.id, limit=5, before=oldest_id)
+            duration = time.monotonic() - t_start
+
+            assert len(p2["messages"]) == 3
+            assert p2["messages"][0]["body"] == "msg-0"
+            assert p2["messages"][-1]["body"] == "msg-2"
+            assert not gw_mock.called, "gw.get_messages must NOT be called when local DB has older rows!"
+            assert duration < 0.2, f"Should return immediately, took {duration:.3f}s"
+
+
+@pytest.mark.asyncio
 async def test_05_same_page_concurrent_requests(tmp_path, monkeypatch):
     """TEST 5: Concurrent requests for the same older-history page are deduplicated to 1 provider call."""
     owner = str(uuid.uuid4())

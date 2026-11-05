@@ -927,10 +927,16 @@ async def refresh_contact_avatar(
         if contact and new_url:
             set_contact_avatar(contact, new_url)
             await db.commit()
+        elif contact and (not new_url or (isinstance(res, dict) and res.get("error") in ("item-not-found", "not-authorized"))):
+            set_contact_avatar(contact, None, force=True)
+            await db.commit()
 
-        return {"success": True, "phone": phone, "avatar_url": new_url}
+        is_success = bool(new_url) and (res.get("success", True) if isinstance(res, dict) else True)
+        err_msg = res.get("error") if (isinstance(res, dict) and not is_success) else None
+        return {"success": is_success, "phone": phone, "avatar_url": new_url, "error": err_msg}
     except Exception as exc:
-        logger.warning("[WhatsApp] Avatar yenileme hatası (%s): %s", phone, exc)
+        masked_phone = f"...{phone[-4:]}" if phone and len(phone) >= 4 else "redacted"
+        logger.warning("[WhatsApp] Avatar yenileme hatasi (%s): %s", masked_phone, exc)
         return {"success": False, "phone": phone, "error": str(exc)}
 
 

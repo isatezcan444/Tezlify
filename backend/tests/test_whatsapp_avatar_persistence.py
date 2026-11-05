@@ -14,6 +14,7 @@ from backend.app.services.whatsapp.orchestration.sessions import refresh_contact
 from backend.app.services.whatsapp.repositories.contacts import (
     get_contact_avatar,
     set_contact_avatar,
+    clear_contact_avatar,
     is_whatsapp_avatar_expired,
 )
 
@@ -151,3 +152,109 @@ class TestWhatsAppAvatarPersistence:
         set_contact_avatar(contact, expired_url)
         assert "avatar_url" not in (contact.custom_attributes or {})
         assert get_contact_avatar(contact) is None
+
+    def test_clear_contact_avatar(self):
+        contact = Contact(
+            id=4,
+            user_id="u-test",
+            phone_e164="+905554445566",
+            custom_attributes={"avatar_url": "https://pps.whatsapp.net/v/valid_url.jpg"},
+        )
+        assert get_contact_avatar(contact) == "https://pps.whatsapp.net/v/valid_url.jpg"
+        changed = clear_contact_avatar(contact)
+        assert changed is True
+        assert "avatar_url" not in contact.custom_attributes
+        assert get_contact_avatar(contact) is None
+
+        # Clearing again returns False (no-op)
+        assert clear_contact_avatar(contact) is False
+
+    def test_set_contact_avatar_force_none(self):
+        contact = Contact(
+            id=5,
+            user_id="u-test",
+            phone_e164="+905557778899",
+            custom_attributes={"avatar_url": "https://pps.whatsapp.net/v/valid_url.jpg"},
+        )
+        # Without force, setting None does NOT delete
+        set_contact_avatar(contact, None, force=False)
+        assert get_contact_avatar(contact) == "https://pps.whatsapp.net/v/valid_url.jpg"
+
+        # With force=True, setting None deletes it
+        set_contact_avatar(contact, None, force=True)
+        assert "avatar_url" not in contact.custom_attributes
+        assert get_contact_avatar(contact) is None
+
+    @pytest.mark.asyncio
+    async def test_refresh_contact_avatar_item_not_found_clears_stale_avatar(self):
+        contact = Contact(
+            id=12,
+            user_id="u-user",
+            phone_e164="+905552223344",
+            custom_attributes={"avatar_url": "https://pps.whatsapp.net/v/dead_404_url.jpg"},
+        )
+        session = WhatsAppSession(
+            id=3,
+            user_id="u-user",
+            gateway_id="gw-session-3",
+            status=SessionStatus.CONNECTED,
+            is_active=True,
+        )
+
+        db = AsyncMock()
+        db.scalar.side_effect = [session, contact]
+        db.commit = AsyncMock()
+
+        with patch("backend.app.services.whatsapp.orchestration.sessions.gw.refresh_avatar", new_callable=AsyncMock) as mock_refresh:
+            # Baileys returns 404 item-not-found when user has removed their profile photo
+            mock_refresh.return_value = {
+                "success": False,
+                "error": "item-not-found",
+            }
+            result = await refresh_contact_avatar(db, "u-user", "+905552223344")
+
+        assert result["success"] is False
+        assert result["avatar_url"] is None
+        # Stale avatar is purged from database contact
+        assert "avatar_url" not in (contact.custom_attributes or {})
+        assert get_contact_avatar(contact) is None
+        db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_contact_avatar_redacts_phone_in_logs(self, caplog):
+        import logging
+        contact = Contact(
+            id=13,
+            user_id="u-user",
+            phone_e164="+905553334455",
+            custom_attributes={"avatar_url": "https://pps.whatsapp.net/v/dead_url.jpg"},
+        )
+        session = WhatsAppSession(
+            id=4,
+            user_id="u-user",
+            gateway_id="gw-session-4",
+            status=SessionStatus.CONNECTED,
+            is_active=True,
+        )
+
+        db = AsyncMock()
+        db.scalar.side_effect = [session, contact]
+        db.commit = AsyncMock()
+
+        with patch("backend.app.services.whatsapp.orchestration.sessions.gw.refresh_avatar", new_callable=AsyncMock) as mock_refresh:
+            mock_refresh.return_value = {
+                "success": False,
+                "error": "item-not-found",
+            }
+            with caplog.at_level(logging.WARNING):
+                await refresh_contact_avatar(db, "u-user", "+905553334455")
+
+        # Full phone +905553334455 must NOT appear in warnings (PII protection)
+        full_phone = "+905553334455"
+        raw_digits = "905553334455"
+        for record in caplog.records:
+            assert full_phone not in record.message
+            assert raw_digits not in record.message
+            if "item-not-found" in record.message:
+                assert "...4455" in record.message
+

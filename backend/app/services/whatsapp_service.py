@@ -1350,6 +1350,14 @@ async def get_messages(
                             # evidence, so it stays True and the thread's existing
                             # auto-load trigger fires as before.
                             pass
+                        elif rows:
+                            # Scroll pagination WITH local older rows in hand (len(rows) > 0):
+                            # Never block the user's scroll on the provider when local older rows
+                            # already exist in the database! Returning these local rows immediately
+                            # makes scrolling instantaneous (<20ms). When the user scrolls past
+                            # these rows, the subsequent page with the newer cursor will reach the
+                            # provider below when no more local rows exist.
+                            pass
                         else:
                             cursor_src = list(rows) + ([before_row] if before_row else [])
                             cursor_ms = _hydration_cursor_ms(cursor_src)

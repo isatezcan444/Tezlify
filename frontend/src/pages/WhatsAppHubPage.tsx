@@ -753,13 +753,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       .finally(() => hydratingConversationIds.current.delete(id));
   }, []);
 
-  const handleAvatarResolved = useCallback((convId: number, url: string) => {
-    if (!convId || !url) return;
+  const handleAvatarResolved = useCallback((convId: number, url?: string | null) => {
+    if (!convId) return;
+    const cleanUrl = url && url.trim() ? url.trim() : undefined;
     setConversations((prev) =>
-      prev.map((c) => (c.id === convId ? { ...c, lead_avatar_url: url } : c))
+      prev.map((c) => (c.id === convId ? { ...c, lead_avatar_url: cleanUrl } : c))
     );
     setSelectedConv((curr) =>
-      curr && curr.id === convId ? { ...curr, lead_avatar_url: url } : curr
+      curr && curr.id === convId ? { ...curr, lead_avatar_url: cleanUrl } : curr
     );
   }, []);
 
@@ -1018,9 +1019,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeChatLoading = Boolean(
     selectedConv &&
       activeMessages.length === 0 &&
-      !selectedConv.last_message_preview &&
-      messageLoadState[selectedConv.id] !== 'ready' &&
-      messageLoadState[selectedConv.id] !== 'error',
+      messageLoadState[selectedConv.id] === 'loading'
   );
   const activeMessagesError = selectedConv ? (messageLoadError[selectedConv.id] || null) : null;
   const activeConv = selectedConv;
@@ -3359,7 +3358,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
       loadConversations(true);
       const activeId = selectedConvRef.current?.id;
-      if (activeId) {
+      if (activeId && !pagingLocksRef.current.has(activeId)) {
         WhatsAppRepository.getConversationMessages(activeId, { limit: 50 })
           .then((res) => {
             if (res?.messages) {

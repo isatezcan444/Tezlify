@@ -765,7 +765,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       // pagination trigger, which is what chained one gesture into 17 page
       // requests. `scrollTo` with an explicit behaviour bypasses the CSS.
       markLegacyProgrammatic(150);
-      const targetTop = prevScrollTopRef.current + heightDiff;
+      const targetTop = (containerRef.current.scrollTop || prevScrollTopRef.current) + heightDiff;
       if (typeof containerRef.current.scrollTo === 'function') {
         containerRef.current.scrollTo({
           top: targetTop,

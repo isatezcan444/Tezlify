@@ -110,6 +110,12 @@ class Message(Base):
         Index("idx_msg_conv_id", "conversation_id", "id"),
         Index("idx_msg_client_id", "client_message_id"),
         Index(
+            "idx_msg_keyset_ordering",
+            "conversation_id",
+            text("COALESCE(external_timestamp, sent_at, created_at) DESC"),
+            text("id DESC"),
+        ),
+        Index(
             "uq_msg_conv_client_message_id",
             "conversation_id",
             "client_message_id",

@@ -37,13 +37,24 @@ def is_whatsapp_avatar_expired(url: Optional[str]) -> bool:
         return False
 
 
-def set_contact_avatar(contact: Contact, avatar_url: Optional[str]) -> None:
-    """Contact avatarini custom_attributes icine yazar."""
+def clear_contact_avatar(contact: Contact) -> bool:
+    """Explicitly removes avatar_url from contact custom_attributes."""
+    attrs = dict(contact.custom_attributes or {})
+    if "avatar_url" in attrs:
+        del attrs["avatar_url"]
+        contact.custom_attributes = attrs
+        return True
+    return False
+
+
+def set_contact_avatar(contact: Contact, avatar_url: Optional[str], force: bool = False) -> None:
+    """Contact avatarini custom_attributes icine yazar veya zorla temizler."""
     attrs = dict(contact.custom_attributes or {})
     if not avatar_url or str(avatar_url).strip().lower() in _INVALID_AVATAR_SENTINELS:
-        if "avatar_url" in attrs and str(attrs.get("avatar_url", "")).strip().lower() in _INVALID_AVATAR_SENTINELS:
-            del attrs["avatar_url"]
-            contact.custom_attributes = attrs
+        if force or ("avatar_url" in attrs and str(attrs.get("avatar_url", "")).strip().lower() in _INVALID_AVATAR_SENTINELS):
+            if "avatar_url" in attrs:
+                del attrs["avatar_url"]
+                contact.custom_attributes = attrs
         return
     clean_url = str(avatar_url).strip()
     if is_whatsapp_avatar_expired(clean_url):
