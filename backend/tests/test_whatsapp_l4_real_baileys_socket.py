@@ -169,6 +169,7 @@ async def real_baileys_multi_process_env() -> AsyncGenerator[Dict[str, Any], Non
         "WHATSAPP_GATEWAY_SECRET": GATEWAY_SECRET,
         "GATEWAY_ENCRYPTION_KEY": "test_gateway_aes_encryption_key_32chars_long!",
         "GATEWAY_TEST_MODE": "true",
+        "GATEWAY_TEST_SYNTHETIC_SHIM": "true",
         "GATEWAY_BAILEYS_WS_URL": LOOPBACK_EGRESS_URL,
         "REQUIRE_DURABLE_AUTH": "false",
         "WHATSAPP_AUTO_RESTORE": "false",

@@ -233,8 +233,8 @@ export async function createSocketForSession({
     ? { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }
     : state;
   const socketStarted = performance.now();
-
   const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
+  const isSyntheticShim = isTestMode && process.env.GATEWAY_TEST_SYNTHETIC_SHIM !== 'false';
   const waWebSocketUrl = isTestMode
     ? (process.env.GATEWAY_BAILEYS_WS_URL || 'ws://127.0.0.1:59999/blocked')
     : undefined;
@@ -254,8 +254,11 @@ export async function createSocketForSession({
     ...(waWebSocketUrl ? { waWebSocketUrl } : {}),
   });
 
-  // Test mode introspectability: expose listenerCount and eventNames on sock.ev
-  if (isTestMode && sock.ev) {
+  // Test mode introspectability:
+  // When GATEWAY_TEST_SYNTHETIC_SHIM is enabled, wrap sock.ev to preserve socket state during offline synthetic testing.
+  // In native lifecycle mode (GATEWAY_TEST_SYNTHETIC_SHIM unset/false), sock.ev remains 100% UNTOUCHED
+  // so Baileys' native teardown, listener cleanup, and destroy() execute naturally.
+  if (isSyntheticShim && sock.ev) {
     const listenersMap = new Map();
     const origOn = sock.ev.on.bind(sock.ev);
     const origOff = sock.ev.off ? sock.ev.off.bind(sock.ev) : null;

@@ -67,6 +67,15 @@ def make_admin_headers(user_id: str = TEST_TENANT_ID) -> dict:
 @pytest_asyncio.fixture(scope="module")
 async def provider_multi_process_env() -> AsyncGenerator[Dict[str, Any], None]:
     """Starts FastAPI Backend and Node.js Gateway as independent OS subprocesses."""
+    for port in [L4_BACKEND_PORT, L4_GATEWAY_PORT]:
+        try:
+            res = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True)
+            for pid in res.stdout.strip().split():
+                if pid:
+                    os.kill(int(pid), signal.SIGKILL)
+        except Exception:
+            pass
+
     tmp_media_backend = tempfile.mkdtemp(prefix="tezlify_prov_backend_media_")
     tmp_gw_sessions = tempfile.mkdtemp(prefix="tezlify_prov_gw_sessions_")
     tmp_gw_media = tempfile.mkdtemp(prefix="tezlify_prov_gw_media_")

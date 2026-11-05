@@ -28,6 +28,12 @@ import { createPostgresAuthRepository } from './auth/postgres-auth-repository.js
 import { createPostgresEventOutbox } from './outbox/postgres-event-outbox.js';
 import { createGatewayPostgresPool } from './database/postgres-pool.js';
 import { createPostgresSessionLease } from './lease/postgres-session-lease.js';
+import {
+  installEgressFirewall,
+  getEgressAuditStats,
+  resetEgressAuditStats,
+  probeEgress,
+} from './security/egress-firewall.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +59,12 @@ const REQUIRE_DURABLE_AUTH = String(process.env.REQUIRE_DURABLE_AUTH ?? durableA
 
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length < 32) {
   throw new Error('GATEWAY_ENCRYPTION_KEY must be set to a secret of at least 32 characters.');
+}
+
+const isTestModeAllowed = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
+if (isTestModeAllowed || process.env.GATEWAY_EGRESS_FIREWALL === 'strict') {
+  installEgressFirewall();
+  console.log('[gateway] Network Egress Firewall active (fail-closed strict loopback isolation)');
 }
 
 // Ensure directories exist
@@ -809,9 +821,23 @@ wss.on('connection', (ws) => {
 // ---------------------------------------------------------------------------
 // Isolated Test Adapter (L4 Integration Testing — disabled by default in production)
 // ---------------------------------------------------------------------------
-const isTestModeAllowed = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
-
 if (isTestModeAllowed) {
+  // Network Egress Audit & Probe Endpoints (Phase 8.0.11)
+  app.get('/test/egress/audit', (_req, res) => {
+    res.json(getEgressAuditStats());
+  });
+
+  app.post('/test/egress/reset', (_req, res) => {
+    resetEgressAuditStats();
+    res.json({ success: true, stats: getEgressAuditStats() });
+  });
+
+  app.post('/test/egress/probe', async (req, res) => {
+    const { host = '1.1.1.1', port = 443 } = req.body || {};
+    const result = await probeEgress(String(host), Number(port));
+    res.json(result);
+  });
+
   app.post('/test/sessions/register', async (req, res) => {
     const { id, session_name, phone_number } = req.body || {};
     if (!id) return res.status(400).json({ error: 'id is required' });
@@ -927,6 +953,8 @@ if (isTestModeAllowed) {
         process.env.GATEWAY_BAILEYS_WS_URL &&
         process.env.GATEWAY_BAILEYS_WS_URL.includes('127.0.0.1')
       ),
+      egress_firewall_active: getEgressAuditStats().active,
+      egress_wan_blocked_count: getEgressAuditStats().wan_blocked_count,
       wa_websocket_url: process.env.GATEWAY_BAILEYS_WS_URL || 'default',
       status: session.status,
       registered_events: session.sock.ev?.eventNames ? session.sock.ev.eventNames() : [],

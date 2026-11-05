@@ -301,8 +301,8 @@ export function bindSocketEvents({
       }
     }
     if (connection === 'connecting') {
-      const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
-      if (!isTestMode) {
+      const isSyntheticShim = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production' && process.env.GATEWAY_TEST_SYNTHETIC_SHIM !== 'false';
+      if (!isSyntheticShim) {
         session.status = 'CONNECTING';
       }
       emitEvent({ event: 'session_connecting', session_id: id, session_name: session.session_name });
@@ -528,9 +528,9 @@ export function bindSocketEvents({
       }
     }
     if (connection === 'close') {
-      const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
-      if (isTestMode) {
-        logger?.debug?.({ id, generation, statusCode }, 'Test mode: ignoring socket close to preserve connected test state');
+      const isSyntheticShim = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production' && process.env.GATEWAY_TEST_SYNTHETIC_SHIM !== 'false';
+      if (isSyntheticShim) {
+        logger?.debug?.({ id, generation, statusCode }, 'Test mode (synthetic shim): ignoring socket close to preserve connected test state');
         return;
       }
       if (session._presenceKeepaliveTimer) {
@@ -639,9 +639,9 @@ export function bindSocketEvents({
           });
           return;
         }
-        const isTestMode = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
-        if (isTestMode) {
-          logger?.debug?.({ id, generation }, 'Test mode: skipping automatic socket reconnect loop on close');
+        const isSyntheticShim = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production' && process.env.GATEWAY_TEST_SYNTHETIC_SHIM !== 'false';
+        if (isSyntheticShim) {
+          logger?.debug?.({ id, generation }, 'Test mode (synthetic shim): skipping automatic socket reconnect loop on close');
           return;
         }
         session.status = 'CONNECTING';
