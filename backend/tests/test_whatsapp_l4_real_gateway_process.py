@@ -81,6 +81,10 @@ async def l4_multi_process_env() -> AsyncGenerator[Dict[str, Any], None]:
             text("DELETE FROM messages WHERE recipient_phone = :phone OR sender_phone = :phone"),
             {"phone": TARGET_PHONE},
         )
+        await conn.execute(
+            text("DELETE FROM conversations WHERE session_id = :sid"),
+            {"sid": SANDBOX_SESSION_ID},
+        )
     await init_engine.dispose()
 
     # 2. Launch FastAPI Backend Process

@@ -15,6 +15,7 @@ import { SocketLifecycle } from './domain/socket-lifecycle.js';
 import { createBoundedCache, isAvatarUrlExpired, sanitizeAvatarUrl } from './domain/bounded-cache.js';
 import { expandAppStateKeys } from 'whatsapp-rust-bridge';
 import { hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
+import { EventEmitter } from 'events';
 
 // Utils
 import {
@@ -609,6 +610,25 @@ export function createSessionManager({
       if (String(id) === '201') {
         throw new Error('BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED');
       }
+      const selfJid = `${(sessionData.phone_number || '+905551234567').replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+      const selfLid = sessionData.self_lid || null;
+      const lifecycle = sessionData.lifecycle || new SocketLifecycle();
+      const ev = sessionData.sock?.ev || new EventEmitter();
+      const sock = {
+        ev,
+        user: { id: selfJid, lid: selfLid },
+        sendPresenceUpdate: async () => {},
+        sendMessage: async (jid, content, options) => {
+          return {
+            key: { id: options?.messageId || `TEST_WA_${Date.now()}`, remoteJid: jid, fromMe: true },
+            message: content,
+          };
+        },
+        end: () => {},
+        query: async () => {},
+        requestPairingCode: async () => '1234-5678',
+        ...sessionData.sock,
+      };
       const session = {
         id: String(id),
         session_name: sessionData.session_name || `test-session-${id}`,
@@ -616,8 +636,8 @@ export function createSessionManager({
         status: sessionData.status || 'CONNECTED',
         qr_code: null,
         phone_number: sessionData.phone_number || '+905551234567',
-        self_jid: `${(sessionData.phone_number || '+905551234567').replace(/[^0-9]/g, '')}@s.whatsapp.net`,
-        self_lid: null,
+        self_jid: selfJid,
+        self_lid: selfLid,
         is_active: true,
         is_phone_online: true,
         battery_level: 100,
@@ -626,21 +646,46 @@ export function createSessionManager({
         sync: { phase: 'idle' },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        sock: sessionData.sock || {
-          sendMessage: async (jid, content, options) => {
-            return {
-              key: { id: options?.messageId || `TEST_WA_${Date.now()}`, remoteJid: jid, fromMe: true },
-              message: content,
-            };
-          },
-        },
+        sock,
+        lifecycle,
         store: sessionData.store || createSessionStore({
           sessionDir: getSessionDir(sessionsDir, id),
           logger,
         }),
         ...sessionData,
       };
+      const generation = lifecycle.beginAttempt();
+      lifecycle.attach(generation, sock);
       sessions.set(String(id), session);
+
+      // Wire real Baileys socket event listeners to this session's sock.ev
+      bindSocketEvents({
+        id: String(id),
+        session,
+        generation,
+        sock,
+        state: { creds: { registered: true, me: { id: selfJid, name: session.session_name } }, keys: {} },
+        saveCreds: async () => {},
+        connectStarted: performance.now(),
+        sessionDir: getSessionDir(sessionsDir, String(id)),
+        manager: sessionManager,
+        sessions,
+        leaseCoordinator,
+        lidRepository,
+        mediaStore,
+        authRepository,
+        leaseRepository,
+        instanceId,
+        aesKey,
+        logger,
+        pendingHistoryWaiters,
+        inFlightHistoryFetches,
+        resetRetryCounterCache: () => {},
+        clearSessionHistoryFetches: () => {},
+        deactivatePersistentSession: () => {},
+        armLeaseRenewal: () => {},
+      });
+
       return session;
     },
 

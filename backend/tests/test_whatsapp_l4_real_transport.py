@@ -82,6 +82,14 @@ async def l4_environment():
         os.environ[k] = v
 
     from backend.app.core.config import settings
+    orig_db_url = settings.DATABASE_URL
+    orig_gw_secret = settings.WHATSAPP_GATEWAY_SECRET
+    orig_sandbox_enabled = settings.WHATSAPP_SANDBOX_ENABLED
+    orig_sandbox_session_id = settings.WHATSAPP_SANDBOX_SESSION_ID
+    orig_sandbox_allowed_targets = settings.WHATSAPP_SANDBOX_ALLOWED_TARGETS
+    orig_sandbox_media_dir = settings.WHATSAPP_SANDBOX_MEDIA_DIR
+    orig_protected_ids = settings.WHATSAPP_PROTECTED_SESSION_IDS
+
     settings.DATABASE_URL = TEST_DB_URL
     settings.WHATSAPP_GATEWAY_SECRET = GATEWAY_SECRET
     settings.WHATSAPP_SANDBOX_ENABLED = True
@@ -188,6 +196,14 @@ async def l4_environment():
     server.should_exit = True
     thread.join(timeout=3)
     await test_pg_engine.dispose()
+    settings.DATABASE_URL = orig_db_url
+    settings.WHATSAPP_GATEWAY_SECRET = orig_gw_secret
+    settings.WHATSAPP_SANDBOX_ENABLED = orig_sandbox_enabled
+    settings.WHATSAPP_SANDBOX_SESSION_ID = orig_sandbox_session_id
+    settings.WHATSAPP_SANDBOX_ALLOWED_TARGETS = orig_sandbox_allowed_targets
+    settings.WHATSAPP_SANDBOX_MEDIA_DIR = orig_sandbox_media_dir
+    settings.WHATSAPP_PROTECTED_SESSION_IDS = orig_protected_ids
+
     for k, v in old_env.items():
         if v is None:
             os.environ.pop(k, None)

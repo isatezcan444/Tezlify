@@ -809,7 +809,9 @@ wss.on('connection', (ws) => {
 // ---------------------------------------------------------------------------
 // Isolated Test Adapter (L4 Integration Testing — disabled by default in production)
 // ---------------------------------------------------------------------------
-if (process.env.GATEWAY_TEST_MODE === 'true') {
+const isTestModeAllowed = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
+
+if (isTestModeAllowed) {
   app.post('/test/sessions/register', async (req, res) => {
     const { id, session_name, phone_number } = req.body || {};
     if (!id) return res.status(400).json({ error: 'id is required' });
@@ -836,6 +838,53 @@ if (process.env.GATEWAY_TEST_MODE === 'true') {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // Baileys Provider Boundary Event Injection (Phase 8.0.9)
+  // Emits directly on `session.sock.ev` to execute the real Baileys socket event handlers
+  app.post('/test/provider/emit', async (req, res) => {
+    const { sessionId, event, payload } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+    if (!event) return res.status(400).json({ error: 'event is required' });
+    const sid = String(sessionId);
+    if (sid === '201' || sid.includes('201')) {
+      return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
+    }
+    const session = sessionManager.getSession(sid);
+    if (!session) return res.status(404).json({ error: `Session ${sessionId} not found` });
+    if (!session.sock?.ev) {
+      return res.status(500).json({ error: 'Session has no Baileys event emitter attached' });
+    }
+    try {
+      session.sock.ev.emit(event, payload);
+      res.json({ success: true, event, emitted: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Baileys Provider Event Listener Introspection (Phase 8.0.9)
+  app.get('/test/provider/listeners', (req, res) => {
+    const { sessionId, event } = req.query || {};
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+    const sid = String(sessionId);
+    if (sid === '201' || sid.includes('201')) {
+      return res.status(403).json({ error: 'BLOCKED: PRODUCTION SESSION 201 IS STRICTLY PROTECTED' });
+    }
+    const session = sessionManager.getSession(sid);
+    if (!session) return res.status(404).json({ error: `Session ${sessionId} not found` });
+    if (!session.sock?.ev) {
+      return res.status(500).json({ error: 'Session has no Baileys event emitter attached' });
+    }
+    const eventName = event ? String(event) : null;
+    const count = eventName ? session.sock.ev.listenerCount(eventName) : null;
+    const eventNames = session.sock.ev.eventNames ? session.sock.ev.eventNames() : [];
+    res.json({
+      sessionId: sid,
+      event: eventName,
+      listenerCount: count,
+      registeredEvents: eventNames,
+    });
   });
 
   app.get('/test/bridge/status', (_req, res) => {
