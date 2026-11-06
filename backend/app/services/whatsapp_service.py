@@ -429,7 +429,14 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
             Conversation.session_id == session["id"],
             get_user_filter(Conversation.user_id, user_id),
         )
-        conv_count = (await db.execute(conv_cnt_query)).scalar() or 0
+        cnt_res = await db.execute(conv_cnt_query)
+        raw_cnt = cnt_res.scalar() if hasattr(cnt_res, "scalar") else 0
+        if hasattr(raw_cnt, "__await__"):
+            raw_cnt = await raw_cnt
+        try:
+            conv_count = int(raw_cnt or 0)
+        except (TypeError, ValueError):
+            conv_count = 0
         if conv_count > 0:
             # Chats were previously synced into DB, but initial_sync_completed_at was not stamped
             # (e.g. backend restart or uncompleted finalize). Stamp it now so the gate opens cleanly.
@@ -1369,7 +1376,7 @@ async def get_messages(
                                 and j_val
                                 and history_session_id
                                 and await is_provider_recently_unresponsive(
-                                    db, j_val, session_id=history_session_id, cooldown_s=15
+                                    db, j_val, session_id=history_session_id, cooldown_s=300
                                 )
                             ):
                                 logger.info(

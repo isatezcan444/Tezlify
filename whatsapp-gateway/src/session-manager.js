@@ -102,6 +102,7 @@ import { createLidRepository, lidScopeSessionIds } from './lid/lid-repository.js
 import { createPendingLidRepository, pendingLidEventId } from './lid/pending-lid-repository.js';
 import { createEncryptedCodec } from './auth/encrypted-codec.js';
 import { createContactRepository } from './contacts/contact-repository.js';
+import { createChatRepository } from './chats/chat-repository.js';
 
 // Socket
 import {
@@ -454,6 +455,7 @@ export function createSessionManager({
   const msgRetryCounterCaches = new Map();
   const inFlightHistoryFetches = new Map();
   const pendingHistoryWaiters = new Map();
+  const failedHistoryCooldowns = new Map();
 
   const mediaStore = createMediaStore({ mediaDir, logger });
   const leaseCoordinator = createLeaseCoordinator({ leaseRepository, instanceId, logger });
@@ -488,6 +490,7 @@ export function createSessionManager({
     onOrphaned: (sessionId) => reportOrphaned(sessionId, 'lid_pending_message'),
   });
   const contactRepository = createContactRepository({ pool, logger });
+  const chatRepository = createChatRepository({ pool, logger });
 
   function clearSessionHistoryFetches(sessionId) {
     for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
@@ -497,6 +500,10 @@ export function createSessionManager({
         pendingHistoryWaiters.delete(flightKey);
         inFlightHistoryFetches.delete(flightKey);
       }
+    }
+    const sessPrefix = `${sessionId}:`;
+    for (const k of failedHistoryCooldowns.keys()) {
+      if (k.startsWith(sessPrefix)) failedHistoryCooldowns.delete(k);
     }
   }
 
@@ -1012,6 +1019,9 @@ export function createSessionManager({
       // gateway learned earlier. Without this the store starts empty on every
       // restart and sender labels degrade to raw phone numbers.
       await contactRepository.hydrateContactNames(id, session.store);
+      // The backend `conversations` table is the durable record of existing chats.
+      // Hydrating store.chats prevents 1-on-1 chats from being missing on restart.
+      await chatRepository.hydrateChats(id, session.store);
       sessions.set(id, session);
       if (autoStart) this._startSocket(id);
       return this.getSession(id);
@@ -1484,6 +1494,15 @@ export function createSessionManager({
         return inFlightHistoryFetches.get(flightKey);
       }
 
+      const cooldownUntil = failedHistoryCooldowns.get(flightKey);
+      if (cooldownUntil && Date.now() < cooldownUntil) {
+        logger.debug(
+          historyDiag({ requestId, jid: key, extra: { outcome: 'COOLDOWN', remaining_ms: cooldownUntil - Date.now() } }),
+          'Older history PDO skipped: recent timeout cooldown active'
+        );
+        return { messages: [], count: 0, status: 'TIMEOUT', failure_class: 'COOLDOWN' };
+      }
+
       const sock = session.sock;
       if (!sock || typeof sock.fetchMessageHistory !== 'function' || !isSocketReady(sock)) {
         logger.info(
@@ -1575,6 +1594,7 @@ export function createSessionManager({
             'Older history request timed out waiting for provider chunk'
           );
           settled = true;
+          if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 60_000);
           resolve({ messages: [], count: 0, status: 'TIMEOUT', failure_class: outcome });
         }, timeoutMs);
 
@@ -1598,6 +1618,7 @@ export function createSessionManager({
               }),
               'Older history request resolved by provider chunk'
             );
+            failedHistoryCooldowns.delete(flightKey);
             settled = true;
             resolve({ messages: newMsgs, count: newMsgs.length, status: 'OK' });
           },
@@ -1634,6 +1655,7 @@ export function createSessionManager({
                 'Failed to send fetchMessageHistory PDO'
               );
               settled = true;
+              if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 60_000);
               resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
             });
         } catch (err) {
@@ -1653,6 +1675,7 @@ export function createSessionManager({
             'Exception in sock.fetchMessageHistory'
           );
           settled = true;
+          if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 60_000);
           resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
         }
       });

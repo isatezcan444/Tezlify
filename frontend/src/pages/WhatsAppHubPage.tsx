@@ -632,6 +632,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // replaces a network call that used to live inside a setSelectedConv updater,
   // where it fired on every list refresh and StrictMode ran it twice.
   const conversationsNewerThanMessagesRef = useRef(new Map<number, string>());
+  const lastAttemptedHydrationStampRef = useRef(new Map<number, string>());
 
   // Wires the tested hydration lifecycle to this page's state. Created once
   // (every dependency is a ref) and torn down on unmount, so no request can
@@ -1239,7 +1240,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           const sanitized = { ...merged, unread_count: 0 };
           const currentMsgs = messagesMapRef.current?.[prev.id] || [];
           const lastMsg = currentMsgs[currentMsgs.length - 1];
-          const isNewer = sanitized.last_message_at && (!lastMsg?.created_at || new Date(sanitized.last_message_at).getTime() > new Date(lastMsg.created_at).getTime());
+          const lastAttempted = lastAttemptedHydrationStampRef.current.get(prev.id);
+          const isNewer = sanitized.last_message_at &&
+            (!lastMsg?.created_at || new Date(sanitized.last_message_at).getTime() > new Date(lastMsg.created_at).getTime()) &&
+            sanitized.last_message_at !== lastAttempted;
           // NO side effects in a state updater. This branch used to call
           // hydrateConversationMessages here, which meant every list refresh
           // (WebSocket event, background backfill, tab visibility) aborted the
@@ -1590,6 +1594,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const retrySelectedConversationMessages = useCallback(() => {
     const convId = selectedConv?.id;
     if (!convId) return;
+    lastAttemptedHydrationStampRef.current.delete(convId);
     void hydrateConversationMessages(convId);
   }, [selectedConv?.id, hydrateConversationMessages]);
 
@@ -1646,6 +1651,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const held = messagesMapRef.current?.[convId] || [];
     const newest = held[held.length - 1]?.created_at;
     if (newest && new Date(stamp).getTime() <= new Date(newest).getTime()) return;
+
+    if (lastAttemptedHydrationStampRef.current.get(convId) === stamp) return;
+    lastAttemptedHydrationStampRef.current.set(convId, stamp);
 
     void hydrateConversationMessages(convId);
   // The trigger is the preview timestamp the list just handed us, so the
@@ -2981,10 +2989,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const currentMsgs = messagesMapRef.current?.[resolvedId] || [];
             const lastMsg = currentMsgs[currentMsgs.length - 1];
             const payloadTime = payload.last_message_at;
+            const lastAttempted = lastAttemptedHydrationStampRef.current.get(resolvedId);
             const isNewer = Boolean(
-              payloadTime && (!lastMsg?.created_at || new Date(payloadTime).getTime() > new Date(lastMsg.created_at).getTime())
+              payloadTime && (!lastMsg?.created_at || new Date(payloadTime).getTime() > new Date(lastMsg.created_at).getTime()) &&
+              payloadTime !== lastAttempted
             );
             if (isNewer || currentMsgs.length === 0) {
+              if (payloadTime) lastAttemptedHydrationStampRef.current.set(resolvedId, payloadTime);
               void hydrateConversationMessages(resolvedId);
             }
             if ((payload.unread_count ?? 0) > 0) {

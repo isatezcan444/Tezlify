@@ -158,7 +158,7 @@ async def test_loading_gate_heals_transient_no_session_error():
     def fake_get_sync_job(uid):
         return fake_job_snap
 
-    def fake_schedule_initial_sync(uid):
+    def fake_schedule_initial_sync(uid, *args, **kwargs):
         fake_job_snap["state"] = "SYNCING"
         fake_job_snap["error"] = None
 
@@ -170,7 +170,8 @@ async def test_loading_gate_heals_transient_no_session_error():
         res = await get_loading_gate(fake_db, fake_user_id)
 
         # Assert initial sync was triggered
-        mock_sched.assert_called_once_with(fake_user_id)
+        assert mock_sched.call_count == 1
+        assert mock_sched.call_args[0][0] == fake_user_id
 
         # Assert error was healed and phase is not "error"
         assert res["phase"] != "error"

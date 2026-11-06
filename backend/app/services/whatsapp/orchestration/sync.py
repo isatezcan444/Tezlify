@@ -1660,6 +1660,21 @@ class WhatsAppSyncOrchestrator:
                     "status": conv.status.value if hasattr(conv.status, "value") else str(conv.status),
                 }
             )
+        if session_id:
+            db_conv_res = await db.execute(
+                select(Conversation.id, Contact.phone_e164)
+                .join(Contact, Contact.id == Conversation.contact_id)
+                .where(
+                    Conversation.session_id == session_id,
+                    get_user_filter(Conversation.user_id, owner),
+                    Conversation.channel == "WHATSAPP",
+                )
+            )
+            for c_id, c_phone in db_conv_res.fetchall():
+                if c_id not in jid_by_conv and c_phone:
+                    jid_str = c_phone[4:] if c_phone.startswith("jid:") else _phone_to_jid(c_phone)
+                    if jid_str and not is_degenerate_jid(jid_str):
+                        jid_by_conv[c_id] = jid_str
         await db.commit()
         return out, jid_by_conv
 
