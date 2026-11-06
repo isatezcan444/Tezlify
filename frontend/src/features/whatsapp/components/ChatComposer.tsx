@@ -37,6 +37,8 @@ import { formatPhoneNumber } from '../lib/whatsappIdentity';
 
 export interface QuotedMessage {
   id: number | string;
+  waMessageId?: string;
+  stanzaId?: string;
   senderName?: string;
   body?: string;
   mediaType?: string;
@@ -44,10 +46,23 @@ export interface QuotedMessage {
 
 export interface ChatComposerProps {
   conversationId?: number;
-  onSend?: (text: string) => Promise<void> | void;
+  onSend?: (
+    text: string,
+    options?: { quoted_message_id?: number | string; quoted_wa_message_id?: string }
+  ) => Promise<void> | void;
   onSendTemplate?: () => void;
-  onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>;
-  onSendMediaFile?: (file: File, caption?: string) => Promise<void>;
+  onSendMedia?: (
+    mediaType: 'IMAGE' | 'DOCUMENT',
+    mediaUrl: string,
+    caption?: string,
+    filename?: string,
+    options?: { quoted_message_id?: number | string; quoted_wa_message_id?: string }
+  ) => Promise<void>;
+  onSendMediaFile?: (
+    file: File,
+    caption?: string,
+    options?: { is_view_once?: boolean; quoted_message_id?: number | string; quoted_wa_message_id?: string }
+  ) => Promise<void>;
   onTyping?: (typing: boolean) => void;
   onReopenConversation?: () => void;
   disabled?: boolean;
@@ -104,6 +119,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [activeFileIndex, setActiveFileIndex] = useState<number>(0);
   const [fileCaptions, setFileCaptions] = useState<Record<number, string>>({});
+  const [fileViewOnce, setFileViewOnce] = useState<Record<number, boolean>>({});
   const [sendingFiles, setSendingFiles] = useState(false);
   const [sendingIndex, setSendingIndex] = useState<number>(0);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
@@ -688,11 +704,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
     // Snapshot the RAW draft, not the trimmed text: needed to restore if send fails
     const draft = text;
-    let textToSend = clean;
-    if (replyingTo && replyingTo.body) {
-      const snippet = replyingTo.body.split('\n')[0].slice(0, 100);
-      textToSend = `> ${snippet}\n\n${clean}`;
-    }
+    const replySnapshot = replyingTo;
+    const textToSend = clean;
 
     // IMMEDIATELY clear the input field and reset states so the user can
     // start typing their next message without text concatenation or visual lag:
@@ -711,7 +724,11 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     setSending(true);
     try {
       await sendLockRef.current.run(async () => {
-        await onSend(textToSend);
+        const sendOpts = replySnapshot ? {
+          quoted_message_id: replySnapshot.id,
+          quoted_wa_message_id: replySnapshot.stanzaId || replySnapshot.waMessageId,
+        } : undefined;
+        await onSend(textToSend, sendOpts);
       });
     } catch (err) {
       console.error('[ChatComposer] Send error:', err);
@@ -826,18 +843,28 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             setSendingIndex(i);
             const f = pendingFiles[i];
             const cap = fileCaptions[i]?.trim() || undefined;
-            await onSendMediaFile(f, cap);
+            const isVo = Boolean(fileViewOnce[i]);
+            const sendOpts = {
+              is_view_once: isVo,
+              quoted_message_id: replyingTo?.id,
+              quoted_wa_message_id: replyingTo?.stanzaId || replyingTo?.waMessageId,
+            };
+            await onSendMediaFile(f, cap, sendOpts);
             sentCount = i + 1;
             if (i < pendingFiles.length - 1) {
               // Micro delay to maintain dispatch order
               await new Promise((resolve) => setTimeout(resolve, 350));
             }
           }
+          if (replyingTo && onCancelReply) {
+            onCancelReply();
+          }
           stopTypingSignal();
           setIsFileModalOpen(false);
           setPendingFiles([]);
           setActiveFileIndex(0);
           setFileCaptions({});
+          setFileViewOnce({});
           onClearStagedFiles?.();
           refocusDraft();
         } catch (err) {
@@ -1545,6 +1572,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               setIsFileModalOpen(false);
               setPendingFiles([]);
               setFileCaptions({});
+              setFileViewOnce({});
               onClearStagedFiles?.();
             }
           }}
@@ -1554,6 +1582,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           onActiveIndexChange={setActiveFileIndex}
           captions={fileCaptions}
           onCaptionChange={(idx, val) => setFileCaptions((prev) => ({ ...prev, [idx]: val }))}
+          viewOnceMap={fileViewOnce}
+          onViewOnceToggle={(idx) => setFileViewOnce((prev) => ({ ...prev, [idx]: !prev[idx] }))}
           onSendAll={handleSendAllFiles}
           isSending={sendingFiles}
           sendingIndex={sendingIndex}

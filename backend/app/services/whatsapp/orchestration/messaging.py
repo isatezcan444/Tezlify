@@ -157,9 +157,26 @@ def serialize_message(
     st_val = getattr(getattr(row, "status", None), "value", getattr(row, "status", None))
     is_failed_outbound = (str(dir_val).upper() == "OUTBOUND" and str(st_val).upper() == "FAILED" and not row.media_id)
     is_media_expired = (getattr(row, "error_message", None) == "MEDIA_EXPIRED")
-    media_key = None if (is_failed_outbound or is_media_expired) else (row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None))
-    media_url = f"/api/v1/whatsapp/media/{media_key}" if media_key else None
     is_revoked = bool(getattr(row, "is_revoked", False))
+    is_view_once = bool(
+        getattr(row, "is_view_once", False)
+        or (getattr(row, "body", None) in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+    )
+    media_key = None if (is_failed_outbound or is_media_expired or is_view_once) else (row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None))
+    media_url = f"/api/v1/whatsapp/media/{media_key}" if media_key else None
+
+    quoted_raw = None if is_revoked else getattr(row, "quoted_message", None)
+    sanitized_quoted = None
+    if isinstance(quoted_raw, dict):
+        sanitized_quoted = dict(quoted_raw)
+        is_q_revoked = bool(sanitized_quoted.get("is_revoked"))
+        is_q_vo = bool(sanitized_quoted.get("is_view_once"))
+        if is_q_revoked:
+            sanitized_quoted["body"] = ""
+            sanitized_quoted["thumbnail"] = None
+        elif is_q_vo:
+            sanitized_quoted["thumbnail"] = None
+
     return {
         "id": row.id,
         "conversation_id": row.conversation_id,
@@ -180,15 +197,12 @@ def serialize_message(
         "error_message": row.error_message,
         "reactions": [] if is_revoked else (reactions or []),
         "link_preview": None if is_revoked else (preview or None),
-        "quoted_message": None if is_revoked else getattr(row, "quoted_message", None),
+        "quoted_message": sanitized_quoted,
         "is_forwarded": bool(getattr(row, "is_forwarded", False)),
         "is_pinned": bool(getattr(row, "is_pinned", False)),
         "pinned_at": row.pinned_at.isoformat() if getattr(row, "pinned_at", None) else None,
         "pinned_until": row.pinned_until.isoformat() if getattr(row, "pinned_until", None) else None,
-        "is_view_once": bool(
-            getattr(row, "is_view_once", False)
-            or (getattr(row, "body", None) in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
-        ),
+        "is_view_once": is_view_once,
         "is_edited": bool(getattr(row, "is_edited", False)),
         "edited_at": row.edited_at.isoformat() if getattr(row, "edited_at", None) else None,
         "is_revoked": is_revoked,
@@ -683,6 +697,114 @@ class WhatsAppMessagingOrchestrator:
             "is_starred": target.is_starred,
         }
 
+    async def _resolve_quoted_message_snapshot(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        quoted_id: Optional[int] = None,
+        quoted_wa_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolves and captures a point-in-time snapshot of a quoted message.
+
+        Enforces conversation boundary & multi-tenant isolation.
+        Guarantees fail-closed security for View Once and Revoked messages:
+        - View Once targets have thumbnail stripped and placeholder body.
+        - Revoked targets have body and thumbnail stripped and is_revoked stamped.
+        """
+        if not quoted_id and not quoted_wa_id:
+            return None
+
+        stmt = select(Message).where(
+            Message.conversation_id == conversation_id,
+            get_user_filter(Message.user_id, user_id),
+        )
+        if quoted_id:
+            stmt = stmt.where(Message.id == quoted_id)
+        elif quoted_wa_id:
+            stmt = stmt.where(Message.wa_message_id == quoted_wa_id)
+
+        target = await db.scalar(stmt)
+        if not target:
+            if quoted_wa_id:
+                # Fail-closed against cross-conversation quote tampering:
+                # If quoted_wa_id belongs to a DIFFERENT conversation, strictly reject!
+                other_conv = await db.scalar(
+                    select(Message.conversation_id).where(
+                        Message.wa_message_id == quoted_wa_id,
+                        get_user_filter(Message.user_id, user_id),
+                    )
+                )
+                if other_conv and other_conv != conversation_id:
+                    logger.warning(
+                        "Cross-conversation quote rejected: wa_id %s belongs to conversation %s, not %s",
+                        quoted_wa_id,
+                        other_conv,
+                        conversation_id,
+                    )
+                    return None
+                return {
+                    "stanza_id": quoted_wa_id,
+                    "body": "",
+                    "message_type": "TEXT",
+                }
+            return None
+
+        is_revoked = bool(getattr(target, "is_revoked", False))
+        is_vo = bool(
+            getattr(target, "is_view_once", False)
+            or (getattr(target, "body", None) in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+        )
+        raw_type = getattr(target, "message_type", None)
+        type_str = str(getattr(raw_type, "value", raw_type) or "TEXT").upper()
+
+        dir_val = getattr(getattr(target, "direction", None), "value", getattr(target, "direction", None))
+        is_outbound = str(dir_val).upper() == "OUTBOUND"
+        sender_name = "ME" if is_outbound else (target.sender_name or target.sender_phone)
+        phone = (target.sender_phone or "").lstrip("+").strip()
+        participant = None
+        if not is_outbound and phone:
+            participant = phone if "@" in phone else f"{phone}@s.whatsapp.net"
+
+        if is_revoked:
+            return {
+                "stanza_id": target.wa_message_id or (str(target.id) if target.id else None),
+                "participant": participant,
+                "sender_name": sender_name,
+                "message_type": type_str,
+                "body": "",
+                "thumbnail": None,
+                "is_revoked": True,
+            }
+
+        body = target.body or target.media_caption or target.media_filename or ""
+        if is_vo:
+            fallback_body = (
+                "[VIEW_ONCE_PHOTO]"
+                if type_str == "IMAGE"
+                else ("[VIEW_ONCE_AUDIO]" if type_str == "AUDIO" else "[VIEW_ONCE_VIDEO]")
+            )
+            return {
+                "stanza_id": target.wa_message_id or (str(target.id) if target.id else None),
+                "participant": participant,
+                "sender_name": sender_name,
+                "message_type": type_str,
+                "body": fallback_body,
+                "thumbnail": None,
+                "is_view_once": True,
+            }
+
+        return {
+            "stanza_id": target.wa_message_id or (str(target.id) if target.id else None),
+            "participant": participant,
+            "sender_name": sender_name,
+            "message_type": type_str,
+            "body": body,
+            "thumbnail": None,
+            "is_view_once": False,
+            "is_revoked": False,
+        }
+
     @profiled("send_text")
     async def send_text_message(
         self,
@@ -691,6 +813,8 @@ class WhatsAppMessagingOrchestrator:
         conversation_id: int,
         body: str,
         client_message_id: Optional[str] = None,
+        quoted_message_id: Optional[int] = None,
+        quoted_wa_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Dispatches an outbound text message with strict PENDING -> gateway -> SENT/FAILED FSM."""
         resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
@@ -712,6 +836,10 @@ class WhatsAppMessagingOrchestrator:
         _now = utc_now_naive()
         session_row = await conversation_session(db, user_id, conv)
         client_message_id = client_message_id or str(uuid.uuid4())
+        quoted_snapshot = await self._resolve_quoted_message_snapshot(
+            db, user_id, conv_id, quoted_id=quoted_message_id, quoted_wa_id=quoted_wa_message_id
+        )
+        target_wa_id = quoted_snapshot.get("stanza_id") if quoted_snapshot else None
 
         async with acquire_send_lock(conv_id, client_message_id):
             existing = await db.scalar(
@@ -729,6 +857,8 @@ class WhatsAppMessagingOrchestrator:
                         existing.message_type = MessageType.TEXT
                     else:
                         raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
+                if quoted_snapshot and not getattr(existing, "quoted_message", None):
+                    existing.quoted_message = quoted_snapshot
                 if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                     preview_data = await preview_for_text_message(
                         db, clean, user_id=user_id, conversation_id=conv_id
@@ -827,6 +957,7 @@ class WhatsAppMessagingOrchestrator:
                     sender_phone="ME",
                     recipient_phone=jid_to_phone(jid) or jid,
                     status=ConversationMessageStatus.PENDING,
+                    quoted_message=quoted_snapshot,
                     # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
                     # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
                     external_timestamp=_now,
@@ -854,6 +985,8 @@ class WhatsAppMessagingOrchestrator:
                             existing.message_type = MessageType.TEXT
                         else:
                             raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
+                    if quoted_snapshot and not getattr(existing, "quoted_message", None):
+                        existing.quoted_message = quoted_snapshot
                     if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                         preview_data = await preview_for_text_message(
                             db, clean, user_id=user_id, conversation_id=conv_id
@@ -891,7 +1024,16 @@ class WhatsAppMessagingOrchestrator:
 
             try:
                 gateway_result = await gateway_op_or_mark_relink(
-                    db, session_row, lambda gid: gateway_client.send_text_message(gid, jid, clean, client_message_id)
+                    db,
+                    session_row,
+                    lambda gid: gateway_client.send_text_message(
+                        gid,
+                        jid,
+                        clean,
+                        client_message_id,
+                        quoted_wa_message_id=target_wa_id,
+                        quoted=quoted_snapshot,
+                    ),
                 )
                 send_res = _validated_send_result(gateway_result)
             except Exception as exc:
@@ -956,6 +1098,13 @@ class WhatsAppMessagingOrchestrator:
         session_row = await conversation_session(db, user_id, conv)
         client_message_id = media.get("client_message_id") or str(uuid.uuid4())
         media = {**media, "client_message_id": client_message_id}
+        is_view_once_val = bool(media.get("is_view_once") or media.get("view_once"))
+        quoted_id = media.get("quoted_message_id")
+        quoted_wa_id = media.get("quoted_wa_message_id")
+        quoted_snapshot = await self._resolve_quoted_message_snapshot(
+            db, user_id, conv_id, quoted_id=quoted_id, quoted_wa_id=quoted_wa_id
+        )
+        target_wa_id = quoted_snapshot.get("stanza_id") if quoted_snapshot else None
 
         mtype_str = (media.get("media_type") or "").upper()
         mime_val = (media.get("mime_type") or "").lower()
@@ -986,6 +1135,10 @@ class WhatsAppMessagingOrchestrator:
             if existing is not None:
                 if existing.body != expected_body or existing.message_type != msg_type:
                     raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
+                if is_view_once_val:
+                    existing.is_view_once = True
+                if quoted_snapshot and not getattr(existing, "quoted_message", None):
+                    existing.quoted_message = quoted_snapshot
                 if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                     return self.serialize_message(existing)
 
@@ -1071,6 +1224,8 @@ class WhatsAppMessagingOrchestrator:
                     sender_phone="ME",
                     recipient_phone=jid_to_phone(jid) or jid,
                     status=ConversationMessageStatus.PENDING,
+                    quoted_message=quoted_snapshot,
+                    is_view_once=is_view_once_val,
                     external_timestamp=_now,
                 )
                 try:
@@ -1091,6 +1246,8 @@ class WhatsAppMessagingOrchestrator:
                         raise
                     if existing.body != expected_body or existing.message_type != msg_type:
                         raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
+                    if quoted_snapshot and not getattr(existing, "quoted_message", None):
+                        existing.quoted_message = quoted_snapshot
                     if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                         return self.serialize_message(existing)
                     for _ in range(25):
@@ -1117,9 +1274,16 @@ class WhatsAppMessagingOrchestrator:
                         return self.serialize_message(existing)
                     row = existing
 
+            media_payload = {
+                **media,
+                "quoted_wa_message_id": target_wa_id,
+                "quoted": quoted_snapshot,
+                "is_view_once": is_view_once_val,
+                "view_once": is_view_once_val,
+            }
             try:
                 gateway_result = await gateway_op_or_mark_relink(
-                    db, session_row, lambda gid: gateway_client.send_media_message(gid, jid, media)
+                    db, session_row, lambda gid: gateway_client.send_media_message(gid, jid, media_payload)
                 )
                 send_res = _validated_send_result(gateway_result)
             except Exception as exc:

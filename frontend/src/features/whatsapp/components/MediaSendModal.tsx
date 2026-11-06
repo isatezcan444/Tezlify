@@ -30,6 +30,8 @@ export interface MediaSendModalProps {
   isSending: boolean;
   sendingIndex?: number;
   onAddMoreFiles?: () => void;
+  viewOnceMap?: Record<number, boolean>;
+  onViewOnceToggle?: (index: number) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -128,6 +130,8 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
   isSending,
   sendingIndex,
   onAddMoreFiles,
+  viewOnceMap,
+  onViewOnceToggle,
 }) => {
   const { t } = useI18n();
   const [rotations, setRotations] = useState<Record<number, number>>({});
@@ -498,6 +502,27 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
             >
               <Smile className="w-5 h-5" />
             </button>
+
+            {/* WhatsApp View Once Toggle ("1") */}
+            {(isImage || isVideo) && onViewOnceToggle && (
+              <button
+                type="button"
+                onClick={() => onViewOnceToggle(safeIndex)}
+                title={
+                  viewOnceMap?.[safeIndex]
+                    ? t('whatsapp.viewOnceActive') || 'Tek görüntüleme açık'
+                    : t('whatsapp.viewOnceInactive') || 'Tek görüntüleme kapalı'
+                }
+                aria-label="View Once"
+                className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs transition-all cursor-pointer ml-1 shrink-0 ${
+                  viewOnceMap?.[safeIndex]
+                    ? 'bg-[#25D366] text-black ring-2 ring-[#25D366]/40 shadow-sm'
+                    : 'border border-dashed border-slate-400 text-slate-300 hover:text-white hover:border-white'
+                }`}
+              >
+                1
+              </button>
+            )}
           </div>
 
           {/* WhatsApp Green Circular Send Button */}

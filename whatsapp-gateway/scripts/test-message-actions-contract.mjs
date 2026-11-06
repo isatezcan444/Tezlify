@@ -118,7 +118,13 @@ try {
   const modifyCall = dispatchedCalls.find((c) => c.method === 'chatModify' && c.mod?.deleteForMe);
   assert.ok(modifyCall, 'Dispatched chatModify with deleteForMe payload');
   assert.equal(modifyCall.mod.deleteForMe.key.id, 'MSG_IN_1');
+  // Verify timestamp is Unix SECONDS (10 digits), NOT milliseconds (13 digits)
+  const ts = modifyCall.mod.deleteForMe.timestamp;
+  assert.ok(typeof ts === 'number', 'deleteForMe timestamp must be a number');
+  assert.ok(ts < 1e12, `deleteForMe timestamp must be Unix seconds (~10 digits), got ${ts} (looks like ms)`);
+  assert.ok(ts > 1e9, `deleteForMe timestamp must be a valid Unix time, got ${ts}`);
   console.log('ok - Outbound deleteMessage for me dispatched correct chatModify action');
+  console.log(`ok - deleteForMe timestamp is Unix seconds: ${ts}`);
 
   // 4. Outbound starMessage
   const starRes = await sm.starMessage(sid, jid, {

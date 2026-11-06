@@ -25,6 +25,12 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
         previous = previous ? {
           ...duplicate,
           ...previous,
+          quoted_message: previous.quoted_message || duplicate.quoted_message,
+          is_view_once: Boolean(previous.is_view_once || duplicate.is_view_once),
+          is_forwarded: Boolean(previous.is_forwarded || duplicate.is_forwarded),
+          is_pinned: typeof previous.is_pinned === 'boolean' ? previous.is_pinned : duplicate.is_pinned,
+          pinned_at: previous.pinned_at !== undefined ? previous.pinned_at : duplicate.pinned_at,
+          pinned_until: previous.pinned_until !== undefined ? previous.pinned_until : duplicate.pinned_until,
           reactions: Array.isArray(previous.reactions) && previous.reactions.length > 0
             ? previous.reactions
             : duplicate.reactions,
@@ -35,11 +41,25 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
       }
     }
     const isRevoked = Boolean(message.is_revoked || previous?.is_revoked);
+    const keepPreviousEdited = Boolean(
+      previous?.is_edited && (
+        !message.is_edited ||
+        (previous.edited_at && message.edited_at && new Date(previous.edited_at).getTime() >= new Date(message.edited_at).getTime())
+      )
+    );
+    const resolvedBody = isRevoked
+      ? ''
+      : keepPreviousEdited
+        ? previous.body
+        : ((message.body && message.body.trim() !== '') ? message.body : (previous?.body || ''));
+    const resolvedReactions = (Array.isArray(message.reactions) && message.reactions.length > 0)
+      ? message.reactions
+      : (Array.isArray(previous?.reactions) && previous.reactions.length > 0 ? previous.reactions : (message.reactions || []));
     result[slot] = previous ? {
       ...previous,
       ...message,
       id: isRealDbId(previous.id) && !isRealDbId(message.id) ? previous.id : message.id,
-      body: isRevoked ? '' : ((message.body && message.body.trim() !== '') ? message.body : previous.body),
+      body: resolvedBody,
       message_type: (message.message_type && message.message_type !== 'TEXT') ? message.message_type : (previous.message_type || message.message_type),
       wa_message_id: message.wa_message_id || previous.wa_message_id,
       client_message_id: message.client_message_id || previous.client_message_id,
@@ -49,8 +69,14 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
       media_filename: isRevoked ? undefined : (message.media_filename || previous.media_filename),
       media_caption: isRevoked ? undefined : (message.media_caption || previous.media_caption),
       link_preview: isRevoked ? undefined : (message.link_preview || previous.link_preview),
-      reactions: Array.isArray(message.reactions) ? message.reactions : previous.reactions,
+      quoted_message: isRevoked ? undefined : (message.quoted_message || previous.quoted_message),
+      reactions: resolvedReactions,
       status: mergeDeliveryStatus(previous.status, message.status),
+      is_forwarded: Boolean(message.is_forwarded || previous.is_forwarded),
+      is_pinned: typeof message.is_pinned === 'boolean' ? message.is_pinned : previous.is_pinned,
+      pinned_at: message.pinned_at !== undefined ? message.pinned_at : previous.pinned_at,
+      pinned_until: message.pinned_until !== undefined ? message.pinned_until : previous.pinned_until,
+      is_view_once: Boolean(message.is_view_once || previous.is_view_once),
       is_edited: Boolean(message.is_edited || previous.is_edited),
       edited_at: message.edited_at || previous.edited_at,
       is_revoked: isRevoked,

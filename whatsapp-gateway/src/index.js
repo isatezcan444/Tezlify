@@ -664,15 +664,33 @@ app.post('/sessions/:sessionId/conversations/:jid/history', withSession(async (r
 
 // Send a text message from one session
 app.post('/sessions/:sessionId/conversations/:jid/messages', withSession(async (req, res, sessionId) => {
-  const { body, client_message_id } = req.body || {};
+  const { body, client_message_id, quoted_wa_message_id, quoted_message_id, quoted } = req.body || {};
   if (!body || !body.trim()) return res.status(400).json({ error: 'Message body is required' });
-  const result = await sessionManager.sendTextMessage(sessionId, req.params.jid, body.trim(), client_message_id);
+  const options = {
+    quoted_wa_message_id,
+    quoted_message_id,
+    quoted,
+  };
+  const result = await sessionManager.sendTextMessage(sessionId, req.params.jid, body.trim(), client_message_id, options);
   res.status(201).json(result);
 }));
 
 // Send media (URL or base64 payload from the backend/frontend uploader)
 app.post('/sessions/:sessionId/conversations/:jid/media', withSession(async (req, res, sessionId) => {
-  const { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id } = req.body || {};
+  const {
+    media_type,
+    media_url,
+    media_base64,
+    mime_type,
+    caption,
+    filename,
+    client_message_id,
+    view_once,
+    is_view_once,
+    quoted_wa_message_id,
+    quoted_message_id,
+    quoted,
+  } = req.body || {};
   if (!media_url && !media_base64) return res.status(400).json({ error: 'media_url or media_base64 is required' });
   const result = await sessionManager.sendMediaMessage(sessionId, req.params.jid, {
     media_type,
@@ -682,6 +700,11 @@ app.post('/sessions/:sessionId/conversations/:jid/media', withSession(async (req
     caption,
     filename,
     client_message_id,
+    view_once: Boolean(view_once || is_view_once),
+    is_view_once: Boolean(view_once || is_view_once),
+    quoted_wa_message_id,
+    quoted_message_id,
+    quoted,
   });
   res.status(201).json(result);
 }));

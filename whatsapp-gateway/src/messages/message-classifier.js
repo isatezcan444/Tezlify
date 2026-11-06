@@ -207,6 +207,9 @@ export function extractQuotedMessageMetadata(messageContent, resolveSenderName) 
     return null;
   }
 
+  const isQuotedViewOnce = isViewOnceMessage(contextInfo.quotedMessage) || isViewOnceMessage(rawQuoted);
+  const isQuotedRevoked = Boolean(rawQuoted.protocolMessage && Number(rawQuoted.protocolMessage.type) === 0);
+
   const stanzaId = contextInfo.stanzaId || null;
   const participant = contextInfo.participant || null;
 
@@ -216,35 +219,35 @@ export function extractQuotedMessageMetadata(messageContent, resolveSenderName) 
 
   if (rawQuoted.videoMessage) {
     messageType = 'VIDEO';
-    body = rawQuoted.videoMessage.caption?.trim() || 'Video';
-    if (rawQuoted.videoMessage.jpegThumbnail) {
+    body = rawQuoted.videoMessage.caption?.trim() || (isQuotedViewOnce ? '[VIEW_ONCE_VIDEO]' : 'Video');
+    if (rawQuoted.videoMessage.jpegThumbnail && !isQuotedViewOnce && !isQuotedRevoked) {
       thumbnail = bufferToDataUrl(rawQuoted.videoMessage.jpegThumbnail, 'image/jpeg');
     }
   } else if (rawQuoted.imageMessage) {
     messageType = 'IMAGE';
-    body = rawQuoted.imageMessage.caption?.trim() || 'Fotoğraf';
-    if (rawQuoted.imageMessage.jpegThumbnail) {
+    body = rawQuoted.imageMessage.caption?.trim() || (isQuotedViewOnce ? '[VIEW_ONCE_PHOTO]' : 'Fotoğraf');
+    if (rawQuoted.imageMessage.jpegThumbnail && !isQuotedViewOnce && !isQuotedRevoked) {
       thumbnail = bufferToDataUrl(rawQuoted.imageMessage.jpegThumbnail, 'image/jpeg');
     }
   } else if (rawQuoted.documentMessage) {
     messageType = 'DOCUMENT';
     body = (rawQuoted.documentMessage.fileName || rawQuoted.documentMessage.title || rawQuoted.documentMessage.caption || 'Belge').trim();
-    if (rawQuoted.documentMessage.jpegThumbnail) {
+    if (rawQuoted.documentMessage.jpegThumbnail && !isQuotedRevoked) {
       thumbnail = bufferToDataUrl(rawQuoted.documentMessage.jpegThumbnail, 'image/jpeg');
     }
   } else if (rawQuoted.audioMessage) {
     messageType = 'AUDIO';
-    body = rawQuoted.audioMessage.ptt ? 'Sesli mesaj' : 'Ses kaydı';
+    body = isQuotedViewOnce ? '[VIEW_ONCE_AUDIO]' : (rawQuoted.audioMessage.ptt ? 'Sesli mesaj' : 'Ses kaydı');
   } else if (rawQuoted.stickerMessage) {
     messageType = 'STICKER';
     body = 'Çıkartma';
-    if (rawQuoted.stickerMessage.pngThumbnail) {
+    if (rawQuoted.stickerMessage.pngThumbnail && !isQuotedRevoked) {
       thumbnail = bufferToDataUrl(rawQuoted.stickerMessage.pngThumbnail, 'image/png');
     }
   } else if (rawQuoted.locationMessage) {
     messageType = 'LOCATION';
     body = rawQuoted.locationMessage.name || rawQuoted.locationMessage.address || 'Konum';
-    if (rawQuoted.locationMessage.jpegThumbnail) {
+    if (rawQuoted.locationMessage.jpegThumbnail && !isQuotedRevoked) {
       thumbnail = bufferToDataUrl(rawQuoted.locationMessage.jpegThumbnail, 'image/jpeg');
     }
   } else if (rawQuoted.contactMessage) {
@@ -256,9 +259,14 @@ export function extractQuotedMessageMetadata(messageContent, resolveSenderName) 
   } else if (rawQuoted.extendedTextMessage) {
     messageType = 'TEXT';
     body = rawQuoted.extendedTextMessage.text || '';
-    if (rawQuoted.extendedTextMessage.jpegThumbnail) {
+    if (rawQuoted.extendedTextMessage.jpegThumbnail && !isQuotedRevoked) {
       thumbnail = bufferToDataUrl(rawQuoted.extendedTextMessage.jpegThumbnail, 'image/jpeg');
     }
+  }
+
+  if (isQuotedRevoked) {
+    body = '';
+    thumbnail = null;
   }
 
   let senderName = null;
@@ -277,6 +285,8 @@ export function extractQuotedMessageMetadata(messageContent, resolveSenderName) 
     message_type: messageType,
     body: body || '',
     thumbnail: thumbnail || null,
+    is_view_once: Boolean(isQuotedViewOnce),
+    is_revoked: Boolean(isQuotedRevoked),
   };
 }
 
@@ -515,6 +525,7 @@ export function buildMediaContent({
   mime_type,
   caption,
   filename,
+  view_once,
 }) {
   const type = (media_type || 'document').toLowerCase();
   const buffer = media_base64 ? Buffer.from(media_base64, 'base64') : null;
@@ -523,8 +534,14 @@ export function buildMediaContent({
     throw new Error('Geçersiz medya kaynağı: media_base64 veya erişilebilir bir HTTP media_url zorunludur.');
   }
   const source = buffer || { url: media_url };
+  const isViewOnce = Boolean(view_once);
   if (type === 'image') {
-    return { image: source, mimetype: mime_type || undefined, caption: caption || '' };
+    return {
+      image: source,
+      mimetype: mime_type || undefined,
+      caption: caption || '',
+      ...(isViewOnce ? { viewOnce: true } : {}),
+    };
   }
   const isAudio = Boolean(
     type === 'audio' ||
@@ -544,10 +561,16 @@ export function buildMediaContent({
       audio: source,
       mimetype: isPtt ? 'audio/ogg; codecs=opus' : (mime_type || 'audio/mpeg'),
       ptt: isPtt,
+      ...(isViewOnce ? { viewOnce: true } : {}),
     };
   }
   if (type === 'video') {
-    return { video: source, mimetype: mime_type || undefined, caption: caption || '' };
+    return {
+      video: source,
+      mimetype: mime_type || undefined,
+      caption: caption || '',
+      ...(isViewOnce ? { viewOnce: true } : {}),
+    };
   }
   return {
     document: source,

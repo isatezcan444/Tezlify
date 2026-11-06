@@ -937,7 +937,13 @@ async def send_message(
 ) -> WhatsAppSendResult:
     try:
         msg = await whatsapp_service.send_text_message(
-            db, current_user.id, conversation_id, payload.body, payload.client_message_id
+            db,
+            current_user.id,
+            conversation_id,
+            payload.body,
+            payload.client_message_id,
+            quoted_message_id=payload.quoted_message_id,
+            quoted_wa_message_id=payload.quoted_wa_message_id,
         )
     except WhatsAppRelinkRequired as exc:
         raise _relink_required(exc) from exc
@@ -960,6 +966,8 @@ async def send_message(
         body=msg.get("body"),
         created_at=msg.get("created_at"),
         message_type=msg.get("message_type"),
+        quoted_message=msg.get("quoted_message"),
+        is_view_once=bool(msg.get("is_view_once")),
     )
 
 
@@ -983,6 +991,10 @@ async def send_media(
         "caption": payload.caption,
         "filename": payload.filename,
         "client_message_id": payload.client_message_id,
+        "is_view_once": payload.is_view_once,
+        "view_once": payload.is_view_once,
+        "quoted_message_id": payload.quoted_message_id,
+        "quoted_wa_message_id": payload.quoted_wa_message_id,
     }
     try:
         msg = await whatsapp_service.send_media_message(db, current_user.id, conversation_id, media)
@@ -1010,6 +1022,8 @@ async def send_media(
         message_type=msg.get("message_type"),
         media_id=msg.get("media_id"),
         media_url=msg.get("media_url"),
+        quoted_message=msg.get("quoted_message"),
+        is_view_once=bool(msg.get("is_view_once")),
     )
 
 

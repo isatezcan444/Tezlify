@@ -264,9 +264,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [conversations]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
 
-  // Automatically pause any running audio or video when active conversation changes
+  // Automatically pause any running audio or video and reset reply context when active conversation changes
   useEffect(() => {
     pauseAllMedia();
+    setReplyingTo(null);
   }, [selectedConv?.id]);
   const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
   const [isChatInfoOpen, setIsChatInfoOpen] = useState(false);
@@ -1991,7 +1992,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     [],
   );
 
-  const activeSendMessage = async (text: string) => {
+  const activeSendMessage = async (
+    text: string,
+    options?: { quoted_message_id?: number | string; quoted_wa_message_id?: string }
+  ) => {
     if (!selectedConv || !text.trim()) return;
     const targetConvId = selectedConv.id;
     const trimmed = text.trim();
@@ -2009,6 +2013,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       client_message_id: tempClientMid,
       sender_name: youName,
       created_at: nowIso,
+      quoted_message: replyingTo
+        ? {
+            stanza_id: replyingTo.stanzaId || (replyingTo.waMessageId as any),
+            sender_name: replyingTo.senderName,
+            body: replyingTo.body,
+            message_type: replyingTo.mediaType || 'TEXT',
+          }
+        : undefined,
     };
 
     // F-6: snapshot the pre-optimistic activity so a FAILED send can be rolled
@@ -2035,7 +2047,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     });
 
     try {
-      const res = await WhatsAppRepository.sendMessage(targetConvId, trimmed, tempClientMid);
+      const res = await WhatsAppRepository.sendMessage(targetConvId, trimmed, tempClientMid, options);
       // Reconcile temporary message with backend response (which has status 'PENDING', real id, client_message_id)
       setMessagesMap((prev) => ({
         ...prev,
@@ -2048,6 +2060,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 wa_message_id: res.wa_message_id ?? m.wa_message_id,
                 status: res.status,
                 created_at: res.created_at || m.created_at,
+                quoted_message: res.quoted_message ?? m.quoted_message,
               }
             : m
         ),
@@ -2097,7 +2110,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // reconciled with the real numeric DB id.
     const convId = selectedConv.id;
     const target = (messagesMapRef.current[convId] || []).find((m) => m.id === msgId);
-    const isRealDbId = typeof msgId === 'number' && Number.isInteger(msgId) && msgId > 0;
+    const isReal = isRealDbId(msgId);
 
     // Immediately reflect PENDING status on the row so spinner appears and double click is locked
     setMessagesMap((prev) => ({
@@ -2108,7 +2121,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }));
 
     try {
-      if (!isRealDbId) {
+      if (!isReal) {
         const clientMid = target?.client_message_id;
         if (!target || !clientMid || (!target.body && !target.media_url)) {
           throw new Error(
@@ -2337,7 +2350,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   };
 
-  const activeSendMediaFile = async (file: File, caption?: string) => {
+  const activeSendMediaFile = async (
+    file: File,
+    caption?: string,
+    options?: { is_view_once?: boolean; quoted_message_id?: number | string; quoted_wa_message_id?: string }
+  ) => {
     resetChatDragState();
     if (!selectedConv) return;
     const targetConvId = selectedConv.id;
@@ -2365,12 +2382,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       status: 'PENDING',
       body: caption || file.name,
       client_message_id: tempClientMid,
-      media_url: objectUrl,
+      media_url: options?.is_view_once ? undefined : objectUrl,
       media_filename: file.name,
       media_mime_type: file.type || undefined,
       media_caption: caption,
       sender_name: youName,
       created_at: nowIso,
+      is_view_once: Boolean(options?.is_view_once),
+      quoted_message: replyingTo
+        ? {
+            stanza_id: replyingTo.stanzaId || (replyingTo.waMessageId as any),
+            sender_name: replyingTo.senderName,
+            body: replyingTo.body,
+            message_type: replyingTo.mediaType || 'TEXT',
+          }
+        : undefined,
     };
     setMessagesMap((prev) => ({
       ...prev,
@@ -2378,7 +2404,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }));
 
     try {
-      const res = await WhatsAppRepository.sendMediaFile(targetConvId, file, caption, tempClientMid);
+      const res = await WhatsAppRepository.sendMediaFile(targetConvId, file, caption, tempClientMid, options);
       setMessagesMap((prev) => ({
         ...prev,
         [targetConvId]: (prev[targetConvId] || []).map((m) =>
@@ -2388,10 +2414,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 id: res.id,
                 client_message_id: res.client_message_id || tempClientMid,
                 wa_message_id: res.wa_message_id ?? m.wa_message_id,
-                media_url: res.media_url ?? m.media_url,
+                media_url: res.is_view_once ? undefined : (res.media_url ?? m.media_url),
                 media_id: (res as any).media_id ?? (m as any).media_id,
                 media_filename: (res as any).media_filename ?? m.media_filename,
                 media_mime_type: (res as any).media_mime_type ?? m.media_mime_type,
+                quoted_message: res.quoted_message ?? m.quoted_message,
+                is_view_once: Boolean(res.is_view_once ?? options?.is_view_once),
                 status: res.status,
                 created_at: res.created_at || m.created_at,
               }
@@ -4386,9 +4414,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     insertedText={insertedComposerText}
                     stagedFiles={stagedComposerFiles}
                     onClearStagedFiles={clearStagedFiles}
-                    onSend={async (text) => {
+                    onSend={async (text, options) => {
                       try {
-                        await activeSendMessage(text);
+                        await activeSendMessage(text, options);
                       } catch (err: any) {
                         const msg = (err?.message || '').toLowerCase();
                         if (msg.includes('24 saat') || msg.includes('window')) {
@@ -4400,9 +4428,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       }
                     }}
                     onSendTemplate={openQuickReplyModal}
-                    onSendMediaFile={async (file, caption) => {
+                    onSendMediaFile={async (file, caption, options) => {
                       try {
-                        await activeSendMediaFile(file, caption);
+                        await activeSendMediaFile(file, caption, options);
                         toast.success(t('whatsapp.mediaSent'), t('common.success'));
                       } catch (err: any) {
                         toast.error(translateApiError(err, t) || t('whatsapp.mediaFailed'), t('common.error'));

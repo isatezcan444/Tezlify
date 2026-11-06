@@ -481,10 +481,21 @@ async def list_all_messages(
 # Sending
 # ---------------------------------------------------------------------------
 
-async def send_text_message(gateway_id: str, jid: str, body: str, client_message_id: Optional[str] = None) -> Dict[str, Any]:
+async def send_text_message(
+    gateway_id: str,
+    jid: str,
+    body: str,
+    client_message_id: Optional[str] = None,
+    quoted_wa_message_id: Optional[str] = None,
+    quoted: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"body": body}
     if client_message_id:
         payload["client_message_id"] = client_message_id
+    if quoted_wa_message_id:
+        payload["quoted_wa_message_id"] = quoted_wa_message_id
+    if quoted:
+        payload["quoted"] = quoted
     return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/messages", json=payload)
 
 

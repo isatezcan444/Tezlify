@@ -51,7 +51,7 @@ from backend.app.services import whatsapp_data_audit as _data_audit
 # 11'inde fark 0 sn idi.
 HISTORY_GAP_THRESHOLD_SECONDS = 600
 
-from sqlalchemy import select, update, func, or_, and_
+from sqlalchemy import select, update, func, or_, and_, false
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 
@@ -1262,6 +1262,7 @@ async def get_messages(
     base = select(Message).where(
         Message.conversation_id == conv.id,
         get_user_filter(Message.user_id, user_id),
+        Message.is_deleted_for_me.is_(False),
     )
     # Sorun 2 + Sorun 1 (zaman-damgali keyset sayfalamasi): `before` frontend
     # sozlesmesi geregi bir mesaj id'sidir, ama KESIM NOKTASI o satirin GERCEK
@@ -1283,8 +1284,9 @@ async def get_messages(
                 and_(_msg_time_col() == cutoff, Message.id < before_row.id),
             ))
         else:
-            # before satiri cozulemedi → bos sayfa (uydurma sucut yok).
-            base = base.where(Message.id < before)
+            # before id'si bu sohbette cozulemediyse (sahte/optimistic veya baska sohbetin id'si),
+            # rastgele en yeni 50 mesaji dondurmek yerine kesinlikle bos sayfa dondurulur (fail-closed).
+            base = base.where(false())
     base = base.order_by(_msg_time_col().desc(), Message.id.desc()).limit(page_size)
     res = await db.execute(base)
     rows = list(res.scalars().all())
@@ -1376,7 +1378,7 @@ async def get_messages(
                                 and j_val
                                 and history_session_id
                                 and await is_provider_recently_unresponsive(
-                                    db, j_val, session_id=history_session_id, cooldown_s=300
+                                    db, j_val, session_id=history_session_id, cooldown_s=20
                                 )
                             ):
                                 logger.info(
@@ -1431,6 +1433,18 @@ async def get_messages(
                                         anchor = r
                             anchor_id = anchor.wa_message_id if anchor else None
                             anchor_from_me = (anchor.direction == MessageDirection.OUTBOUND) if anchor else None
+                            if not anchor_id:
+                                nearest_anchor = await db.scalar(
+                                    select(Message).where(
+                                        Message.conversation_id == conv.id,
+                                        Message.wa_message_id.isnot(None),
+                                        _msg_time_col() <= (cutoff or utc_now_naive()),
+                                    ).order_by(_msg_time_col().desc(), Message.id.desc()).limit(1)
+                                )
+                                if nearest_anchor:
+                                    anchor = nearest_anchor
+                                    anchor_id = nearest_anchor.wa_message_id
+                                    anchor_from_me = (nearest_anchor.direction == MessageDirection.OUTBOUND)
                             if cursor_ms is not None:
                                 older = await _hydrate_or_tolerate_provider_timeout(
                                     db,
@@ -1521,6 +1535,7 @@ async def get_messages(
                 select(Message.id).where(
                     Message.conversation_id == conv.id,
                     get_user_filter(Message.user_id, user_id),
+                    Message.is_deleted_for_me.is_(False),
                     or_(
                         _msg_time_col() < oldest_ts,
                         and_(_msg_time_col() == oldest_ts, Message.id < oldest_row.id),
@@ -1604,9 +1619,23 @@ async def get_messages(
 
 @profiled("send_text")
 async def send_text_message(
-    db: AsyncSession, user_id: str, conversation_id: int, body: str, client_message_id: Optional[str] = None
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    body: str,
+    client_message_id: Optional[str] = None,
+    quoted_message_id: Optional[int] = None,
+    quoted_wa_message_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    return await _messaging_orchestrator.send_text_message(db, user_id, conversation_id, body, client_message_id)
+    return await _messaging_orchestrator.send_text_message(
+        db,
+        user_id,
+        conversation_id,
+        body,
+        client_message_id,
+        quoted_message_id=quoted_message_id,
+        quoted_wa_message_id=quoted_wa_message_id,
+    )
 
 
 async def send_media_message(

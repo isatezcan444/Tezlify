@@ -551,23 +551,46 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       setTimeout(() => {
         targetEl.classList.remove('ring-2', 'ring-[#00a884]', 'dark:ring-[#25D366]', 'bg-[#00a884]/15', 'dark:bg-[#25D366]/20');
       }, 1800);
+    } else {
+      toast.info(t('whatsapp.quotedMessageNotInHistory') || 'Alıntılanan mesaj mevcut sohbet geçmişinde bulunamadı.');
     }
   };
 
   const renderQuotedBlock = (quoted: QuotedMessageData) => {
+    const isRevoked = Boolean((quoted as any).is_revoked || (quoted as any).isRevoked);
+    const isViewOnce = Boolean(
+      (quoted as any).is_view_once ||
+      (quoted as any).isViewOnce ||
+      quoted.body === '[VIEW_ONCE_PHOTO]' ||
+      quoted.body === '[VIEW_ONCE_VIDEO]' ||
+      quoted.body === '[VIEW_ONCE_AUDIO]'
+    );
     const isSelfSender = quoted.sender_name === 'ME' || quoted.sender_phone === 'ME';
     const displayName = isSelfSender ? t('whatsapp.youLabel') : (quoted.sender_name || t('whatsapp.participantFallback'));
     const senderColorClass = isSelfSender ? 'text-[#00a884] dark:text-[#25D366]' : getSenderColorClass(displayName, quoted.sender_phone);
-    const thumbSrc =
-      (quoted.thumbnail ? resolveMediaUrl(quoted.thumbnail) : undefined) ||
-      (quoted.media_url
-        ? resolveMediaUrl(quoted.media_url)
-        : quoted.media_id
-        ? resolveMediaUrl(`/api/v1/whatsapp/media/${quoted.media_id}`)
-        : null);
+    const thumbSrc = (isRevoked || isViewOnce)
+      ? null
+      : ((quoted.thumbnail ? resolveMediaUrl(quoted.thumbnail) : undefined) ||
+         (quoted.media_url
+           ? resolveMediaUrl(quoted.media_url)
+           : quoted.media_id
+           ? resolveMediaUrl(`/api/v1/whatsapp/media/${quoted.media_id}`)
+           : null));
     const mType = (quoted.message_type || 'TEXT').toUpperCase();
 
     const mediaLabel = (() => {
+      if (isRevoked) {
+        return t('whatsapp.msgRevoked') || 'Bu mesaj silindi';
+      }
+      if (isViewOnce) {
+        if (mType === 'VIDEO' || quoted.body === '[VIEW_ONCE_VIDEO]') {
+          return t('whatsapp.viewOnceVideo') || 'Tek görüntülemelik video';
+        }
+        if (mType === 'AUDIO' || quoted.body === '[VIEW_ONCE_AUDIO]') {
+          return t('whatsapp.viewOnceAudio') || 'Tek görüntülemelik ses';
+        }
+        return t('whatsapp.viewOncePhoto') || 'Tek görüntülemelik fotoğraf';
+      }
       if (quoted.body && quoted.body !== 'Video' && quoted.body !== 'Fotoğraf' && quoted.body !== 'Belge') {
         return quoted.body;
       }
@@ -604,12 +627,26 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             <bdi>{displayName}</bdi>
           </div>
           <div className="flex items-center gap-1.5 text-[#54656f] dark:text-[#aebac1] text-xs font-normal leading-snug line-clamp-2" dir="auto">
-            {mType === 'VIDEO' && <Video className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
-            {mType === 'IMAGE' && <ImageIcon className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
-            {mType === 'DOCUMENT' && <FileText className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
-            {mType === 'AUDIO' && <Music className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
-            {mType === 'LOCATION' && <MapPin className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
-            <span className="truncate" dir="auto"><bdi>{mediaLabel}</bdi></span>
+            {isRevoked ? (
+              <span className="italic opacity-80 flex items-center gap-1 text-[#8696a0]" dir="auto">
+                <Ban className="w-3.5 h-3.5 shrink-0" />
+                <bdi>{mediaLabel}</bdi>
+              </span>
+            ) : isViewOnce ? (
+              <span className="flex items-center gap-1.5 text-amber-500 dark:text-amber-400 font-medium" dir="auto">
+                <span className="w-4 h-4 rounded-full border border-current flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
+                <bdi>{mediaLabel}</bdi>
+              </span>
+            ) : (
+              <>
+                {mType === 'VIDEO' && <Video className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+                {mType === 'IMAGE' && <ImageIcon className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+                {mType === 'DOCUMENT' && <FileText className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+                {mType === 'AUDIO' && <Music className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+                {mType === 'LOCATION' && <MapPin className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+                <span className="truncate" dir="auto"><bdi>{mediaLabel}</bdi></span>
+              </>
+            )}
           </div>
         </div>
 

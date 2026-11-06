@@ -1628,11 +1628,12 @@ class WhatsAppEventOrchestrator:
         resolve_event_owner_and_session = self._get_helper(
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
         )
-        owner, session = await resolve_event_owner_and_session(db, event)
+        jid_str = event.get("conversation_id")
+        gw_sid = event.get("gateway_session_id") or event.get("session_id")
+        owner, session = await resolve_event_owner_and_session(db, jid_str or "", gw_sid)
         if not owner:
             return _skip_event(event, "message_pinned: kiracı çözülemedi")
 
-        jid_str = event.get("conversation_id")
         target_wa_id = event.get("target_wa_message_id")
         action = str(event.get("action") or "PIN").upper()
         is_pinned = bool(event.get("is_pinned", action != "UNPIN"))
@@ -1683,11 +1684,12 @@ class WhatsAppEventOrchestrator:
         resolve_event_owner_and_session = self._get_helper(
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
         )
-        owner, session = await resolve_event_owner_and_session(db, event)
+        jid_str = event.get("conversation_id")
+        gw_sid = event.get("gateway_session_id") or event.get("session_id")
+        owner, session = await resolve_event_owner_and_session(db, jid_str or "", gw_sid)
         if not owner:
             return _skip_event(event, "message_deleted: kiracı çözülemedi")
 
-        jid_str = event.get("conversation_id")
         target_wa_id = event.get("wa_message_id") or event.get("target_wa_message_id")
         if not target_wa_id:
             return _skip_event(event, "message_deleted: hedef wa_message_id yok")
@@ -1742,11 +1744,12 @@ class WhatsAppEventOrchestrator:
         resolve_event_owner_and_session = self._get_helper(
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
         )
-        owner, session = await resolve_event_owner_and_session(db, event)
+        jid_str = event.get("conversation_id")
+        gw_sid = event.get("gateway_session_id") or event.get("session_id")
+        owner, session = await resolve_event_owner_and_session(db, jid_str or "", gw_sid)
         if not owner:
             return _skip_event(event, "message_starred: kiracı çözülemedi")
 
-        jid_str = event.get("conversation_id")
         target_wa_id = event.get("wa_message_id") or event.get("target_wa_message_id")
         if not target_wa_id:
             return _skip_event(event, "message_starred: hedef wa_message_id yok")

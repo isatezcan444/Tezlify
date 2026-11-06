@@ -41,23 +41,24 @@ export function normalizeMessageTimestampMs(raw: string | number | Date | null |
  */
 export function getMessageTimestampMs(m: Partial<Message> | null | undefined): number {
   if (!m) return 0;
-  return normalizeMessageTimestampMs(m.external_timestamp || m.created_at);
+  return normalizeMessageTimestampMs(m.external_timestamp || m.sent_at || m.created_at);
 }
 
 /**
- * Distinguishes genuine database-persisted integer IDs from optimistic client IDs.
- * Real DB IDs are positive integers < 1,000,000,000.
+ * Distinguishes genuine database-persisted integer IDs from optimistic client IDs
+ * and synthetic preview fallback IDs (which start at 999_000_000).
+ * Real DB IDs are positive integers < 999_000_000.
  */
 export function isRealDbId(id: string | number | undefined | null): boolean {
   if (id === null || id === undefined) return false;
   if (typeof id === 'number') {
-    return Number.isInteger(id) && id > 0 && id < 1_000_000_000;
+    return Number.isInteger(id) && id > 0 && id < 999_000_000;
   }
   if (typeof id === 'string') {
-    if (id.startsWith('optimistic_') || id.startsWith('temp_')) return false;
+    if (id.startsWith('optimistic_') || id.startsWith('temp_') || id.startsWith('preview-')) return false;
     if (/^\d+$/.test(id)) {
       const n = Number(id);
-      return Number.isInteger(n) && n > 0 && n < 1_000_000_000;
+      return Number.isInteger(n) && n > 0 && n < 999_000_000;
     }
   }
   return false;
@@ -80,20 +81,15 @@ export function compareMessagesChronological(a: Message, b: Message): number {
     return timeA - timeB;
   }
 
-  // Same timestamp: Conversational causality tie-breaker.
-  // When an inbound question and outbound reply share the same second/instant,
-  // the inbound message from the contact came first.
-  const dirA = a.direction;
-  const dirB = b.direction;
-  if (dirA !== dirB) {
-    if (dirA === 'INBOUND' && dirB === 'OUTBOUND') return -1;
-    if (dirA === 'OUTBOUND' && dirB === 'INBOUND') return 1;
-  }
-
   // Differentiate real DB IDs from 13-digit optimistic timestamps/strings:
   const isRealA = isRealDbId(a.id);
   const isRealB = isRealDbId(b.id);
 
+  // Primary deterministic tie-breaker for confirmed DB rows matching backend keyset ordering:
+  // When timestamps are identical, sort strictly by database ID ascending.
+  // This guarantees that Frontend chronological sorting is 100% aligned with
+  // Backend keyset pagination (_msg_time ASC, Message.id ASC), eliminating cursor
+  // loops, skipping, and duplicate page loads.
   if (isRealA && isRealB) {
     const numA = Number(a.id);
     const numB = Number(b.id);
@@ -103,6 +99,16 @@ export function compareMessagesChronological(a: Message, b: Message): number {
     return -1;
   } else if (!isRealA && isRealB) {
     return 1;
+  }
+
+  // Same timestamp: Conversational causality tie-breaker when IDs match or are unconfirmed.
+  // When an inbound question and outbound reply share the same second/instant,
+  // the inbound message from the contact came first.
+  const dirA = a.direction;
+  const dirB = b.direction;
+  if (dirA !== dirB) {
+    if (dirA === 'INBOUND' && dirB === 'OUTBOUND') return -1;
+    if (dirA === 'OUTBOUND' && dirB === 'INBOUND') return 1;
   }
 
   // Both are optimistic or same ID: use stable identity string

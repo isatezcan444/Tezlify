@@ -16,7 +16,7 @@ import { Readable } from 'stream';
 import { AsyncLocalStorage } from 'async_hooks';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadMediaMessage, downloadContentFromMessage } from '@whiskeysockets/baileys';
-import { resolveDownloadableMedia, unwrapMessageContent } from '../messages/message-classifier.js';
+import { resolveDownloadableMedia, unwrapMessageContent, isViewOnceMessage } from '../messages/message-classifier.js';
 import {
   calculateMediaTimeout,
   calculateTotalMediaBudget,
@@ -1011,6 +1011,11 @@ export function createMediaStore({
   async function ingestIncomingMedia(session, waMessage, sock, options = {}) {
     try {
       const waMessageId = waMessage?.key?.id;
+      // View Once protection: View Once media must never be downloaded or persisted in disk/RAM mediaStore
+      if (isViewOnceMessage(waMessage?.message)) {
+        logger?.debug({ waMessageId }, 'Media ingestion skipped: View Once messages must not be persisted to mediaStore');
+        return null;
+      }
       // Ayni mesajin medyasi RAM'de veya diskte zaten varsa YENI KOPYA URETME.
       if (waMessageId) {
         const existing = await findExistingMediaByWaId(String(waMessageId), waMessage, session);

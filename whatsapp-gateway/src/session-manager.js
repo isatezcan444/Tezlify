@@ -1947,10 +1947,56 @@ export function createSessionManager({
       };
     },
 
+    _resolveQuotedOption(session, jidKey, opts = {}) {
+      const quotedWaId = opts.quoted_wa_message_id || opts.quoted?.stanza_id;
+      if (!quotedWaId) return null;
+      const store = this._storeOf(session);
+      let rawMsg = null;
+      if (store.rawMessagesByChat) {
+        // Chat-scoped raw message lookup: NEVER cross-lookup across different chats!
+        rawMsg = store.rawMessagesByChat.get(jidKey)?.get(quotedWaId) || null;
+      }
+      if (rawMsg) {
+        return {
+          key: {
+            remoteJid: jidKey,
+            id: quotedWaId,
+            fromMe: Boolean(rawMsg.key?.fromMe),
+            ...(rawMsg.key?.participant ? { participant: rawMsg.key.participant } : {}),
+          },
+          message: rawMsg.message || rawMsg,
+        };
+      }
+      if (!opts.quoted) {
+        return null;
+      }
+      const q = opts.quoted;
+      const qType = String(q.message_type || 'TEXT').toUpperCase();
+      let inner = { conversation: q.body || '' };
+      if (qType === 'IMAGE') inner = { imageMessage: { caption: q.body || '' } };
+      else if (qType === 'VIDEO') inner = { videoMessage: { caption: q.body || '' } };
+      else if (qType === 'DOCUMENT') inner = { documentMessage: { title: q.body || '', fileName: q.body || '' } };
+      else if (qType === 'AUDIO') inner = { audioMessage: { ptt: true } };
+
+      const participant = q.participant
+        ? (q.participant.includes('@') ? q.participant : `${q.participant.replace(/\D/g, '')}@s.whatsapp.net`)
+        : undefined;
+
+      return {
+        key: {
+          remoteJid: jidKey,
+          id: quotedWaId,
+          fromMe: Boolean(q.from_me || q.sender_name === 'ME'),
+          ...(participant ? { participant } : {}),
+        },
+        message: inner,
+      };
+    },
+
     // -----------------------------------------------------------------------
     // Sending
     // -----------------------------------------------------------------------
-    async sendTextMessage(sessionId, jid, body, client_message_id) {
+    async sendTextMessage(sessionId, jid, body, client_message_id, options = {}) {
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
       const sendStarted = performance.now();
@@ -1972,13 +2018,31 @@ export function createSessionManager({
       const messageId = crypto.createHash('sha256')
         .update(`${session.id}\0${key}\0${clientMessageId}`)
         .digest('hex').slice(0, 32).toUpperCase();
+      const quotedOpt = this._resolveQuotedOption(session, key, options);
       const pending = this._recordOutbound(key, {
-        body, message_type: 'TEXT', client_message_id: clientMessageId,
-        wa_message_id: messageId, status: 'PENDING',
+        body,
+        message_type: 'TEXT',
+        client_message_id: clientMessageId,
+        wa_message_id: messageId,
+        status: 'PENDING',
+        quoted_message: options.quoted || (quotedOpt ? {
+          stanza_id: quotedOpt.key.id,
+          participant: quotedOpt.key.participant || null,
+          sender_name: options.quoted?.sender_name || (quotedOpt.key.fromMe ? 'ME' : null),
+          message_type: options.quoted?.message_type || 'TEXT',
+          body: options.quoted?.body || (quotedOpt.message?.conversation || ''),
+        } : null),
       }, session.id);
       let result;
       try {
-        result = await session.sock.sendMessage(key, { text: body }, { messageId });
+        result = await session.sock.sendMessage(
+          key,
+          { text: body },
+          {
+            messageId,
+            ...(quotedOpt ? { quoted: quotedOpt } : {}),
+          }
+        );
       } catch (error) {
         this._failOutbound(session.id, key, messageId, error);
         throw error;
@@ -2204,7 +2268,7 @@ export function createSessionManager({
         await session.sock.chatModify({
           deleteForMe: {
             key: targetKey,
-            timestamp: Date.now(),
+            timestamp: Math.floor(Date.now() / 1000),
             deleteMedia: false,
           }
         }, key);
@@ -2271,12 +2335,25 @@ export function createSessionManager({
       };
     },
 
-    async sendMediaMessage(sessionId, jid, { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id }) {
+    async sendMediaMessage(sessionId, jid, {
+      media_type,
+      media_url,
+      media_base64,
+      mime_type,
+      caption,
+      filename,
+      client_message_id,
+      view_once,
+      is_view_once,
+      quoted_wa_message_id,
+      quoted,
+    }) {
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
       const type = (media_type || 'document').toLowerCase();
       const clientMessageId = client_message_id || uuidv4();
       const expectedBody = caption || filename || media_url || '';
+      const isVo = Boolean(view_once || is_view_once);
       const existing = (this._storeOf(session).messagesByChat.get(key) || [])
         .find((m) => m.client_message_id === clientMessageId);
       if (existing) {
@@ -2314,7 +2391,8 @@ export function createSessionManager({
       }
 
       let storedOutboundMedia = null;
-      if (effectiveBase64 && typeof mediaStore?.storeMediaBuffer === 'function') {
+      // Invariant: Tek görüntülenmelik (view-once) medya kalıcı yerel depoya/cache'e YAZILMAZ
+      if (!isVo && effectiveBase64 && typeof mediaStore?.storeMediaBuffer === 'function') {
         try {
           const buf = Buffer.from(effectiveBase64, 'base64');
           storedOutboundMedia = mediaStore.storeMediaBuffer(session.id, buf, {
@@ -2336,20 +2414,42 @@ export function createSessionManager({
         mime_type: effectiveMimeType,
         caption,
         filename: effectiveFilename,
+        view_once: isVo,
       });
       const messageId = crypto.createHash('sha256')
         .update(`${session.id}\0${key}\0${clientMessageId}`)
         .digest('hex').slice(0, 32).toUpperCase();
       const recordedType = isAudio ? 'AUDIO' : (type === 'image' ? 'IMAGE' : (type === 'video' ? 'VIDEO' : 'DOCUMENT'));
+      const quotedOpt = this._resolveQuotedOption(session, key, { quoted_wa_message_id, quoted });
       const pending = this._recordOutbound(key, {
-        body: expectedBody, message_type: recordedType,
-        client_message_id: clientMessageId, wa_message_id: messageId, status: 'PENDING',
-        media_id: outboundMediaId, media_mime_type: outboundMimeType,
-        media_filename: outboundFilename, media_caption: caption,
+        body: expectedBody,
+        message_type: recordedType,
+        client_message_id: clientMessageId,
+        wa_message_id: messageId,
+        status: 'PENDING',
+        media_id: outboundMediaId,
+        media_mime_type: outboundMimeType,
+        media_filename: outboundFilename,
+        media_caption: caption,
+        is_view_once: isVo,
+        quoted_message: quoted || (quotedOpt ? {
+          stanza_id: quotedOpt.key.id,
+          participant: quotedOpt.key.participant || null,
+          sender_name: quoted?.sender_name || (quotedOpt.key.fromMe ? 'ME' : null),
+          message_type: quoted?.message_type || 'TEXT',
+          body: quoted?.body || '',
+        } : null),
       }, session.id);
       let result;
       try {
-        result = await session.sock.sendMessage(key, content, { messageId });
+        result = await session.sock.sendMessage(
+          key,
+          content,
+          {
+            messageId,
+            ...(quotedOpt ? { quoted: quotedOpt } : {}),
+          }
+        );
       } catch (error) {
         this._failOutbound(session.id, key, messageId, error);
         throw error;
@@ -2887,6 +2987,10 @@ export function createSessionManager({
           }
 
           if (foundRaw && foundJid) {
+            if (isViewOnceMessage(foundRaw)) {
+              this._failedMediaCache?.set(inFlightKey, Date.now());
+              return null;
+            }
             const waMsg = {
               key: { remoteJid: foundJid, id: strId, fromMe },
               message: foundRaw,
@@ -3687,6 +3791,10 @@ export function createSessionManager({
           dup.media_mime_type = data.media_mime_type || dup.media_mime_type;
           dup.media_filename = data.media_filename || dup.media_filename;
           dup.media_caption = data.media_caption || dup.media_caption;
+          dup.quoted_message = data.quoted_message || dup.quoted_message;
+          if (data.is_view_once !== undefined || data.view_once !== undefined) {
+            dup.is_view_once = Boolean(data.is_view_once || data.view_once);
+          }
           if (data.status && (ACK_ORDER[data.status] ?? 0) > (ACK_ORDER[dup.status] ?? 0)) {
             dup.status = data.status;
           }
@@ -3705,6 +3813,8 @@ export function createSessionManager({
         media_url: data.media_url,
         media_filename: data.media_filename,
         media_caption: data.media_caption,
+        quoted_message: data.quoted_message || null,
+        is_view_once: Boolean(data.is_view_once || data.view_once),
         wa_message_id: data.wa_message_id,
         client_message_id: data.client_message_id,
         sender_phone: 'ME',

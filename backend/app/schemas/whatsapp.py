@@ -290,6 +290,8 @@ class WhatsAppMessagesResponse(BaseModel):
 class WhatsAppSendTextRequest(BaseModel):
     body: str = Field(..., min_length=1, max_length=4000)
     client_message_id: Optional[str] = None
+    quoted_message_id: Optional[int] = None
+    quoted_wa_message_id: Optional[str] = None
 
 
 class WhatsAppSendMediaRequest(BaseModel):
@@ -300,6 +302,9 @@ class WhatsAppSendMediaRequest(BaseModel):
     caption: Optional[str] = None
     filename: Optional[str] = None
     client_message_id: Optional[str] = None
+    is_view_once: bool = False
+    quoted_message_id: Optional[int] = None
+    quoted_wa_message_id: Optional[str] = None
 
 
 class WhatsAppSendReactionRequest(BaseModel):
@@ -387,6 +392,7 @@ class WhatsAppSendResult(BaseModel):
     is_forwarded: bool = False
     is_pinned: bool = False
     is_view_once: bool = False
+    quoted_message: Optional[Dict[str, Any]] = None
     is_edited: bool = False
     edited_at: Optional[str] = None
     is_revoked: bool = False

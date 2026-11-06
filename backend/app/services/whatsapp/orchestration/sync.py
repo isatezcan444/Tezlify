@@ -1672,7 +1672,7 @@ class WhatsAppSyncOrchestrator:
             )
             for c_id, c_phone in db_conv_res.fetchall():
                 if c_id not in jid_by_conv and c_phone:
-                    jid_str = c_phone[4:] if c_phone.startswith("jid:") else _phone_to_jid(c_phone)
+                    jid_str = c_phone[4:] if c_phone.startswith("jid:") else phone_to_jid(c_phone)
                     if jid_str and not is_degenerate_jid(jid_str):
                         jid_by_conv[c_id] = jid_str
         await db.commit()
@@ -3119,12 +3119,16 @@ class WhatsAppSyncOrchestrator:
             await db.commit()
             return []
 
-        res = await db.execute(
-            select(Message.wa_message_id).where(
-                Message.conversation_id == conv.id, Message.wa_message_id.isnot(None)
+        incoming_wa_ids = [str(gm["wa_message_id"]) for gm in gw_msgs if gm.get("wa_message_id")]
+        have = set()
+        if incoming_wa_ids:
+            res = await db.execute(
+                select(Message.wa_message_id).where(
+                    Message.conversation_id == conv.id,
+                    Message.wa_message_id.in_(incoming_wa_ids),
+                )
             )
-        )
-        have = {str(r[0]) for r in res.all()}
+            have = {str(r[0]) for r in res.all()}
         rows: List[Message] = []
         for gm in gw_msgs:
             wa = gm.get("wa_message_id")

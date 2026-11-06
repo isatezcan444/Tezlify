@@ -279,9 +279,10 @@ export class WhatsAppRepository {
     conversationId: number,
     body: string,
     idempotencyKey?: string,
+    options?: { quoted_message_id?: number | string; quoted_wa_message_id?: string },
   ): Promise<any> {
     await requireLive();
-    return WhatsAppApi.sendMessage(conversationId, body, idempotencyKey);
+    return WhatsAppApi.sendMessage(conversationId, body, idempotencyKey, options);
   }
 
   static async sendMedia(
@@ -293,6 +294,9 @@ export class WhatsAppRepository {
       mime_type?: string;
       caption?: string;
       filename?: string;
+      is_view_once?: boolean;
+      quoted_message_id?: number | string;
+      quoted_wa_message_id?: string;
     },
     idempotencyKey?: string,
   ): Promise<any> {
@@ -306,9 +310,10 @@ export class WhatsAppRepository {
     file: File,
     caption?: string,
     idempotencyKey?: string,
+    options?: { is_view_once?: boolean; quoted_message_id?: number | string; quoted_wa_message_id?: string },
   ): Promise<any> {
     await requireLive();
-    return WhatsAppApi.sendMediaFile(conversationId, file, caption, idempotencyKey);
+    return WhatsAppApi.sendMediaFile(conversationId, file, caption, idempotencyKey, options);
   }
 
   /** Karsı tarafa 'yazıyor...' göstergesi gönderir; hatayı çağırana taşır. */

@@ -669,7 +669,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (nearBottom) setShowNewMessagePill(false);
     trackAnchor();
     if (programmaticRef.current) { programmaticRef.current = false; return; }   // our own pin's echo
-    if (scrollTop < 350 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) { handleLoadOlder(); return; }
+    if (scrollTop < 80 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) { handleLoadOlder(); return; }
     const topsArr = topsOf();
     const r = deriveRange(topsArr, scrollTop, clientHeight);
     if (r.start !== winRef.current.start || r.end !== winRef.current.end) {
@@ -699,7 +699,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     // (see `legacyProgrammaticUntilRef`). Position tracking above still runs —
     // only the pagination trigger is suppressed.
     if (Date.now() < legacyProgrammaticUntilRef.current) return;
-    if (scrollTop < 350 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) {
+    if (scrollTop < 80 && hasMore && !loadingOlder && !pagingError && initialScrollDoneRef.current) {
       handleLoadOlder();
     }
   };
@@ -768,8 +768,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       // container the animation's early events land inside the <60px
       // pagination trigger, which is what chained one gesture into 17 page
       // requests. `scrollTo` with an explicit behaviour bypasses the CSS.
-      markLegacyProgrammatic(150);
-      const targetTop = (containerRef.current.scrollTop || prevScrollTopRef.current) + heightDiff;
+      markLegacyProgrammatic(350);
+      const baseTop = prevScrollTopRef.current > 0 ? prevScrollTopRef.current : containerRef.current.scrollTop;
+      const targetTop = baseTop + heightDiff;
       if (typeof containerRef.current.scrollTo === 'function') {
         containerRef.current.scrollTo({
           top: targetTop,

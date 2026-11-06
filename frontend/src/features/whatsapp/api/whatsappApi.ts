@@ -1093,7 +1093,12 @@ export const WhatsAppApi = {
     };
   },
 
-  async sendMessage(conversationId: number, body: string, clientMessageId?: string): Promise<Message> {
+  async sendMessage(
+    conversationId: number,
+    body: string,
+    clientMessageId?: string,
+    options?: { quoted_message_id?: number | string; quoted_wa_message_id?: string }
+  ): Promise<Message> {
     const data = await apiSend<{
       id?: number | string | null;
       wa_message_id?: string | null;
@@ -1102,9 +1107,13 @@ export const WhatsAppApi = {
       body?: string | null;
       created_at?: string | null;
       message_type?: string | null;
+      quoted_message?: any;
+      is_view_once?: boolean;
     }>(`/whatsapp/conversations/${conversationId}/messages`, 'POST', {
       body,
       client_message_id: clientMessageId,
+      quoted_message_id: options?.quoted_message_id ? Number(options.quoted_message_id) : undefined,
+      quoted_wa_message_id: options?.quoted_wa_message_id,
     });
     return mapMessage(
       {
@@ -1117,6 +1126,8 @@ export const WhatsAppApi = {
         wa_message_id: data.wa_message_id,
         client_message_id: data.client_message_id ?? clientMessageId,
         sender_phone: 'ME',
+        quoted_message: (data as any).quoted_message,
+        is_view_once: Boolean((data as any).is_view_once),
         // Sunucu zaman damgasi onceliklidir; gelmezse optimistic satirin
         // istemci saati kullanilir (kendi gönderim eylemi — sunucu verisi
         // uydurma DEGIL, aksi halde created_at bosalir ve siralama kirilir).
@@ -1128,7 +1139,17 @@ export const WhatsAppApi = {
 
   async sendMedia(
     conversationId: number,
-    media: { media_type: string; media_url?: string; media_base64?: string; mime_type?: string; caption?: string; filename?: string },
+    media: {
+      media_type: string;
+      media_url?: string;
+      media_base64?: string;
+      mime_type?: string;
+      caption?: string;
+      filename?: string;
+      is_view_once?: boolean;
+      quoted_message_id?: number | string;
+      quoted_wa_message_id?: string;
+    },
     clientMessageId?: string
   ): Promise<Message> {
     if (!media.media_url && !media.media_base64) {
@@ -1141,6 +1162,10 @@ export const WhatsAppApi = {
       status: string;
       body?: string | null;
       created_at?: string | null;
+      media_id?: string | null;
+      media_url?: string | null;
+      quoted_message?: any;
+      is_view_once?: boolean;
     }>(`/whatsapp/conversations/${conversationId}/media`, 'POST', {
       media_type: media.media_type.toLowerCase(),
       media_url: media.media_url,
@@ -1149,6 +1174,9 @@ export const WhatsAppApi = {
       caption: media.caption,
       filename: media.filename,
       client_message_id: clientMessageId,
+      is_view_once: Boolean(media.is_view_once),
+      quoted_message_id: media.quoted_message_id ? Number(media.quoted_message_id) : undefined,
+      quoted_wa_message_id: media.quoted_wa_message_id,
     });
     return mapMessage(
       {
@@ -1162,6 +1190,8 @@ export const WhatsAppApi = {
         media_url: (data as any).media_url || media.media_url,
         media_filename: media.filename,
         media_caption: media.caption,
+        quoted_message: (data as any).quoted_message,
+        is_view_once: Boolean((data as any).is_view_once ?? media.is_view_once),
         wa_message_id: data.wa_message_id,
         client_message_id: data.client_message_id ?? clientMessageId,
         sender_phone: 'ME',
@@ -1199,7 +1229,8 @@ export const WhatsAppApi = {
     conversationId: number,
     file: File,
     caption?: string,
-    clientMessageId?: string
+    clientMessageId?: string,
+    options?: { is_view_once?: boolean; quoted_message_id?: number | string; quoted_wa_message_id?: string }
   ): Promise<Message> {
     const base64 = await fileToBase64(file);
     const type = mediaTypeFromFile(file.type, file.name);
@@ -1211,6 +1242,9 @@ export const WhatsAppApi = {
         mime_type: file.type || 'application/octet-stream',
         caption,
         filename: file.name,
+        is_view_once: options?.is_view_once,
+        quoted_message_id: options?.quoted_message_id,
+        quoted_wa_message_id: options?.quoted_wa_message_id,
       },
       clientMessageId
     );

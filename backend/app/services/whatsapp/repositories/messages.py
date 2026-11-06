@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import get_user_filter
@@ -49,7 +49,11 @@ def hydration_cursor_ms(rows: List[Optional[Message]]) -> Optional[int]:
             oldest = ts
     if oldest is None:
         return None
-    return int(oldest.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=timezone.utc)
+    else:
+        oldest = oldest.astimezone(timezone.utc)
+    return int(oldest.timestamp() * 1000)
 
 
 async def get_sync_watermark_epoch(
@@ -108,7 +112,23 @@ async def select_messages_keyset(
         else:
             base = base.where(Message.id < before_row.id)
     elif before is not None:
-        base = base.where(Message.id < before)
+        bres = await db.execute(
+            select(Message).where(Message.id == before, Message.conversation_id == conversation_id)
+        )
+        resolved_before = bres.scalars().first()
+        if resolved_before is not None:
+            cutoff = msg_time(resolved_before)
+            if cutoff is not None:
+                base = base.where(
+                    or_(
+                        msg_time_col() < cutoff,
+                        and_(msg_time_col() == cutoff, Message.id < resolved_before.id),
+                    )
+                )
+            else:
+                base = base.where(Message.id < resolved_before.id)
+        else:
+            base = base.where(false())
 
     base = base.order_by(msg_time_col().desc(), Message.id.desc()).limit(page_size)
     res = await db.execute(base)

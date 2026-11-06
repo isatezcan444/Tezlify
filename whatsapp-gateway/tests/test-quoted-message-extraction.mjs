@@ -100,4 +100,54 @@ const plainMsg = {
 const res5 = extractQuotedMessageMetadata(plainMsg);
 assert.equal(res5, null);
 
+// 6. Quoted View Once photo (MUST strip thumbnail and set is_view_once: true)
+const quotedVoMsg = {
+  extendedTextMessage: {
+    text: 'harika fotoğrafmış',
+    contextInfo: {
+      stanzaId: 'VO_STANZA_1',
+      participant: 'friend@s.whatsapp.net',
+      quotedMessage: {
+        viewOnceMessage: {
+          message: {
+            imageMessage: {
+              mimetype: 'image/jpeg',
+              jpegThumbnail: Buffer.from([0xff, 0xd8, 0xff]),
+            },
+          },
+        },
+      },
+    },
+  },
+};
+const res6 = extractQuotedMessageMetadata(quotedVoMsg, () => 'Friend');
+assert.ok(res6, 'Should extract quoted VO');
+assert.equal(res6.stanza_id, 'VO_STANZA_1');
+assert.equal(res6.is_view_once, true);
+assert.equal(res6.thumbnail, null, 'View once thumbnail must NEVER be leaked in quote');
+assert.equal(res6.body, '[VIEW_ONCE_PHOTO]');
+
+// 7. Quoted Revoked message (MUST strip body, strip thumbnail, and set is_revoked: true)
+const quotedRevokedMsg = {
+  extendedTextMessage: {
+    text: 'ne yazmıştın?',
+    contextInfo: {
+      stanzaId: 'REVOKED_STANZA_1',
+      participant: 'friend@s.whatsapp.net',
+      quotedMessage: {
+        protocolMessage: {
+          key: { id: 'REVOKED_STANZA_1' },
+          type: 0, // REVOKE
+        },
+      },
+    },
+  },
+};
+const res7 = extractQuotedMessageMetadata(quotedRevokedMsg, () => 'Friend');
+assert.ok(res7, 'Should extract quoted revoked');
+assert.equal(res7.stanza_id, 'REVOKED_STANZA_1');
+assert.equal(res7.is_revoked, true);
+assert.equal(res7.body, '');
+assert.equal(res7.thumbnail, null);
+
 console.log('✅ All extractQuotedMessageMetadata tests passed successfully!');
