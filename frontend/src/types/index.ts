@@ -510,6 +510,15 @@ export interface Message {
   /** WhatsApp native düzenlendi (edited) bayrağı ve zamanı. */
   is_edited?: boolean;
   edited_at?: string | null;
+  /** WhatsApp native herkesten silindi (revoked) bayrağı ve zamanı. */
+  is_revoked?: boolean;
+  revoked_at?: string | null;
+  /** WhatsApp benden silindi bayrağı ve zamanı. */
+  is_deleted_for_me?: boolean;
+  deleted_for_me_at?: string | null;
+  /** WhatsApp yıldızlandı (starred) bayrağı ve zamanı. */
+  is_starred?: boolean;
+  starred_at?: string | null;
   /** Granular message delivery lifecycle timestamps */
   sent_at?: string | null;
   delivered_at?: string | null;

@@ -421,6 +421,12 @@ interface BackendMessage {
   is_view_once?: boolean | null;
   is_edited?: boolean | null;
   edited_at?: string | null;
+  is_revoked?: boolean | null;
+  revoked_at?: string | null;
+  is_deleted_for_me?: boolean | null;
+  deleted_for_me_at?: string | null;
+  is_starred?: boolean | null;
+  starred_at?: string | null;
   created_at?: string | null;
 }
 
@@ -475,6 +481,12 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     pinned_until: m.pinned_until || null,
     is_edited: Boolean(m.is_edited),
     edited_at: m.edited_at || null,
+    is_revoked: Boolean(m.is_revoked),
+    revoked_at: m.revoked_at || null,
+    is_deleted_for_me: Boolean(m.is_deleted_for_me),
+    deleted_for_me_at: m.deleted_for_me_at || null,
+    is_starred: Boolean(m.is_starred),
+    starred_at: m.starred_at || null,
     is_view_once: Boolean(
       m.is_view_once ||
       m.body === '[VIEW_ONCE_PHOTO]' ||
@@ -1438,6 +1450,75 @@ export const WhatsAppApi = {
       action,
       duration_seconds: durationSeconds,
     });
+  },
+
+  async editMessage(
+    conversationId: number,
+    messageId: number | string,
+    body: string
+  ): Promise<Message> {
+    const data = await apiSend<{
+      success: boolean;
+      conversation_id: number;
+      message_id: number;
+      wa_message_id?: string;
+      body: string;
+      is_edited: boolean;
+      edited_at?: string;
+      message?: BackendMessage;
+    }>(`/whatsapp/conversations/${conversationId}/messages/${messageId}`, 'PATCH', {
+      body,
+    });
+    if (data.message) {
+      return mapMessage(data.message, conversationId);
+    }
+    return mapMessage(
+      {
+        id: data.message_id,
+        conversation_id: conversationId,
+        body: data.body,
+        is_edited: true,
+        edited_at: data.edited_at,
+        wa_message_id: data.wa_message_id,
+      },
+      conversationId
+    );
+  },
+
+  async deleteMessage(
+    conversationId: number,
+    messageId: number | string,
+    deleteType: 'everyone' | 'for_me' = 'everyone'
+  ): Promise<{
+    success: boolean;
+    conversation_id: number;
+    message_id: number;
+    wa_message_id?: string | null;
+    delete_type: string;
+    is_revoked?: boolean;
+  }> {
+    return apiSend(
+      `/whatsapp/conversations/${conversationId}/messages/${messageId}?delete_type=${encodeURIComponent(deleteType)}`,
+      'DELETE'
+    );
+  },
+
+  async starMessage(
+    conversationId: number,
+    messageId: number | string,
+    star: boolean = true
+  ): Promise<{
+    success: boolean;
+    conversation_id: number;
+    message_id: number;
+    wa_message_id?: string | null;
+    is_starred: boolean;
+  }> {
+    return apiSend(
+      `/whatsapp/conversations/${conversationId}/messages/${messageId}/star`,
+      'POST',
+      { star }
+    );
   },
 
   async getAiSuggestedReplies(conversationId: number): Promise<AiSuggestReplyResponse> {

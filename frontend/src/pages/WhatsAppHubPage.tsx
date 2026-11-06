@@ -82,6 +82,7 @@ import {
   ChatInfoDrawer,
   ForwardModal,
   PinDurationModal,
+  DeleteMessageModal,
   PinnedMessagesBar,
   ChatMessageInfoDrawer,
   WarmupModal,
@@ -478,25 +479,79 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, []);
 
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteModalMessage, setDeleteModalMessage] = useState<Message | null>(null);
+  const [isDeletingMessage, setIsDeletingMessage] = useState(false);
+
   const handleDeleteMessage = useCallback(async (message: Message) => {
     const currentConv = selectedConvRef.current;
     if (!currentConv) return;
-    const ok = await toastRef.current.confirm({
-      title: tRef.current('whatsapp.menuDelete'),
-      message: tRef.current('whatsapp.deleteMessageConfirm'),
-      confirmText: tRef.current('whatsapp.menuDelete'),
-      variant: 'danger',
-    });
-    if (!ok) return;
+    setDeleteModalMessage(message);
+    setDeleteModalOpen(true);
+  }, []);
 
+  const handleConfirmDeleteMessage = useCallback(async (deleteType: 'everyone' | 'for_me') => {
+    const currentConv = selectedConvRef.current;
+    const targetMsg = deleteModalMessage;
+    if (!currentConv || !targetMsg) return;
+    setIsDeletingMessage(true);
+    try {
+      await WhatsAppApi.deleteMessage(currentConv.id, targetMsg.id, deleteType);
+      setDeleteModalOpen(false);
+      setDeleteModalMessage(null);
+      toastRef.current.success(tRef.current('whatsapp.messageDeletedSuccess'));
+      if (deleteType === 'everyone') {
+        setMessagesMap((prev) => {
+          const list = prev[currentConv.id] || [];
+          return {
+            ...prev,
+            [currentConv.id]: list.map((m) =>
+              m.id === targetMsg.id
+                ? { ...m, is_revoked: true, body: '', media_url: undefined, media_id: undefined }
+                : m
+            ),
+          };
+        });
+      } else {
+        setMessagesMap((prev) => {
+          const list = prev[currentConv.id] || [];
+          return {
+            ...prev,
+            [currentConv.id]: list.filter((m) => m.id !== targetMsg.id),
+          };
+        });
+      }
+    } catch (err: any) {
+      toastRef.current.error(err?.message || tRef.current('common.error'));
+    } finally {
+      setIsDeletingMessage(false);
+    }
+  }, [deleteModalMessage]);
+
+  const handleEditMessage = useCallback(async (message: Message, newBody: string) => {
+    const currentConv = selectedConvRef.current;
+    if (!currentConv) return;
+    const updated = await WhatsAppApi.editMessage(currentConv.id, message.id, newBody);
     setMessagesMap((prev) => {
       const list = prev[currentConv.id] || [];
       return {
         ...prev,
-        [currentConv.id]: list.filter((m) => m.id !== message.id),
+        [currentConv.id]: list.map((m) => (m.id === message.id ? { ...m, ...updated, body: newBody, is_edited: true } : m)),
       };
     });
-    toastRef.current.success(tRef.current('whatsapp.messageDeleted'));
+  }, []);
+
+  const handleStarMessage = useCallback(async (message: Message, star: boolean) => {
+    const currentConv = selectedConvRef.current;
+    if (!currentConv) return;
+    await WhatsAppApi.starMessage(currentConv.id, message.id, star);
+    setMessagesMap((prev) => {
+      const list = prev[currentConv.id] || [];
+      return {
+        ...prev,
+        [currentConv.id]: list.map((m) => (m.id === message.id ? { ...m, is_starred: star } : m)),
+      };
+    });
   }, []);
 
 
@@ -2519,6 +2574,94 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       }
 
+      if (eventData.event === 'message_deleted' || eventData.type === 'message_deleted') {
+        const targetConvId = eventData.conversation_id;
+        const targetMsgId = eventData.message_id;
+        const waMsgId = eventData.wa_message_id;
+        const isRevoked = Boolean(eventData.is_revoked || eventData.delete_type === 'everyone');
+        const revokedAt = eventData.revoked_at || new Date().toISOString();
+
+        if (targetConvId) {
+          setMessagesMap((prev) => {
+            const currentList = prev[targetConvId] || [];
+            if (isRevoked) {
+              return {
+                ...prev,
+                [targetConvId]: currentList.map((m) => {
+                  const matches = (targetMsgId && m.id === targetMsgId) || (waMsgId && m.wa_message_id === waMsgId);
+                  if (matches) {
+                    return {
+                      ...m,
+                      is_revoked: true,
+                      revoked_at: revokedAt,
+                      body: '',
+                      media_url: undefined,
+                      media_id: undefined,
+                      media_caption: undefined,
+                      media_filename: undefined,
+                      link_preview: undefined,
+                    };
+                  }
+                  return m;
+                }),
+              };
+            } else {
+              return {
+                ...prev,
+                [targetConvId]: currentList.filter(
+                  (m) => !( (targetMsgId && m.id === targetMsgId) || (waMsgId && m.wa_message_id === waMsgId) )
+                ),
+              };
+            }
+          });
+        }
+      }
+
+      if (eventData.event === 'messages_deleted' || eventData.type === 'messages_deleted') {
+        const targetConvId = eventData.conversation_id;
+        const msgIds = new Set(eventData.message_ids || []);
+        const waIds = new Set(eventData.wa_message_ids || []);
+        if (targetConvId) {
+          setMessagesMap((prev) => {
+            const currentList = prev[targetConvId] || [];
+            return {
+              ...prev,
+              [targetConvId]: currentList.filter(
+                (m) => !(msgIds.has(m.id) || (m.wa_message_id && waIds.has(m.wa_message_id)))
+              ),
+            };
+          });
+        }
+      }
+
+      if (eventData.event === 'message_starred' || eventData.type === 'message_starred') {
+        const targetConvId = eventData.conversation_id;
+        const targetMsgId = eventData.message_id;
+        const waMsgId = eventData.wa_message_id;
+        const isStarred = Boolean(eventData.is_starred);
+        const starredAt = eventData.starred_at || null;
+
+        if (targetConvId) {
+          setMessagesMap((prev) => {
+            const currentList = prev[targetConvId] || [];
+            return {
+              ...prev,
+              [targetConvId]: currentList.map((m) => {
+                const matches = (targetMsgId && m.id === targetMsgId) || (waMsgId && m.wa_message_id === waMsgId);
+                if (matches) {
+                  return {
+                    ...m,
+                    is_starred: isStarred,
+                    starred_at: starredAt,
+                  };
+                }
+                return m;
+              }),
+            };
+          });
+        }
+      }
+
       // 1. INBOUND MESSAGE & OUTBOUND CONFIRMATION
       // Faz 10 (P3): gateway'in gercek olay adi 'message_new'tir (hem gelen hem
       // telefondan gonderilen mesajlar icin). D5: 'inbound_reply',
@@ -4168,6 +4311,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onReply={handleReplyMessage}
                   onForward={handleForwardSingleMessage}
                   onDeleteMessage={handleDeleteMessage}
+                  onEditMessage={handleEditMessage}
+                  onStarMessage={handleStarMessage}
                   onEnterSelectMode={handleEnterSelectMode}
                   onPrivateReply={handlePrivateReply}
                   onDirectMessageSender={handleDirectMessageSender}
@@ -4565,6 +4710,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         onConfirm={handleConfirmPin}
         message={pinTargetMessage}
         isSubmitting={isPinning}
+      />
+
+      {/* WhatsApp Delete Message Scope Modal */}
+      <DeleteMessageModal
+        isOpen={deleteModalOpen}
+        onClose={() => {
+          setDeleteModalOpen(false);
+          setDeleteModalMessage(null);
+        }}
+        onConfirm={handleConfirmDeleteMessage}
+        message={deleteModalMessage}
+        isSubmitting={isDeletingMessage}
       />
 
       {/* WhatsApp Automated Number Warmup Modal */}

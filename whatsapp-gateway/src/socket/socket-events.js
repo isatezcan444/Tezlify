@@ -759,7 +759,7 @@ export function bindSocketEvents({
       byConversation.get(convKey).push(key.id);
     }
     for (const [convKey, ids] of byConversation) {
-      emitEvent({ event: 'messages_deleted', conversation_id: convKey, wa_message_ids: ids });
+      emitEvent({ event: 'messages_deleted', conversation_id: convKey, wa_message_ids: ids, delete_type: 'for_me' });
     }
   });
 
@@ -1686,6 +1686,21 @@ export function bindSocketEvents({
     for (const { key, update } of updates || []) {
       if (update?.status) {
         manager._applyMessageAck(id, key, update);
+      }
+      if (update?.starred !== undefined && key?.id) {
+        const convKey = normalizeJid(key.remoteJid);
+        const list = messagesByChat.get(convKey) || [];
+        const target = list.find((m) => m.wa_message_id === key.id);
+        if (target) {
+          target.is_starred = Boolean(update.starred);
+          target.starred_at = update.starred ? new Date().toISOString() : null;
+        }
+        emitEvent({
+          event: 'message_starred',
+          conversation_id: convKey,
+          wa_message_id: key.id,
+          is_starred: Boolean(update.starred),
+        });
       }
       if (update?.message) {
         try {

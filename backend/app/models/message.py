@@ -80,6 +80,18 @@ class Message(Base):
     is_edited = Column(Boolean, default=False, server_default=text("false"), nullable=False, index=True)
     edited_at = Column(DateTime, nullable=True)
 
+    # WhatsApp native revoked (Delete for everyone / REVOKE) indicator and timestamp
+    is_revoked = Column(Boolean, default=False, server_default=text("false"), nullable=False, index=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    # WhatsApp local/app-state deleted for me indicator and timestamp
+    is_deleted_for_me = Column(Boolean, default=False, server_default=text("false"), nullable=False, index=True)
+    deleted_for_me_at = Column(DateTime, nullable=True)
+
+    # WhatsApp native starred message indicator and timestamp
+    is_starred = Column(Boolean, default=False, server_default=text("false"), nullable=False, index=True)
+    starred_at = Column(DateTime, nullable=True)
+
     # D3: nullable — LID (privacy-mode) senders have no resolvable phone number.
     # Hard invariant (AGENTS.md): never synthesize fake phone numbers; unknown
     # senders persist NULL instead of a placeholder literal.

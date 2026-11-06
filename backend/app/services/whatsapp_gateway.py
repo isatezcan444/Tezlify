@@ -551,6 +551,72 @@ async def pin_message(
     )
 
 
+async def edit_message(
+    gateway_id: str,
+    jid: str,
+    *,
+    target_wa_message_id: str,
+    text: str,
+    target_from_me: bool = True,
+) -> Dict[str, Any]:
+    """Bir mesajı düzenler (WhatsApp Message Edit)."""
+    body: Dict[str, Any] = {
+        "text": text,
+        "target_from_me": bool(target_from_me),
+    }
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/conversations/{jid}/messages/{target_wa_message_id}/edit",
+        json=body,
+    )
+
+
+async def delete_message(
+    gateway_id: str,
+    jid: str,
+    *,
+    target_wa_message_id: str,
+    target_from_me: bool = False,
+    delete_type: str = "everyone",
+    participant_jid: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Bir mesajı siler (everyone / for_me)."""
+    body: Dict[str, Any] = {
+        "delete_type": delete_type,
+        "target_from_me": bool(target_from_me),
+    }
+    if participant_jid:
+        body["participant_jid"] = participant_jid
+    return await _request(
+        "DELETE",
+        f"{_s(gateway_id)}/conversations/{jid}/messages/{target_wa_message_id}?delete_type={delete_type}",
+        json=body,
+    )
+
+
+async def star_message(
+    gateway_id: str,
+    jid: str,
+    *,
+    target_wa_message_id: str,
+    target_from_me: bool = False,
+    star: bool = True,
+    participant_jid: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Bir mesajı yıldızlar veya yıldızını kaldırır."""
+    body: Dict[str, Any] = {
+        "star": bool(star),
+        "target_from_me": bool(target_from_me),
+    }
+    if participant_jid:
+        body["participant_jid"] = participant_jid
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/conversations/{jid}/messages/{target_wa_message_id}/star",
+        json=body,
+    )
+
+
 async def get_group_participants(
     gateway_id: str,
     jid: str,

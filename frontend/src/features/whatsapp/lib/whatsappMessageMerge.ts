@@ -34,26 +34,33 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
         for (const [key, value] of identities) if (value === duplicateSlot) identities.set(key, slot);
       }
     }
+    const isRevoked = Boolean(message.is_revoked || previous?.is_revoked);
     result[slot] = previous ? {
       ...previous,
       ...message,
       id: isRealDbId(previous.id) && !isRealDbId(message.id) ? previous.id : message.id,
-      body: (message.body && message.body.trim() !== '') ? message.body : previous.body,
+      body: isRevoked ? '' : ((message.body && message.body.trim() !== '') ? message.body : previous.body),
       message_type: (message.message_type && message.message_type !== 'TEXT') ? message.message_type : (previous.message_type || message.message_type),
       wa_message_id: message.wa_message_id || previous.wa_message_id,
       client_message_id: message.client_message_id || previous.client_message_id,
-      media_id: message.media_id || previous.media_id,
-      media_url: message.media_url || previous.media_url,
-      media_mime_type: message.media_mime_type || previous.media_mime_type,
-      media_filename: message.media_filename || previous.media_filename,
-      media_caption: message.media_caption || previous.media_caption,
-      link_preview: message.link_preview || previous.link_preview,
+      media_id: isRevoked ? undefined : (message.media_id || previous.media_id),
+      media_url: isRevoked ? undefined : (message.media_url || previous.media_url),
+      media_mime_type: isRevoked ? undefined : (message.media_mime_type || previous.media_mime_type),
+      media_filename: isRevoked ? undefined : (message.media_filename || previous.media_filename),
+      media_caption: isRevoked ? undefined : (message.media_caption || previous.media_caption),
+      link_preview: isRevoked ? undefined : (message.link_preview || previous.link_preview),
       reactions: Array.isArray(message.reactions) ? message.reactions : previous.reactions,
       status: mergeDeliveryStatus(previous.status, message.status),
       is_edited: Boolean(message.is_edited || previous.is_edited),
       edited_at: message.edited_at || previous.edited_at,
+      is_revoked: isRevoked,
+      revoked_at: message.revoked_at || previous.revoked_at,
+      is_deleted_for_me: Boolean(message.is_deleted_for_me || previous.is_deleted_for_me),
+      deleted_for_me_at: message.deleted_for_me_at || previous.deleted_for_me_at,
+      is_starred: typeof message.is_starred === 'boolean' ? message.is_starred : previous.is_starred,
+      starred_at: message.starred_at !== undefined ? message.starred_at : previous.starred_at,
     } : message;
     for (const key of keys) identities.set(key, slot);
   }
-  return result.filter((message): message is Message => message !== undefined).sort(compareMessagesChronological);
+  return result.filter((message): message is Message => message !== undefined && !message.is_deleted_for_me).sort(compareMessagesChronological);
 }

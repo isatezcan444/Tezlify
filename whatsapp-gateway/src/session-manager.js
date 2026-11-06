@@ -2113,6 +2113,164 @@ export function createSessionManager({
       };
     },
 
+    /**
+     * Bir giden mesajı düzenler (WhatsApp Message Edit / protocolMessage type 14).
+     */
+    async editMessage(sessionId, jid, { target_wa_message_id, target_from_me = true, text }) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!target_wa_message_id) throw new Error('target_wa_message_id is required');
+      if (typeof text !== 'string' || !text.trim()) throw new Error('text is required for edit');
+      if (target_from_me === false) throw new Error('Yalnızca kendi gönderdiğiniz mesajları düzenleyebilirsiniz');
+
+      const editKey = {
+        remoteJid: key,
+        fromMe: true, // WhatsApp kuralı: Yalnızca kendi mesajlarımız düzenlenebilir
+        id: target_wa_message_id,
+      };
+
+      await session.sock.sendMessage(key, {
+        text,
+        edit: editKey,
+      });
+
+      const now = new Date().toISOString();
+      const list = store.messagesByChat.get(key) || [];
+      const targetRecord = list.find((m) => m.wa_message_id === target_wa_message_id);
+      if (targetRecord) {
+        targetRecord.body = text;
+        targetRecord.is_edited = true;
+        targetRecord.edited_at = now;
+      }
+
+      return {
+        success: true,
+        conversation_id: key,
+        wa_message_id: target_wa_message_id,
+        body: text,
+        is_edited: true,
+        edited_at: now,
+      };
+    },
+
+    /**
+     * Bir mesajı siler (delete_type: 'everyone' [REVOKE] veya 'for_me' [DELETE FOR ME]).
+     */
+    async deleteMessage(sessionId, jid, { target_wa_message_id, target_from_me, participant_jid, delete_type = 'everyone' }) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!target_wa_message_id) throw new Error('target_wa_message_id is required');
+
+      let resolvedParticipant = participant_jid || null;
+      if (key.endsWith('@g.us') && !target_from_me) {
+        if (!resolvedParticipant) {
+          const cachedMsg = (store.messagesByChat.get(key) || []).find((m) => m.wa_message_id === target_wa_message_id);
+          resolvedParticipant = cachedMsg?.participant_jid || null;
+        }
+        if (!resolvedParticipant) {
+          const rawMsg = store.rawMessagesByChat?.get(key)?.get(target_wa_message_id);
+          resolvedParticipant = rawMsg?.key?.participant || null;
+        }
+      }
+
+      const targetKey = {
+        remoteJid: key,
+        fromMe: Boolean(target_from_me),
+        id: target_wa_message_id,
+      };
+      if (key.endsWith('@g.us') && !target_from_me && resolvedParticipant) {
+        targetKey.participant = resolvedParticipant;
+      }
+
+      const isEveryone = String(delete_type || 'everyone').toLowerCase() === 'everyone';
+      if (isEveryone) {
+        // Herkesten sil (REVOKE)
+        await session.sock.sendMessage(key, {
+          delete: targetKey,
+        });
+
+        const list = store.messagesByChat.get(key) || [];
+        const targetRecord = list.find((m) => m.wa_message_id === target_wa_message_id);
+        if (targetRecord) {
+          targetRecord.body = '';
+          targetRecord.is_deleted = true;
+          targetRecord.is_revoked = true;
+          targetRecord.revoked_at = new Date().toISOString();
+        }
+      } else {
+        // Yalnızca benden sil (DELETE FOR ME)
+        await session.sock.chatModify({
+          deleteForMe: {
+            key: targetKey,
+            timestamp: Date.now(),
+            deleteMedia: false,
+          }
+        }, key);
+
+        const list = store.messagesByChat.get(key) || [];
+        const at = list.findIndex((m) => m.wa_message_id === target_wa_message_id);
+        if (at !== -1) list.splice(at, 1);
+        try { store.rawMessagesByChat?.get(key)?.delete(target_wa_message_id); } catch {}
+      }
+
+      return {
+        success: true,
+        conversation_id: key,
+        wa_message_id: target_wa_message_id,
+        delete_type: isEveryone ? 'everyone' : 'for_me',
+        is_revoked: isEveryone,
+      };
+    },
+
+    /**
+     * Bir mesajı yıldızlar veya yıldızını kaldırır (WhatsApp Star Message).
+     */
+    async starMessage(sessionId, jid, { target_wa_message_id, target_from_me, participant_jid, star = true }) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!target_wa_message_id) throw new Error('target_wa_message_id is required');
+
+      let resolvedParticipant = participant_jid || null;
+      if (key.endsWith('@g.us') && !target_from_me) {
+        if (!resolvedParticipant) {
+          const cachedMsg = (store.messagesByChat.get(key) || []).find((m) => m.wa_message_id === target_wa_message_id);
+          resolvedParticipant = cachedMsg?.participant_jid || null;
+        }
+        if (!resolvedParticipant) {
+          const rawMsg = store.rawMessagesByChat?.get(key)?.get(target_wa_message_id);
+          resolvedParticipant = rawMsg?.key?.participant || null;
+        }
+      }
+
+      const starKey = {
+        remoteJid: key,
+        fromMe: Boolean(target_from_me),
+        id: target_wa_message_id,
+      };
+      if (key.endsWith('@g.us') && !target_from_me && resolvedParticipant) {
+        starKey.participant = resolvedParticipant;
+      }
+
+      await session.sock.star(key, [starKey], Boolean(star));
+
+      const list = store.messagesByChat.get(key) || [];
+      const targetRecord = list.find((m) => m.wa_message_id === target_wa_message_id);
+      if (targetRecord) {
+        targetRecord.is_starred = Boolean(star);
+        targetRecord.starred_at = star ? new Date().toISOString() : null;
+      }
+
+      return {
+        success: true,
+        conversation_id: key,
+        wa_message_id: target_wa_message_id,
+        is_starred: Boolean(star),
+      };
+    },
+
     async sendMediaMessage(sessionId, jid, { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id }) {
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
@@ -3076,14 +3234,20 @@ export function createSessionManager({
           const targetChatKey = normalizeJid(protoMsg.key.remoteJid || key);
           const chatMsgs = messagesByChat.get(targetChatKey) || [];
           const target = chatMsgs.find((m) => m.wa_message_id === targetWaId);
+          const revokedAt = new Date().toISOString();
           if (target) {
             target.body = '';
             target.is_deleted = true;
+            target.is_revoked = true;
+            target.revoked_at = revokedAt;
           }
           emitEvent({
             event: 'message_deleted',
             conversation_id: targetChatKey,
             wa_message_id: targetWaId,
+            delete_type: 'everyone',
+            is_revoked: true,
+            revoked_at: revokedAt,
           });
           return null;
         }

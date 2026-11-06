@@ -94,6 +94,7 @@ async def select_messages_keyset(
     base = select(Message).where(
         Message.conversation_id == conversation_id,
         get_user_filter(Message.user_id, user_id),
+        Message.is_deleted_for_me.is_(False),
     )
     if before_row is not None:
         cutoff = msg_time(before_row)
@@ -128,6 +129,7 @@ async def has_older_messages(
         select(Message.id).where(
             Message.conversation_id == conversation_id,
             get_user_filter(Message.user_id, user_id),
+            Message.is_deleted_for_me.is_(False),
             or_(
                 msg_time_col() < oldest_ts,
                 and_(msg_time_col() == oldest_ts, Message.id < oldest_row.id),
@@ -195,6 +197,13 @@ def build_message_from_gateway(
         is_forwarded=bool(msg.get("is_forwarded", False)),
         is_pinned=bool(msg.get("is_pinned", False)),
         is_edited=bool(msg.get("is_edited", False)),
+        edited_at=as_naive_utc(parse_dt(msg.get("edited_at"))),
+        is_revoked=bool(msg.get("is_revoked", False)),
+        revoked_at=as_naive_utc(parse_dt(msg.get("revoked_at"))),
+        is_deleted_for_me=bool(msg.get("is_deleted_for_me", False)),
+        deleted_for_me_at=as_naive_utc(parse_dt(msg.get("deleted_for_me_at"))),
+        is_starred=bool(msg.get("is_starred", False)),
+        starred_at=as_naive_utc(parse_dt(msg.get("starred_at"))),
         is_view_once=bool(
             msg.get("is_view_once", False)
             or (body in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))

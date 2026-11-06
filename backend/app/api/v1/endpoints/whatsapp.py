@@ -32,6 +32,12 @@ from backend.app.schemas.whatsapp import (
     WhatsAppLoadingGateResponse,
     WhatsAppMessageItem,
     WhatsAppMessagesResponse,
+    WhatsAppEditMessageRequest,
+    WhatsAppEditMessageResult,
+    WhatsAppDeleteMessageRequest,
+    WhatsAppDeleteMessageResult,
+    WhatsAppStarMessageRequest,
+    WhatsAppStarMessageResult,
     WhatsAppPairingCodeRequest,
     WhatsAppPairingCodeResponse,
     WhatsAppPairingQrResponse,
@@ -821,6 +827,105 @@ async def pin_message(
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppPinMessageResult(**result)
+
+
+@router.patch(
+    "/conversations/{conversation_id}/messages/{message_id}",
+    response_model=WhatsAppEditMessageResult,
+)
+async def edit_message(
+    conversation_id: int,
+    message_id: int,
+    payload: WhatsAppEditMessageRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppEditMessageResult:
+    """Mesajı düzenler (WhatsApp Web paritesi: Baileys protocolMessage edit)."""
+    try:
+        result = await whatsapp_service.edit_message(
+            db,
+            current_user.id,
+            conversation_id,
+            message_id,
+            payload.body,
+        )
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppEditMessageResult(**result)
+
+
+@router.delete(
+    "/conversations/{conversation_id}/messages/{message_id}",
+    response_model=WhatsAppDeleteMessageResult,
+)
+async def delete_message(
+    conversation_id: int,
+    message_id: int,
+    delete_type: str = Query("everyone", description="'everyone' | 'for_me'"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppDeleteMessageResult:
+    """Mesajı herkesten (REVOKE) veya yalnızca bu cihazdan (for_me) siler."""
+    try:
+        result = await whatsapp_service.delete_message(
+            db,
+            current_user.id,
+            conversation_id,
+            message_id,
+            delete_type=delete_type,
+        )
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppDeleteMessageResult(**result)
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/star",
+    response_model=WhatsAppStarMessageResult,
+)
+async def star_message(
+    conversation_id: int,
+    message_id: int,
+    payload: WhatsAppStarMessageRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppStarMessageResult:
+    """Mesajı yıldızlar veya yıldızı kaldırır (WhatsApp Star Message)."""
+    try:
+        result = await whatsapp_service.star_message(
+            db,
+            current_user.id,
+            conversation_id,
+            message_id,
+            star=payload.star,
+        )
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppStarMessageResult(**result)
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=WhatsAppSendResult)

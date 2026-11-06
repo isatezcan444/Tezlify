@@ -137,6 +137,8 @@ export interface ChatBubbleProps {
   onReply?: (message: Message) => void;
   onForward?: (message: Message) => void;
   onDelete?: (message: Message) => Promise<void> | void;
+  onEdit?: (message: Message, newBody: string) => Promise<void> | void;
+  onStar?: (message: Message, star: boolean) => Promise<void> | void;
   onEnterSelectMode?: (initialMessageId?: number | string) => void;
   onPrivateReply?: (message: Message) => void;
   onDirectMessageSender?: (senderPhone: string, senderName?: string) => void;
@@ -160,6 +162,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   onReply,
   onForward,
   onDelete,
+  onEdit,
+  onStar,
   onEnterSelectMode,
   onPrivateReply,
   onDirectMessageSender,
@@ -206,7 +210,24 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [mediaRetrying, setMediaRetrying] = useState(false);
   const [mediaRetryFailed, setMediaRetryFailed] = useState<boolean>(() => isPermanentlyExpired);
   const [copied, setCopied] = useState(false);
-  const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
+  const isRevoked = Boolean(message.is_revoked || (message.body || '').trim() === '[REVOKED]');
+  const [isEditing, setIsEditing] = useState(false);
+  const [editBody, setEditBody] = useState(message.body || '');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setEditBody(message.body || '');
+    }
+  }, [message.body, isEditing]);
+
+  const [isStarred, setIsStarred] = useState<boolean>(() => Boolean(message.is_starred) || isMessageStarred(message.id));
+  useEffect(() => {
+    if (typeof message.is_starred === 'boolean') {
+      setIsStarred(message.is_starred);
+    }
+  }, [message.is_starred]);
+
   const [isPinned, setIsPinned] = useState<boolean>(() => Boolean(message.is_pinned) || isMessagePinned(message.id));
   const isActuallyPinned = Boolean(message.is_pinned || isPinned);
 
@@ -221,7 +242,47 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
   // Tepki yalnizca KALICI (sayisal id'li) mesaja birakilabilir: iyimser satirin
   // henuz sunucu kimligi yoktur ve `/reactions` ucu ona 404 donerdi.
-  const canReact = !isSelectMode && Boolean(onReact) && typeof message.id === 'number' && message.id > 0;
+  const canReact = !isSelectMode && !isRevoked && Boolean(onReact) && typeof message.id === 'number' && message.id > 0;
+
+  const handleToggleStar = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsMenuOpen(false);
+    const nextStarred = !isStarred;
+    setIsStarred(nextStarred);
+    toggleMessageStar(message.id, message.conversation_id);
+    try {
+      if (onStar) {
+        await onStar(message, nextStarred);
+      }
+      toast.success(
+        nextStarred
+          ? t('whatsapp.messageStarred')
+          : t('whatsapp.messageUnstarred')
+      );
+    } catch (err: any) {
+      setIsStarred(!nextStarred);
+      toast.error(err?.message || t('common.error'));
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editBody.trim() || editBody === message.body) {
+      setIsEditing(false);
+      return;
+    }
+    setIsSavingEdit(true);
+    try {
+      if (onEdit) {
+        await onEdit(message, editBody.trim());
+      }
+      setIsEditing(false);
+      toast.success(t('whatsapp.messageEditedSuccess'));
+    } catch (err: any) {
+      toast.error(err?.message || t('common.error'));
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   const {
     isReactionBarOpen,
@@ -683,6 +744,18 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   );
 
   const renderMediaContent = () => {
+    if (isRevoked) {
+      const revokedText = isInbound
+        ? t('whatsapp.messageRevokedInbound')
+        : t('whatsapp.messageRevokedOutbound');
+      return (
+        <div className="flex items-center gap-1.5 py-0.5 text-xs italic text-slate-500 dark:text-slate-400 select-none">
+          <Ban className="w-3.5 h-3.5 shrink-0 opacity-70" />
+          <span>{revokedText}</span>
+        </div>
+      );
+    }
+
     const isViewOnce = Boolean(
       message.is_view_once ||
       message.body === '[VIEW_ONCE_PHOTO]' ||
@@ -1341,11 +1414,54 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       case 'TEXT':
       default: {
         const trimmed = (message.body || '').trim();
-        if (trimmed === '[REVOKED]') {
+        if (isRevoked || trimmed === '[REVOKED]') {
+          const revokedText = isInbound
+            ? t('whatsapp.messageRevokedInbound')
+            : t('whatsapp.messageRevokedOutbound');
           return (
             <div className="flex items-center gap-1.5 py-0.5 text-xs italic text-slate-500 dark:text-slate-400 select-none">
               <Ban className="w-3.5 h-3.5 shrink-0 opacity-70" />
-              <span>{t('whatsapp.previewRevoked')}</span>
+              <span>{revokedText}</span>
+            </div>
+          );
+        }
+        if (isEditing) {
+          return (
+            <div className="space-y-2 py-1 min-w-[220px]">
+              <textarea
+                value={editBody}
+                onChange={(e) => setEditBody(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleSaveEdit();
+                  } else if (e.key === 'Escape') {
+                    setIsEditing(false);
+                  }
+                }}
+                className="w-full text-xs p-2 rounded-lg bg-white/90 dark:bg-black/40 border border-slate-300 dark:border-white/20 focus:outline-none focus:ring-1 focus:ring-[#25D366] text-slate-900 dark:text-white resize-none"
+                rows={2}
+                autoFocus
+                disabled={isSavingEdit}
+              />
+              <div className="flex items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  disabled={isSavingEdit}
+                  onClick={() => setIsEditing(false)}
+                  className="px-2 py-1 text-[11px] font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  {t('whatsapp.editMessageCancel')}
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingEdit || !editBody.trim() || editBody === message.body}
+                  onClick={() => void handleSaveEdit()}
+                  className="px-2.5 py-1 text-[11px] font-medium rounded bg-[#00a884] hover:bg-[#06cf9c] text-white disabled:opacity-50 cursor-pointer"
+                >
+                  {isSavingEdit ? '...' : t('whatsapp.editMessageSave')}
+                </button>
+              </div>
             </div>
           );
         }
@@ -1631,72 +1747,96 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               className="z-[99999] py-1 bg-white dark:bg-[#233138] border border-black/5 dark:border-white/5 rounded-lg shadow-[0_2px_5px_0_rgba(11,20,26,.26),0_2px_10px_0_rgba(11,20,26,.16)] animate-in fade-in zoom-in-95 duration-100 flex flex-col text-[12.5px] select-none"
             >
               {/* 0. Mesaj Bilgisi (Info) — WhatsApp Web kuralı: giden mesajlarda daima ilk ögedir */}
-              {onOpenMessageInfo && !isInbound && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsMenuOpen(false);
-                    onOpenMessageInfo(message);
-                  }}
-                  data-testid={`menu-info-${message.id}`}
-                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
-                >
-                  {t('whatsapp.menuMessageInfo')}
-                </button>
-              )}
+              {isRevoked ? (
+                onDelete && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMenuOpen(false);
+                      void onDelete(message);
+                    }}
+                    data-testid={`menu-delete-${message.id}`}
+                    className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 active:bg-rose-100 dark:active:bg-rose-950/50 transition-colors cursor-pointer select-none font-normal"
+                  >
+                    {t('whatsapp.menuDelete')}
+                  </button>
+                )
+              ) : (
+                <>
+                  {onOpenMessageInfo && !isInbound && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMenuOpen(false);
+                        onOpenMessageInfo(message);
+                      }}
+                      data-testid={`menu-info-${message.id}`}
+                      className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
+                    >
+                      {t('whatsapp.menuMessageInfo')}
+                    </button>
+                  )}
 
-              {/* 1. Cevapla */}
-              {onReply && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsMenuOpen(false);
-                    onReply(message);
-                  }}
-                  data-testid={`menu-reply-${message.id}`}
-                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
-                >
-                  {t('whatsapp.menuReply')}
-                </button>
-              )}
+                  {/* 1. Cevapla */}
+                  {onReply && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMenuOpen(false);
+                        onReply(message);
+                      }}
+                      data-testid={`menu-reply-${message.id}`}
+                      className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
+                    >
+                      {t('whatsapp.menuReply')}
+                    </button>
+                  )}
 
-              {/* 2. İfade Bırak */}
-              {canReact && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsMenuOpen(false);
-                    setIsReactionBarOpen(true);
-                  }}
-                  data-testid={`menu-react-${message.id}`}
-                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
-                >
-                  {t('whatsapp.menuReact')}
-                </button>
-              )}
+                  {/* 1.5. Düzenle (Edit Outbound Message) */}
+                  {!isInbound && message.message_type === 'TEXT' && onEdit && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMenuOpen(false);
+                        setIsEditing(true);
+                        setEditBody(message.body || '');
+                      }}
+                      data-testid={`menu-edit-${message.id}`}
+                      className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
+                    >
+                      {t('whatsapp.menuEdit')}
+                    </button>
+                  )}
 
-              {/* 3. Yıldız Ekle / Yıldızı Kaldır */}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsMenuOpen(false);
-                  const nextStarred = toggleMessageStar(message.id, message.conversation_id);
-                  setIsStarred(nextStarred);
-                  toast.success(
-                    nextStarred
-                      ? t('whatsapp.messageStarred')
-                      : t('whatsapp.messageUnstarred')
-                  );
-                }}
-                data-testid={`menu-star-${message.id}`}
-                className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
-              >
-                {isStarred ? t('whatsapp.menuUnstar') : t('whatsapp.menuStar')}
-              </button>
+                  {/* 2. İfade Bırak */}
+                  {canReact && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMenuOpen(false);
+                        setIsReactionBarOpen(true);
+                      }}
+                      data-testid={`menu-react-${message.id}`}
+                      className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
+                    >
+                      {t('whatsapp.menuReact')}
+                    </button>
+                  )}
+
+                  {/* 3. Yıldız Ekle / Yıldızı Kaldır */}
+                  <button
+                    type="button"
+                    onClick={handleToggleStar}
+                    data-testid={`menu-star-${message.id}`}
+                    className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
+                  >
+                    {isStarred ? t('whatsapp.menuUnstar') : t('whatsapp.menuStar')}
+                  </button>
 
               {/* 4. Sabitle / Sabitlemeyi Kaldır */}
               <button
@@ -1889,6 +2029,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               >
                 {t('whatsapp.menuSelect')}
               </button>
+            </>
+          )}
             </div>,
             document.body
           )}

@@ -1673,6 +1673,35 @@ async def get_message_info(
     return await _messaging_orchestrator.get_message_info(db, user_id, conversation_id, message_id)
 
 
+async def edit_message(
+    db: AsyncSession, user_id: str, conversation_id: int, message_id: int, body: str
+) -> Dict[str, Any]:
+    """Düzenleme eylemi: giden mesajın metnini yerel ve WhatsApp protokolünde günceller."""
+    return await _messaging_orchestrator.edit_message(db, user_id, conversation_id, message_id, body)
+
+
+async def delete_message(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    message_id: int,
+    delete_type: str = "everyone",
+) -> Dict[str, Any]:
+    """Silme eylemi: mesajı herkesten (REVOKE) veya yalnızca benden siler."""
+    return await _messaging_orchestrator.delete_message(
+        db, user_id, conversation_id, message_id, delete_type=delete_type
+    )
+
+
+async def star_message(
+    db: AsyncSession, user_id: str, conversation_id: int, message_id: int, star: bool = True
+) -> Dict[str, Any]:
+    """Yıldızlama eylemi: mesajı yerel ve WhatsApp protokolünde yıldızlar veya yıldızı kaldırır."""
+    return await _messaging_orchestrator.star_message(
+        db, user_id, conversation_id, message_id, star=star
+    )
+
+
 async def refresh_all_avatars(db: AsyncSession, user_id: str, force: bool = False) -> Dict[str, Any]:
     """Sohbet listesinde eksik kalan profil fotoğrafları için gateway'de
     backfill sweep'i tetikler (QR sonrası parite: tüm fotoğraflar iner).

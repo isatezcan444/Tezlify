@@ -1678,6 +1678,110 @@ class WhatsAppEventOrchestrator:
             "pinned_until": target_msg.pinned_until.isoformat() if target_msg.pinned_until else None,
         }
 
+    async def _ingest_message_deleted(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Processes inbound message_deleted (singular / revoke) event from gateway socket."""
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        owner, session = await resolve_event_owner_and_session(db, event)
+        if not owner:
+            return _skip_event(event, "message_deleted: kiracı çözülemedi")
+
+        jid_str = event.get("conversation_id")
+        target_wa_id = event.get("wa_message_id") or event.get("target_wa_message_id")
+        if not target_wa_id:
+            return _skip_event(event, "message_deleted: hedef wa_message_id yok")
+
+        delete_type = str(event.get("delete_type") or "everyone").lower()
+        is_revoked = bool(event.get("is_revoked", delete_type == "everyone"))
+        now = utc_now_naive()
+
+        stmt = (
+            select(Message, Conversation)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.wa_message_id == str(target_wa_id),
+                get_user_filter(Conversation.user_id, owner),
+            )
+        )
+        row = (await db.execute(stmt)).first()
+        if not row:
+            return _skip_event(event, f"message_deleted: hedef mesaj #{target_wa_id} bulunamadı")
+
+        target_msg, conv = row
+        if is_revoked:
+            target_msg.is_revoked = True
+            target_msg.revoked_at = now
+            target_msg.body = ""
+            target_msg.media_id = None
+            target_msg.media_caption = None
+            target_msg.media_filename = None
+            target_msg.media_mime_type = None
+            if conv.last_message_preview and ("Bu mesaj" in conv.last_message_preview or not target_msg.direction or target_msg.direction.value == "OUTBOUND"):
+                conv.last_message_preview = "Bu mesaj silindi"
+        else:
+            target_msg.is_deleted_for_me = True
+            target_msg.deleted_for_me_at = now
+
+        await db.commit()
+
+        return {
+            "event": "message_deleted",
+            "user_id": owner,
+            "conversation_id": conv.id,
+            "jid": jid_str,
+            "message_id": target_msg.id,
+            "wa_message_id": str(target_wa_id),
+            "delete_type": "everyone" if is_revoked else "for_me",
+            "is_revoked": is_revoked,
+            "revoked_at": target_msg.revoked_at.isoformat() if target_msg.revoked_at else None,
+        }
+
+    async def _ingest_message_starred(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Processes inbound message_starred event from gateway socket."""
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        owner, session = await resolve_event_owner_and_session(db, event)
+        if not owner:
+            return _skip_event(event, "message_starred: kiracı çözülemedi")
+
+        jid_str = event.get("conversation_id")
+        target_wa_id = event.get("wa_message_id") or event.get("target_wa_message_id")
+        if not target_wa_id:
+            return _skip_event(event, "message_starred: hedef wa_message_id yok")
+
+        is_starred = bool(event.get("star", event.get("is_starred", True)))
+        now = utc_now_naive()
+
+        stmt = (
+            select(Message, Conversation)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.wa_message_id == str(target_wa_id),
+                get_user_filter(Conversation.user_id, owner),
+            )
+        )
+        row = (await db.execute(stmt)).first()
+        if not row:
+            return _skip_event(event, f"message_starred: hedef mesaj #{target_wa_id} bulunamadı")
+
+        target_msg, conv = row
+        target_msg.is_starred = is_starred
+        target_msg.starred_at = now if is_starred else None
+        await db.commit()
+
+        return {
+            "event": "message_starred",
+            "user_id": owner,
+            "conversation_id": conv.id,
+            "jid": jid_str,
+            "message_id": target_msg.id,
+            "wa_message_id": str(target_wa_id),
+            "is_starred": is_starred,
+            "starred_at": target_msg.starred_at.isoformat() if target_msg.starred_at else None,
+        }
+
     async def _ingest_message_receipt_updated(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
         """Processes inbound message_receipt_updated event from gateway socket.
 
@@ -3049,6 +3153,10 @@ class WhatsAppEventOrchestrator:
                     result = await ingest_conversation_deleted(db, event)
                 elif evt == "messages_deleted":
                     result = await self._ingest_messages_deleted(db, event)
+                elif evt == "message_deleted":
+                    result = await self._ingest_message_deleted(db, event)
+                elif evt == "message_starred":
+                    result = await self._ingest_message_starred(db, event)
                 elif evt == "message_reaction":
                     result = await self._ingest_message_reaction(db, event)
                 elif evt == "message_pinned":

@@ -256,6 +256,14 @@ class WhatsAppMessageItem(BaseModel):
     is_forwarded: bool = False
     is_pinned: bool = False
     is_view_once: bool = False
+    is_edited: bool = False
+    edited_at: Optional[str] = None
+    is_revoked: bool = False
+    revoked_at: Optional[str] = None
+    is_deleted_for_me: bool = False
+    deleted_for_me_at: Optional[str] = None
+    is_starred: bool = False
+    starred_at: Optional[str] = None
     pinned_at: Optional[str] = None
     pinned_until: Optional[str] = None
     sent_at: Optional[str] = None
@@ -379,6 +387,14 @@ class WhatsAppSendResult(BaseModel):
     is_forwarded: bool = False
     is_pinned: bool = False
     is_view_once: bool = False
+    is_edited: bool = False
+    edited_at: Optional[str] = None
+    is_revoked: bool = False
+    revoked_at: Optional[str] = None
+    is_deleted_for_me: bool = False
+    deleted_for_me_at: Optional[str] = None
+    is_starred: bool = False
+    starred_at: Optional[str] = None
     pinned_at: Optional[str] = None
     pinned_until: Optional[str] = None
 
@@ -409,6 +425,45 @@ class WhatsAppPinMessageResult(BaseModel):
     is_pinned: bool = True
     pinned_at: Optional[str] = None
     pinned_until: Optional[str] = None
+
+
+class WhatsAppEditMessageRequest(BaseModel):
+    body: str = Field(..., description="Yeni mesaj metni")
+
+
+class WhatsAppEditMessageResult(BaseModel):
+    success: bool = True
+    conversation_id: int
+    message_id: int
+    wa_message_id: Optional[str] = None
+    body: str
+    is_edited: bool = True
+    edited_at: Optional[str] = None
+    message: Optional[WhatsAppMessageItem] = None
+
+
+class WhatsAppDeleteMessageRequest(BaseModel):
+    delete_type: str = Field(default="everyone", description="'everyone' | 'for_me'")
+
+
+class WhatsAppDeleteMessageResult(BaseModel):
+    success: bool = True
+    conversation_id: int
+    message_id: int
+    wa_message_id: Optional[str] = None
+    delete_type: str = "everyone"
+
+
+class WhatsAppStarMessageRequest(BaseModel):
+    star: bool = Field(default=True, description="Mesaj yıldızlansın mı")
+
+
+class WhatsAppStarMessageResult(BaseModel):
+    success: bool = True
+    conversation_id: int
+    message_id: int
+    wa_message_id: Optional[str] = None
+    is_starred: bool = True
 
 
 class WhatsAppStartConversationRequest(BaseModel):

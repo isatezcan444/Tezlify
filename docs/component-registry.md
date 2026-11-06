@@ -563,6 +563,12 @@ restarting a service and shipping code are different risk classes.
 - **Portalled Dialog Invariant**: Portaled to `document.body` via `createPortal(..., document.body)` with `z-[99999]`. Handles Escape key dismiss, backdrop click, message snippet preview, and full i18n support.
 - **Import**: `import { PinDurationModal } from '@/features/whatsapp/components';`
 
+### `DeleteMessageModal` (`features/whatsapp/components/DeleteMessageModal.tsx`)
+- **Purpose**: Authenticated modal dialog for selecting message deletion scope ('everyone' / REVOKE vs. 'for_me') before dispatching native Baileys protocol delete/revoke actions.
+- **Props**: `{ isOpen: boolean; onClose: () => void; onConfirm: (deleteType: 'everyone' | 'for_me') => Promise<void> | void; message?: Message | null; isSubmitting?: boolean }`
+- **Portalled Dialog Invariant**: Portaled to `document.body` via `createPortal(..., document.body)` with `z-[99999]`. Handles Escape key dismiss, backdrop click, message snippet preview, and full i18n support.
+- **Import**: `import { DeleteMessageModal } from '@/features/whatsapp/components';`
+
 ### `PinnedMessagesBar` (`features/whatsapp/components/PinnedMessagesBar.tsx`)
 - **Purpose**: Sticky header bar placed immediately above the chat thread to display active pinned messages, message previews, multi-pin pagination counters (`1/3`), jump-to-message smooth scroll navigation, and direct unpin triggers.
 - **Props**: `{ pinnedMessages: Message[]; onJumpToMessage: (message: Message) => void; onUnpinMessage?: (message: Message) => void; className?: string }`

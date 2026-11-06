@@ -159,27 +159,28 @@ def serialize_message(
     is_media_expired = (getattr(row, "error_message", None) == "MEDIA_EXPIRED")
     media_key = None if (is_failed_outbound or is_media_expired) else (row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None))
     media_url = f"/api/v1/whatsapp/media/{media_key}" if media_key else None
+    is_revoked = bool(getattr(row, "is_revoked", False))
     return {
         "id": row.id,
         "conversation_id": row.conversation_id,
         "direction": row.direction.value if hasattr(row.direction, "value") else str(row.direction),
         "message_type": row.message_type.value if hasattr(row.message_type, "value") else str(row.message_type),
         "status": row.status.value if hasattr(row.status, "value") else str(row.status),
-        "body": row.body,
-        "media_id": row.media_id,
-        "media_mime_type": row.media_mime_type,
-        "media_filename": row.media_filename,
-        "media_caption": row.media_caption,
-        "media_url": media_url,
+        "body": "" if is_revoked else row.body,
+        "media_id": None if is_revoked else row.media_id,
+        "media_mime_type": None if is_revoked else row.media_mime_type,
+        "media_filename": None if is_revoked else row.media_filename,
+        "media_caption": None if is_revoked else row.media_caption,
+        "media_url": None if is_revoked else media_url,
         "wa_message_id": row.wa_message_id,
         "client_message_id": row.client_message_id,
         "sender_phone": row.sender_phone,
         "sender_name": row.sender_name,
         "recipient_phone": row.recipient_phone,
         "error_message": row.error_message,
-        "reactions": reactions or [],
-        "link_preview": preview or None,
-        "quoted_message": getattr(row, "quoted_message", None),
+        "reactions": [] if is_revoked else (reactions or []),
+        "link_preview": None if is_revoked else (preview or None),
+        "quoted_message": None if is_revoked else getattr(row, "quoted_message", None),
         "is_forwarded": bool(getattr(row, "is_forwarded", False)),
         "is_pinned": bool(getattr(row, "is_pinned", False)),
         "pinned_at": row.pinned_at.isoformat() if getattr(row, "pinned_at", None) else None,
@@ -190,6 +191,12 @@ def serialize_message(
         ),
         "is_edited": bool(getattr(row, "is_edited", False)),
         "edited_at": row.edited_at.isoformat() if getattr(row, "edited_at", None) else None,
+        "is_revoked": is_revoked,
+        "revoked_at": row.revoked_at.isoformat() if getattr(row, "revoked_at", None) else None,
+        "is_deleted_for_me": bool(getattr(row, "is_deleted_for_me", False)),
+        "deleted_for_me_at": row.deleted_for_me_at.isoformat() if getattr(row, "deleted_for_me_at", None) else None,
+        "is_starred": bool(getattr(row, "is_starred", False)),
+        "starred_at": row.starred_at.isoformat() if getattr(row, "starred_at", None) else None,
         "sent_at": row.sent_at.isoformat() if getattr(row, "sent_at", None) else None,
         "delivered_at": row.delivered_at.isoformat() if getattr(row, "delivered_at", None) else None,
         "read_at": row.read_at.isoformat() if getattr(row, "read_at", None) else None,
@@ -392,6 +399,7 @@ class WhatsAppMessagingOrchestrator:
             await ws_mgr.broadcast_to_user(
                 user_id,
                 {
+                    "event": "message_pinned",
                     "type": "message_pinned",
                     "conversation_id": conv.id,
                     "message_id": target.id,
@@ -413,6 +421,266 @@ class WhatsAppMessagingOrchestrator:
             "is_pinned": target.is_pinned,
             "pinned_at": target.pinned_at.isoformat() if target.pinned_at else None,
             "pinned_until": target.pinned_until.isoformat() if target.pinned_until else None,
+        }
+
+    async def edit_message(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+        body: str,
+    ) -> Dict[str, Any]:
+        """Edits an existing outbound message with native Baileys protocol."""
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conversation_session = self._get_helper("_conversation_session", _conversation_session)
+        gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
+        gateway_client = self._get_helper("gw", gw)
+
+        conv, jid = await resolve_jid(db, user_id, conversation_id)
+        stmt = (
+            select(Message)
+            .where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+            )
+        )
+        target = (await db.execute(stmt)).scalar_one_or_none()
+        if not target:
+            raise LookupError(f"Mesaj #{message_id} bulunamadı.")
+
+        if target.direction != MessageDirection.OUTBOUND:
+            raise ValueError("Yalnızca kendi gönderdiğiniz mesajları düzenleyebilirsiniz.")
+
+        if target.is_revoked:
+            raise ValueError("Silinmiş bir mesaj düzenlenemez.")
+
+        if not target.wa_message_id:
+            raise ValueError("Bu mesaja henüz düzenleme uygulanamaz (sağlayıcı kimliği yok).")
+
+        session_row = await conversation_session(db, user_id, conv)
+        await gateway_op_or_mark_relink(
+            db,
+            session_row,
+            lambda gid: gateway_client.edit_message(
+                gid,
+                jid,
+                target_wa_message_id=target.wa_message_id,
+                text=body,
+                target_from_me=True,
+            ),
+        )
+
+        now = utc_now_naive()
+        target.body = body
+        target.is_edited = True
+        target.edited_at = now
+
+        await db.commit()
+        await db.refresh(target)
+
+        try:
+            ws_mgr = self._get_helper("ws_manager", ws_manager)
+            serialized = serialize_message(target)
+            await ws_mgr.broadcast_to_user(
+                user_id,
+                {
+                    "event": "message_new",
+                    "type": "message_new",
+                    "conversation_id": conv.id,
+                    "upsert_type": "replace",
+                    "message": serialized,
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "conversation_id": conv.id,
+            "message_id": target.id,
+            "wa_message_id": target.wa_message_id,
+            "body": target.body,
+            "is_edited": True,
+            "edited_at": target.edited_at.isoformat() if target.edited_at else None,
+            "message": serialized,
+        }
+
+    async def delete_message(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+        delete_type: str = "everyone",
+    ) -> Dict[str, Any]:
+        """Deletes a message either for everyone (REVOKE) or for me with native Baileys protocol."""
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conversation_session = self._get_helper("_conversation_session", _conversation_session)
+        gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
+        gateway_client = self._get_helper("gw", gw)
+
+        conv, jid = await resolve_jid(db, user_id, conversation_id)
+        stmt = (
+            select(Message)
+            .where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+            )
+        )
+        target = (await db.execute(stmt)).scalar_one_or_none()
+        if not target:
+            raise LookupError(f"Mesaj #{message_id} bulunamadı.")
+
+        if not target.wa_message_id:
+            raise ValueError("Bu mesaja henüz silme uygulanamaz (sağlayıcı kimliği yok).")
+
+        is_everyone = str(delete_type or "everyone").strip().lower() == "everyone"
+        if is_everyone and target.direction != MessageDirection.OUTBOUND and not conv.is_group:
+            raise ValueError("Karşı taraftan gelen mesajlar yalnızca kendi görünümünüzden silinebilir.")
+
+        participant_jid = None
+        if conv.is_group and target.direction == MessageDirection.INBOUND and target.sender_phone:
+            sp = target.sender_phone.strip()
+            participant_jid = sp if "@" in sp else f"{re.sub(r'[^\\d]', '', sp)}@s.whatsapp.net"
+
+        session_row = await conversation_session(db, user_id, conv)
+        await gateway_op_or_mark_relink(
+            db,
+            session_row,
+            lambda gid: gateway_client.delete_message(
+                gid,
+                jid,
+                target_wa_message_id=target.wa_message_id,
+                target_from_me=target.direction == MessageDirection.OUTBOUND,
+                delete_type="everyone" if is_everyone else "for_me",
+                participant_jid=participant_jid,
+            ),
+        )
+
+        now = utc_now_naive()
+        if is_everyone:
+            target.is_revoked = True
+            target.revoked_at = now
+            target.body = ""
+            target.media_id = None
+            target.media_caption = None
+            target.media_filename = None
+            target.media_mime_type = None
+            if conv.last_message_preview and ("Bu mesaj" in conv.last_message_preview or not target.direction or target.direction.value == "OUTBOUND"):
+                conv.last_message_preview = "Bu mesaj silindi"
+        else:
+            target.is_deleted_for_me = True
+            target.deleted_for_me_at = now
+
+        await db.commit()
+        await db.refresh(target)
+
+        try:
+            ws_mgr = self._get_helper("ws_manager", ws_manager)
+            await ws_mgr.broadcast_to_user(
+                user_id,
+                {
+                    "event": "message_deleted",
+                    "type": "message_deleted",
+                    "conversation_id": conv.id,
+                    "message_id": target.id,
+                    "wa_message_id": target.wa_message_id,
+                    "delete_type": "everyone" if is_everyone else "for_me",
+                    "is_revoked": is_everyone,
+                    "revoked_at": target.revoked_at.isoformat() if target.revoked_at else None,
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "conversation_id": conv.id,
+            "message_id": target.id,
+            "wa_message_id": target.wa_message_id,
+            "delete_type": "everyone" if is_everyone else "for_me",
+            "is_revoked": is_everyone,
+        }
+
+    async def star_message(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+        star: bool = True,
+    ) -> Dict[str, Any]:
+        """Stars or unstars a message with native Baileys protocol."""
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conversation_session = self._get_helper("_conversation_session", _conversation_session)
+        gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
+        gateway_client = self._get_helper("gw", gw)
+
+        conv, jid = await resolve_jid(db, user_id, conversation_id)
+        stmt = (
+            select(Message)
+            .where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+            )
+        )
+        target = (await db.execute(stmt)).scalar_one_or_none()
+        if not target:
+            raise LookupError(f"Mesaj #{message_id} bulunamadı.")
+
+        if not target.wa_message_id:
+            raise ValueError("Bu mesaja henüz yıldızlama uygulanamaz (sağlayıcı kimliği yok).")
+
+        participant_jid = None
+        if conv.is_group and target.direction == MessageDirection.INBOUND and target.sender_phone:
+            sp = target.sender_phone.strip()
+            participant_jid = sp if "@" in sp else f"{re.sub(r'[^\\d]', '', sp)}@s.whatsapp.net"
+
+        session_row = await conversation_session(db, user_id, conv)
+        await gateway_op_or_mark_relink(
+            db,
+            session_row,
+            lambda gid: gateway_client.star_message(
+                gid,
+                jid,
+                target_wa_message_id=target.wa_message_id,
+                target_from_me=target.direction == MessageDirection.OUTBOUND,
+                star=star,
+                participant_jid=participant_jid,
+            ),
+        )
+
+        now = utc_now_naive()
+        target.is_starred = bool(star)
+        target.starred_at = now if star else None
+
+        await db.commit()
+        await db.refresh(target)
+
+        try:
+            ws_mgr = self._get_helper("ws_manager", ws_manager)
+            await ws_mgr.broadcast_to_user(
+                user_id,
+                {
+                    "event": "message_starred",
+                    "type": "message_starred",
+                    "conversation_id": conv.id,
+                    "message_id": target.id,
+                    "wa_message_id": target.wa_message_id,
+                    "is_starred": target.is_starred,
+                    "starred_at": target.starred_at.isoformat() if target.starred_at else None,
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "conversation_id": conv.id,
+            "message_id": target.id,
+            "wa_message_id": target.wa_message_id,
+            "is_starred": target.is_starred,
         }
 
     @profiled("send_text")

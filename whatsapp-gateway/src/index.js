@@ -748,6 +748,45 @@ app.post('/sessions/:sessionId/conversations/:jid/pin', withSession(async (req, 
   res.status(200).json(result);
 }));
 
+// Edit an existing message
+app.post('/sessions/:sessionId/conversations/:jid/messages/:messageId/edit', withSession(async (req, res, sessionId) => {
+  const { text, target_from_me = true } = req.body || {};
+  if (!text) {
+    return res.status(400).json({ error: 'text is required' });
+  }
+  const result = await sessionManager.editMessage(sessionId, req.params.jid, {
+    target_wa_message_id: req.params.messageId,
+    target_from_me,
+    text,
+  });
+  res.status(200).json(result);
+}));
+
+// Delete an existing message (everyone or for_me)
+app.delete('/sessions/:sessionId/conversations/:jid/messages/:messageId', withSession(async (req, res, sessionId) => {
+  const deleteType = req.query.delete_type || req.body?.delete_type || 'everyone';
+  const { target_from_me, participant_jid } = req.body || {};
+  const result = await sessionManager.deleteMessage(sessionId, req.params.jid, {
+    target_wa_message_id: req.params.messageId,
+    target_from_me,
+    participant_jid,
+    delete_type: deleteType,
+  });
+  res.status(200).json(result);
+}));
+
+// Star or unstar an existing message
+app.post('/sessions/:sessionId/conversations/:jid/messages/:messageId/star', withSession(async (req, res, sessionId) => {
+  const { star = true, target_from_me, participant_jid } = req.body || {};
+  const result = await sessionManager.starMessage(sessionId, req.params.jid, {
+    target_wa_message_id: req.params.messageId,
+    target_from_me,
+    participant_jid,
+    star: Boolean(star),
+  });
+  res.status(200).json(result);
+}));
+
 // Typing indicator ("yazıyor…")
 app.post('/sessions/:sessionId/conversations/:jid/typing', withSession(async (req, res, sessionId) => {
   const { typing = true, duration_ms = 4000 } = req.body || {};

@@ -27,3 +27,4 @@ export * from './ChatMessageInfoDrawer';
 export * from './AiSuggestPopover';
 export * from './AiSmartReplyBar';
 export * from './WarmupModal';
+export * from './DeleteMessageModal';

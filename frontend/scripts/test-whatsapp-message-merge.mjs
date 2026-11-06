@@ -95,5 +95,29 @@ const futureUrl = 'https://pps.whatsapp.net/v/t61.24694-24/test.jpg?oe=7FFFFFFF'
 assert.equal(isWhatsAppUrlExpired(futureUrl), false);
 assert.equal(resolveMediaUrl(futureUrl), futureUrl);
 
+// --- Message Actions: Revoke, Edit, Delete For Me, Star ---
+const originalMsg = { ...base, id: 50, wa_message_id: 'wa_act_50', body: 'Sensitive message', status: 'DELIVERED' };
+const revokedUpdate = { ...base, id: 50, wa_message_id: 'wa_act_50', body: '', is_revoked: true, revoked_at: '2026-11-06T12:00:00Z', status: 'DELIVERED' };
+const mergedRevoked = mergeWhatsAppMessages([originalMsg], [revokedUpdate]);
+assert.equal(mergedRevoked.length, 1);
+assert.equal(mergedRevoked[0].is_revoked, true);
+assert.equal(mergedRevoked[0].body, '');
+
+const editedUpdate = { ...base, id: 51, wa_message_id: 'wa_act_51', body: 'Updated text', is_edited: true, edited_at: '2026-11-06T12:05:00Z', status: 'DELIVERED' };
+const mergedEdited = mergeWhatsAppMessages([{ ...base, id: 51, wa_message_id: 'wa_act_51', body: 'Old text', status: 'DELIVERED' }], [editedUpdate]);
+assert.equal(mergedEdited.length, 1);
+assert.equal(mergedEdited[0].body, 'Updated text');
+assert.equal(mergedEdited[0].is_edited, true);
+
+const deleteForMeUpdate = { ...base, id: 52, wa_message_id: 'wa_act_52', is_deleted_for_me: true, status: 'DELIVERED' };
+const mergedDeletedForMe = mergeWhatsAppMessages([{ ...base, id: 52, wa_message_id: 'wa_act_52', body: 'To hide', status: 'DELIVERED' }], [deleteForMeUpdate]);
+assert.equal(mergedDeletedForMe.length, 0, 'Message with is_deleted_for_me must be filtered out');
+
+const starUpdate = { ...base, id: 53, wa_message_id: 'wa_act_53', is_starred: true, starred_at: '2026-11-06T12:10:00Z', status: 'DELIVERED' };
+const mergedStarred = mergeWhatsAppMessages([{ ...base, id: 53, wa_message_id: 'wa_act_53', is_starred: false, status: 'DELIVERED' }], [starUpdate]);
+assert.equal(mergedStarred.length, 1);
+assert.equal(mergedStarred[0].is_starred, true);
+
 console.log('Identity/status/reconnect retention PASS; 1200+pending merge ms:', performance.now() - start);
 console.log('Media retention and resolveMediaUrl PASS');
+console.log('Message actions (revoke, edit, delete_for_me, star) merge PASS');

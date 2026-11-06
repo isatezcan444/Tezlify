@@ -87,6 +87,8 @@ export interface ChatThreadProps {
   onReply?: (message: Message) => void;
   onForward?: (message: Message) => void;
   onDeleteMessage?: (message: Message) => Promise<void> | void;
+  onEditMessage?: (message: Message, newBody: string) => Promise<void> | void;
+  onStarMessage?: (message: Message, star: boolean) => Promise<void> | void;
   onEnterSelectMode?: (initialMessageId?: number | string) => void;
   onPrivateReply?: (message: Message) => void;
   onDirectMessageSender?: (senderPhone: string, senderName?: string) => void;
@@ -144,6 +146,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   onReply,
   onForward,
   onDeleteMessage,
+  onEditMessage,
+  onStarMessage,
   onEnterSelectMode,
   onPrivateReply,
   onDirectMessageSender,
@@ -1025,6 +1029,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         onReply={onReply}
         onForward={onForward}
         onDelete={onDeleteMessage}
+        onEdit={onEditMessage}
+        onStar={onStarMessage}
         onEnterSelectMode={onEnterSelectMode}
         onPrivateReply={onPrivateReply}
         onDirectMessageSender={onDirectMessageSender}

@@ -73,6 +73,10 @@ class ConnectionManager:
             self.disconnect(dead)
         return sent
 
+    async def broadcast_to_user(self, user_id: Any, message: Dict[str, Any]) -> int:
+        """Alias for broadcast(message, target_user_id=user_id) for convenience."""
+        return await self.broadcast(message, target_user_id=user_id)
+
 
 ws_manager = ConnectionManager()
 

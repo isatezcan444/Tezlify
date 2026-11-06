@@ -601,6 +601,12 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_view_once BOOLEAN DEFAULT FALSE"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT FALSE"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_revoked BOOLEAN DEFAULT FALSE"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_deleted_for_me BOOLEAN DEFAULT FALSE"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_for_me_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_starred BOOLEAN DEFAULT FALSE"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS starred_at TIMESTAMP"))
                 # Idempotency belongs to one conversation/line. A global
                 # client_message_id constraint lets tenant A collide with
                 # tenant B and contradicts the scoped lookup in messaging.py.
@@ -703,6 +709,24 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
             if "edited_at" not in columns:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN edited_at DATETIME"))
                 logger.info("[MIGRATION] Added messages.edited_at")
+            if "is_revoked" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN is_revoked BOOLEAN DEFAULT 0"))
+                logger.info("[MIGRATION] Added messages.is_revoked")
+            if "revoked_at" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN revoked_at DATETIME"))
+                logger.info("[MIGRATION] Added messages.revoked_at")
+            if "is_deleted_for_me" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN is_deleted_for_me BOOLEAN DEFAULT 0"))
+                logger.info("[MIGRATION] Added messages.is_deleted_for_me")
+            if "deleted_for_me_at" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN deleted_for_me_at DATETIME"))
+                logger.info("[MIGRATION] Added messages.deleted_for_me_at")
+            if "is_starred" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN is_starred BOOLEAN DEFAULT 0"))
+                logger.info("[MIGRATION] Added messages.is_starred")
+            if "starred_at" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN starred_at DATETIME"))
+                logger.info("[MIGRATION] Added messages.starred_at")
 
             tolga_quoted_data = json.dumps({
                 "stanza_id": "3EB0C0CEB4CC782A77EEB4",
