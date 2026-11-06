@@ -764,8 +764,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       setImageLoaded(false);
                       setImageLoadError(true);
                       setMediaRetrying(false);
-                      if (mediaWaId && mediaRetryTs) {
+                      if (mediaWaId) {
                         markMediaExpired(mediaWaId);
+                      }
+                      if (mediaRetryTs) {
                         setMediaRetryFailed(true);
                       }
                     }}
@@ -930,6 +932,14 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 src={resolvedMediaUrl}
                 mimeType={message.media_mime_type}
                 isOutbound={!isInbound}
+                onError={() => {
+                  if (mediaWaId) {
+                    markMediaExpired(mediaWaId);
+                  }
+                  if (mediaRetryTs) {
+                    setMediaRetryFailed(true);
+                  }
+                }}
               />
             ) : (
               <div className="flex items-center space-x-2.5 p-2 rounded-xl bg-black/5 dark:bg-white/[0.06]">
@@ -995,8 +1005,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onError={() => {
                       setVideoLoadError(true);
                       setMediaRetrying(false);
-                      if (mediaWaId && mediaRetryTs) {
+                      if (mediaWaId) {
                         markMediaExpired(mediaWaId);
+                      }
+                      if (mediaRetryTs) {
                         setMediaRetryFailed(true);
                       }
                       notifyVideoEnded();

@@ -758,6 +758,7 @@ async def list_conversations(
     conv_ids = [r.id for r in rows]
     counts_map: Dict[int, int] = {}
     newest_msg_map: Dict[int, Any] = {}
+    newest_body_map: Dict[int, str] = {}
     if conv_ids:
         cnt_res = await db.execute(
             select(
@@ -772,6 +773,52 @@ async def list_conversations(
             counts_map[cid] = int(n)
             if newest_ts is not None:
                 newest_msg_map[cid] = newest_ts
+
+        try:
+            subq = (
+                select(
+                    Message.conversation_id,
+                    func.max(func.coalesce(Message.external_timestamp, Message.created_at)).label("max_ts"),
+                )
+                .where(Message.conversation_id.in_(conv_ids))
+                .group_by(Message.conversation_id)
+                .subquery()
+            )
+            latest_id_subq = (
+                select(
+                    Message.conversation_id,
+                    func.max(Message.id).label("max_id"),
+                )
+                .join(
+                    subq,
+                    and_(
+                        Message.conversation_id == subq.c.conversation_id,
+                        func.coalesce(Message.external_timestamp, Message.created_at) == subq.c.max_ts,
+                    ),
+                )
+                .group_by(Message.conversation_id)
+                .subquery()
+            )
+            latest_msgs_stmt = (
+                select(
+                    Message.conversation_id,
+                    Message.body,
+                    Message.media_caption,
+                    Message.message_type,
+                )
+                .join(latest_id_subq, Message.id == latest_id_subq.c.max_id)
+            )
+            latest_res = await db.execute(latest_msgs_stmt)
+            for cid, body, caption, mtype in latest_res.fetchall():
+                clean_body = (body or "").strip()
+                clean_caption = (caption or "").strip()
+                type_name = getattr(mtype, "value", mtype) or ""
+                preview_text = clean_body or clean_caption
+                if not preview_text and type_name and str(type_name).upper() != "TEXT":
+                    preview_text = f"[{str(type_name).upper()}]"
+                newest_body_map[cid] = _normalize_preview_text(None, preview_text) or ""
+        except Exception as lms_exc:
+            logger.debug("Latest message lookup for preview comparison failed: %s", lms_exc)
 
     # Liste rozeti: her sohbetin EN SON mesajina birakilan EN YENI ifade.
     # Tek sorgu; eski bir mesaja birakilan ifadeyi liste gostermez (kural
@@ -931,13 +978,18 @@ async def list_conversations(
         # bosluklari yakalar.
         history_gap_seconds: Optional[int] = None
         newest_at = newest_msg_map.get(r.id)
+        newest_body = newest_body_map.get(r.id, "")
         if msg_count and r.last_message_at is not None and newest_at is not None:
             try:
                 gap = (r.last_message_at - newest_at).total_seconds()
             except TypeError:
                 gap = None
             if gap is not None and gap > HISTORY_GAP_THRESHOLD_SECONDS:
-                history_gap_seconds = int(gap)
+                conv_norm_preview = _normalize_preview_text(None, r.last_message_preview) or ""
+                newest_norm_preview = _normalize_preview_text(None, newest_body) or ""
+                is_same_preview = bool(conv_norm_preview and newest_norm_preview and conv_norm_preview == newest_norm_preview)
+                if not is_same_preview and conv_norm_preview:
+                    history_gap_seconds = int(gap)
         if msg_count == 0 and (r.last_message_at is not None or preview):
             # UNSYNCED: sohbetin AKTIVITE KANITI var (WhatsApp'in sohbet
             # listesinden gelen `last_message_at` ve/veya ozet) ama elimizde

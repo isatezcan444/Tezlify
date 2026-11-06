@@ -7,6 +7,7 @@ export interface VoiceNotePlayerProps {
   src: string;
   mimeType?: string;
   isOutbound?: boolean;
+  onError?: () => void;
 }
 
 const PLAYBACK_RATES = [1, 1.5, 2] as const;
@@ -15,6 +16,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
   src,
   mimeType = 'audio/ogg',
   isOutbound = false,
+  onError: onErrorProp,
 }) => {
   const { t } = useI18n();
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -90,6 +92,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
       setAudioError(true);
       setIsPlaying(false);
       notifyEnded();
+      onErrorProp?.();
     };
 
     audio.addEventListener('timeupdate', onTimeUpdate);

@@ -382,7 +382,7 @@ async def test_history_gap_reported_when_newest_row_lags_the_stamp():
     kapsadığı için bu durumu görünür kılan tek şey bu alandır.
     """
     contact_id, lagging_id = await _seed_session_and_group(
-        preview="eski mesaj", last_message_at=_ts(12, 0)
+        preview="yeni mesaj", last_message_at=_ts(12, 0)
     )
     async with AsyncSessionLocal() as db:
         db.add(
@@ -397,7 +397,7 @@ async def test_history_gap_reported_when_newest_row_lags_the_stamp():
                 external_timestamp=_ts(10, 0),
             )
         )
-        # Kontrol: en yeni satır damgayla AYNI olan sohbet boşluk bildirmemeli.
+        # Kontrol 1: en yeni satır damgayla AYNI olan sohbet boşluk bildirmemeli.
         c2 = Contact(user_id=TEST_USER, phone_e164="+905550001188", display_name="Guncel")
         db.add(c2)
         await db.flush()
@@ -423,8 +423,37 @@ async def test_history_gap_reported_when_newest_row_lags_the_stamp():
                 external_timestamp=_ts(11, 30),
             )
         )
+
+        # Kontrol 2: Damga ileri taşınmış (ör. okundu/aktivite) ama en yeni mesaj metni
+        # önizlemeyle AYNI olan sohbet SAHTE boşluk bildirmemeli.
+        c3 = Contact(user_id=TEST_USER, phone_e164="+905550001199", display_name="AyniOzet")
+        db.add(c3)
+        await db.flush()
+        same_preview_conv = Conversation(
+            user_id=TEST_USER,
+            contact_id=c3.id,
+            channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE,
+            last_message_preview="selam",
+            last_message_at=_ts(12, 0),
+        )
+        db.add(same_preview_conv)
+        await db.flush()
+        db.add(
+            Message(
+                user_id=TEST_USER,
+                conversation_id=same_preview_conv.id,
+                direction=MessageDirection.INBOUND,
+                message_type=MessageType.TEXT,
+                body="selam",
+                sender_phone="+905550001199",
+                recipient_phone="ME",
+                external_timestamp=_ts(10, 0),
+            )
+        )
         await db.commit()
         in_sync_id = in_sync_conv.id
+        same_preview_id = same_preview_conv.id
 
     async with AsyncSessionLocal() as db:
         items, _ = await list_conversations(db, TEST_USER)
@@ -433,11 +462,14 @@ async def test_history_gap_reported_when_newest_row_lags_the_stamp():
     lagging = by_id[lagging_id]
     assert lagging["message_count"] == 1
     assert lagging["last_message_state"] == "RESOLVED"
-    # 12:00 damga - 10:00 en yeni satır = 7200 sn
+    # 12:00 damga - 10:00 en yeni satır = 7200 sn (çünkü yeni mesaj önizlemesi ile eski mesaj gövdesi uyuşmuyor)
     assert lagging["history_gap_seconds"] == 7200
 
     in_sync = by_id[in_sync_id]
     assert in_sync["history_gap_seconds"] is None
+
+    same_preview = by_id[same_preview_id]
+    assert same_preview["history_gap_seconds"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -275,6 +275,23 @@ export function readAppStateProgress(sessionDir) {
 }
 
 /**
+ * Returns true if all 5 app-state collections exist on disk with valid non-zero size.
+ * Positive evidence that all collections have been previously decoded and verified.
+ */
+export function areAllAppStateVersionsPresent(sessionDir) {
+  if (!sessionDir) return false;
+  for (const name of APPSTATE_PATCH_NAMES) {
+    try {
+      const st = fs.statSync(path.join(sessionDir, `app-state-sync-version-${name}.json`));
+      if (!st.size || st.size <= 0) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Retry the app-state sync until the collections are demonstrably alive.
  *
  * Stopping rule: POSITIVE evidence (`store.appStateHealthy`), not the absence of
@@ -302,8 +319,10 @@ function scheduleAppStateRearm(manager, session, store, sessionDir) {
       return;
     }
     const before = readAppStateProgress(sessionDir);
+    let resyncOk = false;
     try {
       await session.sock.resyncAppState(APPSTATE_PATCH_NAMES, false);
+      resyncOk = true;
       logger.info(
         { session_ref: sessionRef(session.id), attempt: attempts + 1 },
         'App-state re-arm resync completed',
@@ -315,13 +334,18 @@ function scheduleAppStateRearm(manager, session, store, sessionDir) {
       );
     }
     const after = readAppStateProgress(sessionDir);
-    if (before !== null && after !== null && after !== before) {
-      // The decode advanced a collection: app-state is alive, stop retrying.
+    const advanced = before !== null && after !== null && after !== before;
+    const allPresent = areAllAppStateVersionsPresent(sessionDir);
+
+    if (advanced || (resyncOk && allPresent)) {
+      // Either decode advanced a collection, or resync completed cleanly
+      // and all 5 collection version files are verified on disk.
+      // App-state is healthy, stop retrying.
       store.appStateHealthy = true;
       store._appStateRearmCount = 0;
       logger.info(
-        { session_ref: sessionRef(session.id), attempt: attempts + 1 },
-        'App-state collections advanced; recovery complete',
+        { session_ref: sessionRef(session.id), attempt: attempts + 1, advanced, allPresent },
+        'App-state collections healthy; recovery complete',
       );
       return;
     }
@@ -4612,10 +4636,14 @@ export function createSessionManager({
       session = this._sess(session);
       if (!session) return;
       const store = this._storeOf(session);
+      const sessionDir = getSessionDir(sessionsDir, session.id);
+      if (store.appStateHealthy === true && areAllAppStateVersionsPresent(sessionDir)) {
+        return;
+      }
       store.appStateHealthy = false;
       store._appStateRearmCount = 0;
       if (!shouldRearmAppState(session, store)) return;
-      scheduleAppStateRearm(this, session, store, getSessionDir(sessionsDir, session.id));
+      scheduleAppStateRearm(this, session, store, sessionDir);
     },
 
     async _ensureGroupSubjects({ sessionId, force = false, extraJids = [] } = {}) {
@@ -4863,7 +4891,7 @@ export function createSessionManager({
           } finally {
             session._groupSubjectsInFlight = false;
           }
-          if (typeof session.sock?.resyncAppState === 'function') {
+          if (store?.appStateHealthy !== true && typeof session.sock?.resyncAppState === 'function') {
             try {
               await session.sock.resyncAppState(['regular_low', 'regular_high'], false);
               logger.info({ sessionId: session.id }, 'App state resync completed for regular collections');
