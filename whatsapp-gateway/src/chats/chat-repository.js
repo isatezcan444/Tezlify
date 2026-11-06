@@ -66,10 +66,10 @@ export function createChatRepository({ pool, logger }) {
 
       const res = await pool.query(
         `SELECT c.id, c.last_message_at, c.last_message_preview, c.unread_count, c.is_archived, c.is_group,
-                ct.phone_e164, ct.display_name, ct.avatar_url, ct.name_source
+                ct.phone_e164, ct.display_name
            FROM public.conversations c
            JOIN public.contacts ct ON c.contact_id = ct.id
-           JOIN public.whatsapp_sessions ws ON c.session_id = ws.id
+           JOIN public.whatsapp_sessions ws ON (c.session_id = ws.id OR (c.session_id IS NULL AND c.user_id = ws.user_id))
           WHERE ws.gateway_id = $1
             AND c.channel = 'WHATSAPP'
           ORDER BY c.last_message_at DESC NULLS LAST
@@ -104,8 +104,8 @@ export function createChatRepository({ pool, logger }) {
 
         const lastMsgAt = row.last_message_at ? new Date(row.last_message_at).toISOString() : null;
         const name = contact?.name || row.display_name || (isGroup ? 'Grup' : (phone || jid));
-        const nameSource = contact?.name_source || row.name_source || (isGroup ? 'group_subject' : null);
-        const avatarUrl = sanitizeAvatarUrl(contact?.avatar_url) || sanitizeAvatarUrl(row.avatar_url) || null;
+        const nameSource = contact?.name_source || (row.display_name ? 'history' : (isGroup ? 'group_subject' : null));
+        const avatarUrl = sanitizeAvatarUrl(contact?.avatar_url) || null;
 
         store.chats.set(jid, {
           id: jid,
