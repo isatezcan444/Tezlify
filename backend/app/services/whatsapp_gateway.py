@@ -369,9 +369,12 @@ async def get_messages(
         params["timeout_ms"] = int(timeout_ms)
         http_timeout = max(4.0, (timeout_ms / 1000.0) + 2.0)
     elif fetch_provider:
-        # Provider history window for responsive on-demand hydration
-        params["timeout_ms"] = 6000
-        http_timeout = 8.5
+        # Provider history window for responsive on-demand hydration.
+        # WhatsApp mobile client PDO chunk generation across cellular networks
+        # typically takes 5-8 seconds. A 12-second budget provides reliable round-trips
+        # while keeping HTTP timeout safely bounded at 15s.
+        params["timeout_ms"] = 12000
+        http_timeout = 15.0
     else:
         http_timeout = 5.0
     try:

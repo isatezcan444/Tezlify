@@ -1595,7 +1595,7 @@ export function createSessionManager({
             'Older history request timed out waiting for provider chunk'
           );
           settled = true;
-          if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 60_000);
+          if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 5_000);
           resolve({ messages: [], count: 0, status: 'TIMEOUT', failure_class: outcome });
         }, timeoutMs);
 
@@ -1656,7 +1656,7 @@ export function createSessionManager({
                 'Failed to send fetchMessageHistory PDO'
               );
               settled = true;
-              if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 60_000);
+              if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 5_000);
               resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
             });
         } catch (err) {
@@ -1676,7 +1676,7 @@ export function createSessionManager({
             'Exception in sock.fetchMessageHistory'
           );
           settled = true;
-          if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 60_000);
+          if (timeoutMs >= 1000) failedHistoryCooldowns.set(flightKey, Date.now() + 5_000);
           resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
         }
       });
@@ -1692,7 +1692,7 @@ export function createSessionManager({
     async getMessages(
       sessionId,
       jid,
-      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 4000, requestId } = {}
+      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 12000, requestId } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1722,7 +1722,7 @@ export function createSessionManager({
       // yeterli mesaj yokken acikca fetchProvider istendiginde provider sorgulanir.
       const targetAnchorId = oldestMsgId || list[0]?.wa_message_id;
       const isPagingOlder = Boolean(before) || Boolean(oldestMsgId);
-      const providerFetchNeeded = fetchProvider && Boolean(targetAnchorId) && (isPagingOlder || list.length < limit);
+      const providerFetchNeeded = fetchProvider && (isPagingOlder || list.length < limit);
       if (providerFetchNeeded) {
         const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function' && isSocketReady(session.sock);
         if (!sockUsable) {

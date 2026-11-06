@@ -1378,7 +1378,7 @@ async def get_messages(
                                 and j_val
                                 and history_session_id
                                 and await is_provider_recently_unresponsive(
-                                    db, j_val, session_id=history_session_id, cooldown_s=20
+                                    db, j_val, session_id=history_session_id, cooldown_s=5
                                 )
                             ):
                                 logger.info(
