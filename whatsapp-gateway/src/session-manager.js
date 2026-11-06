@@ -73,6 +73,7 @@ import {
   extractContactPayload,
   extractLocationPayload,
   extractPollPayload,
+  extractProtocolMessage,
   isViewOnceMessage,
 } from './messages/message-classifier.js';
 
@@ -3064,19 +3065,106 @@ export function createSessionManager({
 
       const unwrapped = unwrapMessageContent(msg.message) || msg.message || {};
 
-      // Protocol messages (history sync notifications, app state keys, ephemeral settings, peer data ops, revokes)
-      // are internal control frames and must never create a new chat bubble / message row.
-      if (unwrapped.protocolMessage) {
-        const ptype = Number(unwrapped.protocolMessage.type);
-        if (ptype === 0 && unwrapped.protocolMessage.key?.id) {
+      // Protocol messages (history sync notifications, app state keys, ephemeral settings, peer data ops, revokes, edits)
+      // are internal control frames and must never create a duplicate chat bubble / message row.
+      const protoMsg = extractProtocolMessage(msg.message) || unwrapped.protocolMessage;
+      if (protoMsg) {
+        const ptype = Number(protoMsg.type);
+        if (ptype === 0 && protoMsg.key?.id) {
           // REVOKE (0) = "Bu mesaj silindi": hedef mesaji bellek icinde guncelle
-          const targetWaId = unwrapped.protocolMessage.key.id;
-          const chatMsgs = messagesByChat.get(key) || [];
+          const targetWaId = String(protoMsg.key.id);
+          const targetChatKey = normalizeJid(protoMsg.key.remoteJid || key);
+          const chatMsgs = messagesByChat.get(targetChatKey) || [];
           const target = chatMsgs.find((m) => m.wa_message_id === targetWaId);
           if (target) {
             target.body = '';
             target.is_deleted = true;
           }
+          emitEvent({
+            event: 'message_deleted',
+            conversation_id: targetChatKey,
+            wa_message_id: targetWaId,
+          });
+          return null;
+        }
+        if (ptype === 14 && protoMsg.key?.id && protoMsg.editedMessage) {
+          // MESSAGE_EDIT (14): Mesaj düzenlendi (örn. 'günaydın' -> 'günaydınlar')
+          const targetWaId = String(protoMsg.key.id);
+          const targetChatKey = normalizeJid(protoMsg.key.remoteJid || key);
+          const targetFromMe = protoMsg.key.fromMe !== undefined ? Boolean(protoMsg.key.fromMe) : fromMe;
+          const editedUnwrapped = unwrapMessageContent(protoMsg.editedMessage) || protoMsg.editedMessage;
+          const editedContact = extractContactPayload(editedUnwrapped);
+          const editedLocation = extractLocationPayload(editedUnwrapped);
+          const editedPoll = extractPollPayload(editedUnwrapped);
+          let editedText = '';
+          if (editedContact) {
+            editedText = JSON.stringify(editedContact);
+          } else if (editedLocation) {
+            editedText = JSON.stringify(editedLocation);
+          } else if (editedPoll) {
+            editedText = JSON.stringify(editedPoll);
+          } else {
+            editedText =
+              editedUnwrapped.conversation ||
+              editedUnwrapped.extendedTextMessage?.text ||
+              editedUnwrapped.imageMessage?.caption ||
+              editedUnwrapped.videoMessage?.caption ||
+              editedUnwrapped.documentMessage?.caption ||
+              editedUnwrapped.interactiveMessage?.body?.text ||
+              '';
+          }
+          const editTs = protoMsg.timestampMs ? Number(protoMsg.timestampMs) : Date.now();
+
+          if (!messagesByChat.has(targetChatKey)) messagesByChat.set(targetChatKey, []);
+          const chatMsgs = messagesByChat.get(targetChatKey);
+          let target = chatMsgs.find((m) => m.wa_message_id === targetWaId);
+
+          let record = null;
+          if (target) {
+            target.body = editedText;
+            target.is_edited = true;
+            target.edited_at = new Date(editTs).toISOString();
+            record = target;
+          } else {
+            // Bellek henüz hedef mesajı taşımıyorsa (ör. gateway restart / tarihsel mesaj)
+            // hedef wa_message_id kimliğiyle yeni bir kayıt oluştur
+            record = {
+              id: editTs,
+              timestamp_s: Math.floor(editTs / 1000),
+              conversation_id: targetChatKey,
+              direction: targetFromMe ? 'OUTBOUND' : 'INBOUND',
+              message_type: classifyMessageType(editedUnwrapped),
+              status: targetFromMe ? 'DELIVERED' : 'RECEIVED',
+              body: editedText,
+              wa_message_id: targetWaId,
+              sender_phone: targetFromMe ? 'ME' : (jidToPhone(targetChatKey) || targetChatKey),
+              recipient_phone: targetFromMe ? (jidToPhone(targetChatKey) || targetChatKey) : 'ME',
+              sender_name: targetFromMe ? 'ME' : this._resolveDisplayName(session, targetChatKey, msg.pushName),
+              created_at: new Date(editTs).toISOString(),
+              is_edited: true,
+              edited_at: new Date(editTs).toISOString(),
+            };
+            chatMsgs.push(stampMessageSeq(store, record));
+            trimChatMessages(store, targetChatKey, chatMsgs);
+          }
+
+          // Sohbet önizlemesini güncelle
+          const chat = chats.get(targetChatKey);
+          if (chat) {
+            chat.last_message_preview = editedText;
+            if (!chat.last_message_at || new Date(editTs).toISOString() > chat.last_message_at) {
+              chat.last_message_at = new Date(editTs).toISOString();
+            }
+          }
+
+          emitEvent({
+            event: 'message_new',
+            conversation_id: targetChatKey,
+            message: record,
+            unread_count: chat?.unread_count ?? 0,
+            upsert_type: 'replace',
+          });
+          return record;
         }
         return null;
       }
@@ -3283,6 +3371,8 @@ export function createSessionManager({
         sender_name_source: fromMe ? null : (contact?.name_source || null),
         participant_jid: msg.key?.participant || null,
         participant_name: isGroup ? this._resolveDisplayName(session, msg.key?.participant, msg.pushName) : null,
+        is_edited: isReplace || Boolean(existingRecord?.is_edited),
+        edited_at: isReplace ? new Date(ts).toISOString() : (existingRecord?.edited_at || null),
         created_at: new Date(ts).toISOString(),
       };
       // Upgrading a media-less placeholder (see the duplicate check above):

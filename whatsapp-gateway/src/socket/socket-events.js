@@ -29,7 +29,7 @@ import {
   resolveSyncState,
   archivedPatch,
 } from '../utils/whatsapp-formatting.js';
-import { summarizeWaMessage, resolveDownloadableMedia } from '../messages/message-classifier.js';
+import { summarizeWaMessage, resolveDownloadableMedia, extractProtocolMessage, unwrapMessageContent } from '../messages/message-classifier.js';
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage, stampMessageSeq, trimChatMessages } from '../messages/message-store.js';
 import { safeWriteEncrypted, setCompanionActive } from './socket-connector.js';
 import { sanitizeAvatarUrl } from '../domain/bounded-cache.js';
@@ -1056,6 +1056,8 @@ export function bindSocketEvents({
       let storedMessages = 0;
       const touchedHistoryKeys = new Set();
       const pendingHistoryReactions = [];
+      const pendingHistoryEdits = [];
+      const pendingHistoryRevokes = [];
 
       for (const msg of historyMessages || []) {
         const jid = msg.key?.remoteJid;
@@ -1068,7 +1070,18 @@ export function bindSocketEvents({
         // chunk answers; mark it before content filtering so an honestly empty
         // history page completes its own waiter instead of timing out.
         touchedHistoryKeys.add(key);
-        if (msg.key?.id === '__history__' || msg.message?.protocolMessage) continue;
+        if (msg.key?.id === '__history__') continue;
+
+        const proto = extractProtocolMessage(msg.message);
+        if (proto) {
+          const ptype = Number(proto.type);
+          if (ptype === 14 && proto.key?.id && proto.editedMessage) {
+            pendingHistoryEdits.push({ key, proto });
+          } else if (ptype === 0 && proto.key?.id) {
+            pendingHistoryRevokes.push({ key, proto });
+          }
+          continue;
+        }
 
         // History sync icindeki bagimsiz reactionMessage olaylari: ikinci geciste hedef mesaja ilistirilmek uzere tamponla
         const rx = msg.message?.reactionMessage;
@@ -1131,6 +1144,56 @@ export function bindSocketEvents({
                   : `Şu mesaja ${rx.text} ifadesini bıraktı`);
             chat.last_message_at = new Date(ts).toISOString();
           }
+        }
+      }
+
+      // History edits pass: apply edits to target messages
+      for (const { key: editKey, proto } of pendingHistoryEdits) {
+        const targetId = String(proto.key?.id);
+        const targetJid = normalizeJid(proto.key?.remoteJid || editKey);
+        const list = messagesByChat.get(targetJid) || [];
+        const target = list.find((m) => m.wa_message_id === targetId);
+        const unwrapped = unwrapMessageContent(proto.editedMessage) || proto.editedMessage;
+        const editedText = unwrapped.conversation || unwrapped.extendedTextMessage?.text || '';
+        if (target) {
+          target.body = editedText;
+          target.is_edited = true;
+          target.edited_at = proto.timestampMs ? new Date(Number(proto.timestampMs)).toISOString() : null;
+        } else if (editedText) {
+          const fromMe = Boolean(proto.key?.fromMe);
+          const editTs = proto.timestampMs ? Number(proto.timestampMs) : Date.now();
+          const synth = {
+            id: editTs,
+            timestamp_s: Math.floor(editTs / 1000),
+            conversation_id: targetJid,
+            direction: fromMe ? 'OUTBOUND' : 'INBOUND',
+            message_type: 'TEXT',
+            status: fromMe ? 'DELIVERED' : 'RECEIVED',
+            body: editedText,
+            wa_message_id: targetId,
+            sender_phone: fromMe ? 'ME' : (jidToPhone(targetJid) || targetJid),
+            recipient_phone: fromMe ? (jidToPhone(targetJid) || targetJid) : 'ME',
+            sender_name: fromMe ? 'ME' : resolveDisplayName(targetJid, null),
+            created_at: new Date(editTs).toISOString(),
+            is_edited: true,
+            edited_at: new Date(editTs).toISOString(),
+          };
+          list.push(stampMessageSeq(store, synth));
+          list.sort((a, b) => (a.id || 0) - (b.id || 0));
+          trimChatMessages(store, targetJid, list);
+          messagesByChat.set(targetJid, list);
+        }
+      }
+
+      // History revokes pass
+      for (const { key: revokeKey, proto } of pendingHistoryRevokes) {
+        const targetId = String(proto.key?.id);
+        const targetJid = normalizeJid(proto.key?.remoteJid || revokeKey);
+        const list = messagesByChat.get(targetJid) || [];
+        const target = list.find((m) => m.wa_message_id === targetId);
+        if (target) {
+          target.body = '';
+          target.is_deleted = true;
         }
       }
 
@@ -1631,8 +1694,21 @@ export function bindSocketEvents({
           // güncellenir, rozet artmaz, zaman damgası yoksa kaydın kendi
           // damgası korunur. `messageTimestamp` burada `Date.now()`'a
           // DÜŞÜRÜLMEZ — yoksa eski bir mesaj listenin en üstüne taşınır.
+          let effectiveKey = key;
+          if (key?.id) {
+            const currentJid = normalizeJid(key.remoteJid);
+            const listForCurrent = messagesByChat.get(currentJid) || [];
+            if (!listForCurrent.some((m) => m.wa_message_id === key.id)) {
+              for (const [cKey, cList] of messagesByChat.entries()) {
+                if (cList.some((m) => m.wa_message_id === key.id)) {
+                  effectiveKey = { ...key, remoteJid: cKey };
+                  break;
+                }
+              }
+            }
+          }
           const msg = {
-            key,
+            key: effectiveKey,
             message: update.message,
             messageTimestamp: update.messageTimestamp ?? undefined,
             pushName: update.pushName,

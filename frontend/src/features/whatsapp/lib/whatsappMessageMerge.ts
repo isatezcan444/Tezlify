@@ -50,6 +50,8 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
       link_preview: message.link_preview || previous.link_preview,
       reactions: Array.isArray(message.reactions) ? message.reactions : previous.reactions,
       status: mergeDeliveryStatus(previous.status, message.status),
+      is_edited: Boolean(message.is_edited || previous.is_edited),
+      edited_at: message.edited_at || previous.edited_at,
     } : message;
     for (const key of keys) identities.set(key, slot);
   }

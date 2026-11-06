@@ -38,7 +38,7 @@ function check(name, fn) {
 // Kullanicinin saydigi turlerin tamami.
 const SYSTEM_KINDS = [
   ['A. protocolMessage REVOKE -> [REVOKED]', { message: { protocolMessage: { type: 0 } } }, '[REVOKED]'],
-  ['B. protocolMessage diger -> [SYSTEM]', { message: { protocolMessage: { type: 14 } } }, '[SYSTEM]'],
+  ['B. protocolMessage diger (orn. EPHEMERAL_SETTING) -> [SYSTEM]', { message: { protocolMessage: { type: 3 } } }, '[SYSTEM]'],
   ['C. reactionMessage -> [REACTION]', { message: { reactionMessage: { key: {}, text: '❤️' } } }, '[REACTION]'],
   ['D. call -> [CALL]', { message: { call: { callKey: 'x' } } }, '[CALL]'],
   ['E. callLogMessage -> [CALL]', { message: { callLogMessage: { isVideo: true } } }, '[CALL]'],

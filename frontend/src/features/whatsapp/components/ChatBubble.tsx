@@ -1521,6 +1521,11 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 aria-label={t('whatsapp.starredMessages')}
               />
             )}
+            {message.is_edited && (
+              <span className="italic mr-1 select-none opacity-75 text-[10px]" data-testid={`msg-edited-${message.id}`}>
+                {t('whatsapp.editedLabel') || 'düzenlendi'}
+              </span>
+            )}
             <span>{formatTime(message.created_at || message.external_timestamp)}</span>
             {renderStatusIcon()}
           </div>

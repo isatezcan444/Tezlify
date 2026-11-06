@@ -76,6 +76,10 @@ class Message(Base):
     # WhatsApp native view-once (tek görüntülenmelik) message indicator
     is_view_once = Column(Boolean, default=False, server_default=text("false"), nullable=False, index=True)
 
+    # WhatsApp native edited message indicator and timestamp
+    is_edited = Column(Boolean, default=False, server_default=text("false"), nullable=False, index=True)
+    edited_at = Column(DateTime, nullable=True)
+
     # D3: nullable — LID (privacy-mode) senders have no resolvable phone number.
     # Hard invariant (AGENTS.md): never synthesize fake phone numbers; unknown
     # senders persist NULL instead of a placeholder literal.

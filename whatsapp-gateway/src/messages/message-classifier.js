@@ -30,6 +30,10 @@ export function unwrapMessageContent(content) {
       current = current.documentWithCaptionMessage.message;
     } else if (current.editedMessage?.message?.protocolMessage?.editedMessage) {
       current = current.editedMessage.message.protocolMessage.editedMessage;
+    } else if (current.editedMessage?.message?.editedMessage) {
+      current = current.editedMessage.message.editedMessage;
+    } else if (current.editedMessage?.message) {
+      current = current.editedMessage.message;
     } else if (current.protocolMessage?.editedMessage) {
       current = current.protocolMessage.editedMessage;
     } else if (current.associatedChildMessage?.message) {
@@ -46,6 +50,20 @@ export function unwrapMessageContent(content) {
   }
   const extracted = extractMessageContent(current);
   return extracted || current;
+}
+
+/**
+ * Extracts inner ProtocolMessage (REVOKE, MESSAGE_EDIT, etc.) from raw or wrapped messages.
+ */
+export function extractProtocolMessage(content) {
+  if (!content || typeof content !== 'object') return null;
+  if (content.protocolMessage) return content.protocolMessage;
+  if (content.editedMessage?.message?.protocolMessage) return content.editedMessage.message.protocolMessage;
+  if (content.ephemeralMessage?.message?.protocolMessage) return content.ephemeralMessage.message.protocolMessage;
+  if (content.viewOnceMessage?.message?.protocolMessage) return content.viewOnceMessage.message.protocolMessage;
+  if (content.viewOnceMessageV2?.message?.protocolMessage) return content.viewOnceMessageV2.message.protocolMessage;
+  if (content.documentWithCaptionMessage?.message?.protocolMessage) return content.documentWithCaptionMessage.message.protocolMessage;
+  return null;
 }
 
 /**
@@ -311,10 +329,12 @@ export function systemContentMarker(waMsg) {
   const rawContent = waMsg?.message || {};
   const c = extractMessageContent(rawContent) || rawContent || {};
   if (c.protocolMessage) {
-    // REVOKE (0) = "Bu mesaji sildiniz"; digerleri (duzenleme, ephemeral ayari,
-    // gecmis senkronu...) da WhatsApp Web'de sistem satiri olarak gorunur.
+    // REVOKE (0) = "Bu mesaji sildiniz"; MESSAGE_EDIT (14) kullanici metnidir, sistem degil;
+    // digerleri (ephemeral ayari, gecmis senkronu...) WhatsApp Web'de sistem satiri olarak gorunur.
     const ptype = Number(c.protocolMessage.type);
-    return ptype === 0 ? '[REVOKED]' : '[SYSTEM]';
+    if (ptype === 0) return '[REVOKED]';
+    if (ptype === 14) return null;
+    return '[SYSTEM]';
   }
   if (c.pinInChatMessage) return '[PIN]';
   if (c.reactionMessage) return '[REACTION]';

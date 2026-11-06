@@ -188,6 +188,8 @@ def serialize_message(
             getattr(row, "is_view_once", False)
             or (getattr(row, "body", None) in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
         ),
+        "is_edited": bool(getattr(row, "is_edited", False)),
+        "edited_at": row.edited_at.isoformat() if getattr(row, "edited_at", None) else None,
         "sent_at": row.sent_at.isoformat() if getattr(row, "sent_at", None) else None,
         "delivered_at": row.delivered_at.isoformat() if getattr(row, "delivered_at", None) else None,
         "read_at": row.read_at.isoformat() if getattr(row, "read_at", None) else None,

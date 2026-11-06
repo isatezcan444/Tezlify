@@ -1041,6 +1041,22 @@ class WhatsAppEventOrchestrator:
                 )
             )
             canonical = existing.scalars().first()
+            if canonical is None and is_update and wa_id:
+                # If this is an update/replace but not found under conv.id, look up across user's messages by wa_message_id
+                global_existing = await db.execute(
+                    select(Message).where(
+                        Message.wa_message_id == wa_id,
+                        get_user_filter(Message.user_id, owner),
+                    )
+                )
+                canonical = global_existing.scalars().first()
+                if canonical is not None:
+                    conv_id = canonical.conversation_id
+                    conv_res = await db.execute(select(Conversation).where(Conversation.id == conv_id))
+                    found_conv = conv_res.scalars().first()
+                    if found_conv is not None:
+                        conv = found_conv
+
             if canonical is not None:
                 # Fill the provider id, never REPLACE a known one with a
                 # different value. The gateway records an outbound send under a
@@ -1063,6 +1079,9 @@ class WhatsAppEventOrchestrator:
                 # kuralini korur.
                 if is_update and body_incoming:
                     canonical.body = msg.get("body")
+                    if msg.get("is_edited") or is_update:
+                        canonical.is_edited = True
+                        canonical.edited_at = _as_naive_utc(_parse_dt(msg.get("edited_at"))) or utc_now_naive()
                 elif body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("["))):
                     canonical.body = msg.get("body")
 
@@ -1164,6 +1183,8 @@ class WhatsAppEventOrchestrator:
                 else (msg.get("recipient_phone") or contact.phone_e164 or jid)
             ),
             status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
+            is_edited=bool(msg.get("is_edited", False)),
+            edited_at=_as_naive_utc(_parse_dt(msg.get("edited_at"))) if msg.get("edited_at") else None,
             external_timestamp=_as_naive_utc(_parse_dt(msg.get("created_at"))),
         )
         # The pre-flight SELECT above is a filter, not a guarantee. The same

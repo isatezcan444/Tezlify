@@ -419,6 +419,8 @@ interface BackendMessage {
   pinned_at?: string | null;
   pinned_until?: string | null;
   is_view_once?: boolean | null;
+  is_edited?: boolean | null;
+  edited_at?: string | null;
   created_at?: string | null;
 }
 
@@ -471,6 +473,8 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     is_pinned: Boolean(m.is_pinned),
     pinned_at: m.pinned_at || null,
     pinned_until: m.pinned_until || null,
+    is_edited: Boolean(m.is_edited),
+    edited_at: m.edited_at || null,
     is_view_once: Boolean(
       m.is_view_once ||
       m.body === '[VIEW_ONCE_PHOTO]' ||

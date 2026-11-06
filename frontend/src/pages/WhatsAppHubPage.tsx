@@ -2750,6 +2750,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               : Array.isArray(eventData.reactions)
               ? eventData.reactions
               : [],
+            is_edited: Boolean(msgObj?.is_edited || eventData.is_edited || eventData.upsert_type === 'replace'),
+            edited_at: msgObj?.edited_at || eventData.edited_at || null,
             created_at: msgTime,
           };
 

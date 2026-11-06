@@ -194,6 +194,7 @@ def build_message_from_gateway(
         recipient_phone=msg.get("recipient_phone") or "ME",
         is_forwarded=bool(msg.get("is_forwarded", False)),
         is_pinned=bool(msg.get("is_pinned", False)),
+        is_edited=bool(msg.get("is_edited", False)),
         is_view_once=bool(
             msg.get("is_view_once", False)
             or (body in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))

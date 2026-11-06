@@ -1064,6 +1064,7 @@ export const tr = {
     noDocsInChat: 'Bu sohbette henüz belge yok',
     noLinksInChat: 'Bu sohbette henüz bağlantı yok',
     starredMessages: 'Yıldızlı Mesajlar',
+    editedLabel: 'düzenlendi',
     starredMessagesEmpty: 'Henüz yıldızlı mesaj yok',
     starredMessagesEmptyDesc: 'Önemli mesajları kaydetmek için mesajın üzerindeki yıldız simgesine tıklayın.',
     muteNotifications: 'Bildirimleri sessize al',

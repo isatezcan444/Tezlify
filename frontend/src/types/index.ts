@@ -507,6 +507,9 @@ export interface Message {
   pinned_until?: string | null;
   /** WhatsApp native tek görüntülenmelik (view-once) bayrağı. */
   is_view_once?: boolean;
+  /** WhatsApp native düzenlendi (edited) bayrağı ve zamanı. */
+  is_edited?: boolean;
+  edited_at?: string | null;
   /** Granular message delivery lifecycle timestamps */
   sent_at?: string | null;
   delivered_at?: string | null;

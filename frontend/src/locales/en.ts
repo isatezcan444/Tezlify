@@ -1063,6 +1063,7 @@ export const en = {
     noDocsInChat: 'No documents in this chat yet',
     noLinksInChat: 'No links in this chat yet',
     starredMessages: 'Starred Messages',
+    editedLabel: 'edited',
     starredMessagesEmpty: 'No starred messages yet',
     starredMessagesEmptyDesc: 'Click the star icon on any message to save it here for easy reference.',
     muteNotifications: 'Mute notifications',
