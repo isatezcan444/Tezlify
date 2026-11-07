@@ -174,10 +174,10 @@ export function useWhatsAppConversation({
             messages: merged,
           };
         });
-      } else if (!res.has_more) {
-        setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
       } else {
-        setPagingError(true);
+        // Zero older messages returned from backend/provider: mark conversation has_more as false
+        // so the top boundary is cleanly reached without getting stuck in a false retry error loop.
+        setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
       }
     } catch (err: any) {
       if (controller.signal.aborted) return;

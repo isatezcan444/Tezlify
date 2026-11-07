@@ -70,7 +70,15 @@ export function resolveHistoryWaitersForChunk({
       continue;
     }
     const chatMsgs = messagesByChat.get(waiter.key) || [];
-    const matching = waiter.before ? chatMsgs.filter((m) => m.id < waiter.before) : chatMsgs;
+    const getMsgTime = (m) => {
+      if (typeof m.timestamp_s === 'number' && Number.isFinite(m.timestamp_s) && m.timestamp_s > 0) return m.timestamp_s * 1000;
+      if (m.created_at) {
+        const t = new Date(m.created_at).getTime();
+        if (Number.isFinite(t)) return t;
+      }
+      return typeof m.id === 'number' && Number.isFinite(m.id) ? m.id : 0;
+    };
+    const matching = waiter.before ? chatMsgs.filter((m) => getMsgTime(m) < Number(waiter.before)) : chatMsgs;
     // Teşhis: chunk GELDİ ve waiter ile EŞLEŞTİ. "Chunk geldi ama eşleşmedi"
     // ile "chunk hiç gelmedi" ayrımı, PDO arızasının en kritik ayrımıdır.
     if (logger) {
@@ -478,23 +486,13 @@ export function bindSocketEvents({
         logger.debug({ err: presenceErr?.message, session_ref: sessionRef(id) }, 'Initial unavailable presence announcement ignored or not needed');
       }
 
-      // Schedule periodic presence keepalive (every 60s) to refresh unavailable status
-      // so WhatsApp mobile push notifications are never suppressed during continuous operation.
+      // Companion active stream and unavailable presence are announced once on connection.
+      // Continuous 60s active IQ stanza loops are avoided so WhatsApp does not repeatedly
+      // initiate companion-sync handshakes that post foreground notifications on the phone.
       if (session._presenceKeepaliveTimer) {
         clearInterval(session._presenceKeepaliveTimer);
+        session._presenceKeepaliveTimer = null;
       }
-      session._presenceKeepaliveTimer = setInterval(async () => {
-        if (!session.sock || session.status !== 'CONNECTED') return;
-        try {
-          await setCompanionActive(session.sock, logger, sessionRef(id));
-          if (state?.creds?.me && !state.creds.me.name) {
-            state.creds.me.name = session.session_name || 'Tezlify';
-          }
-          await session.sock.sendPresenceUpdate('unavailable');
-        } catch (err) {
-          logger.debug({ err: err?.message, session_ref: sessionRef(id) }, 'Periodic unavailable presence heartbeat skipped');
-        }
-      }, 60000);
 
       const priorSyncs = Number(state?.creds?.accountSyncCounter || 0);
       session.sync = priorSyncs > 0

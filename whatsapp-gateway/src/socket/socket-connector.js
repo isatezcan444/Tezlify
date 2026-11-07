@@ -324,6 +324,20 @@ export async function createSocketForSession({
     };
   }
 
+  // Intercept sock.relayMessage to strip push_priority: 'high_force' from peer messages (such as
+  // HISTORY_SYNC_ON_DEMAND PDO). In WhatsApp MD protocol, high_force sends an FCM WakeLock push
+  // that forces Android/iOS PowerManager to wake up the screen and trigger foreground alerts.
+  if (sock.relayMessage) {
+    const originalRelayMessage = sock.relayMessage.bind(sock);
+    sock.relayMessage = async (jid, message, options = {}) => {
+      if (options?.additionalAttributes && options.additionalAttributes.push_priority === 'high_force') {
+        logger.debug({ jid }, 'Stripping push_priority: high_force to prevent mobile screen wakeups');
+        delete options.additionalAttributes.push_priority;
+      }
+      return originalRelayMessage(jid, message, options);
+    };
+  }
+
   const passThrough = sock.ev.emit.bind(sock.ev);
   sock.ev.emit = (event, data) => {
     if (event === 'creds.update' && data) {

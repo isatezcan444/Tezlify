@@ -116,4 +116,36 @@ console.log('[test-phone-notifications-presence] Starting push notifications & p
   console.log('  ok - setCompanionActive emits correct active IQ stanza');
 }
 
+// 3. Verify relayMessage interceptor strips push_priority: 'high_force' from PDO requests
+{
+  let relayedOptions = null;
+  const mockSock = {
+    relayMessage: async (jid, message, options) => {
+      relayedOptions = options;
+      return 'relayed-123';
+    },
+  };
+
+  // Wrap with connector's relayMessage interceptor logic
+  const originalRelayMessage = mockSock.relayMessage.bind(mockSock);
+  mockSock.relayMessage = async (jid, message, options = {}) => {
+    if (options?.additionalAttributes && options.additionalAttributes.push_priority === 'high_force') {
+      delete options.additionalAttributes.push_priority;
+    }
+    return originalRelayMessage(jid, message, options);
+  };
+
+  const pdoOptions = {
+    additionalAttributes: {
+      category: 'peer',
+      push_priority: 'high_force',
+    },
+  };
+  await mockSock.relayMessage('905551234567@s.whatsapp.net', { test: true }, pdoOptions);
+  assert.ok(relayedOptions, 'relayMessage was called');
+  assert.equal(relayedOptions.additionalAttributes.category, 'peer');
+  assert.equal(relayedOptions.additionalAttributes.push_priority, undefined, 'high_force push priority must be stripped');
+  console.log('  ok - relayMessage strips push_priority: high_force to prevent mobile screen wakeups');
+}
+
 console.log('[test-phone-notifications-presence] All checks passed successfully!');

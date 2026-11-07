@@ -1721,8 +1721,7 @@ export function createSessionManager({
       // yukari kaydirarak acikca istediginde (before veya oldestMsgId belirtilmisse) veya bellekte
       // yeterli mesaj yokken acikca fetchProvider istendiginde provider sorgulanir.
       const targetAnchorId = oldestMsgId || list[0]?.wa_message_id;
-      const isPagingOlder = Boolean(before) || Boolean(oldestMsgId);
-      const providerFetchNeeded = fetchProvider && (isPagingOlder || list.length < limit);
+      const providerFetchNeeded = fetchProvider && list.length < limit && Boolean(targetAnchorId);
       if (providerFetchNeeded) {
         const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function' && isSocketReady(session.sock);
         if (!sockUsable) {
