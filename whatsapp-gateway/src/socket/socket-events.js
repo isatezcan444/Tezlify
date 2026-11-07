@@ -478,23 +478,16 @@ export function bindSocketEvents({
         logger.debug({ err: presenceErr?.message, session_ref: sessionRef(id) }, 'Initial unavailable presence announcement ignored or not needed');
       }
 
-      // Schedule periodic presence keepalive (every 60s) to refresh unavailable status
-      // so WhatsApp mobile push notifications are never suppressed during continuous operation.
+      // WhatsApp Web parity: An active companion stanza (<active/>) and 'unavailable'
+      // presence are announced ONCE upon connection open. Repeating them on a 60s timer
+      // repeatedly forces WhatsApp servers into companion-sync handshakes, which caused the
+      // primary phone to repeatedly display "Google Chrome (macOS) üzerinde WhatsApp ile
+      // senkronizasyon tamamlandı" and wake up the phone screen whenever an operation occurred.
+      // Transport connection health is natively maintained by Baileys keepAliveIntervalMs ping frames.
       if (session._presenceKeepaliveTimer) {
         clearInterval(session._presenceKeepaliveTimer);
+        session._presenceKeepaliveTimer = null;
       }
-      session._presenceKeepaliveTimer = setInterval(async () => {
-        if (!session.sock || session.status !== 'CONNECTED') return;
-        try {
-          await setCompanionActive(session.sock, logger, sessionRef(id));
-          if (state?.creds?.me && !state.creds.me.name) {
-            state.creds.me.name = session.session_name || 'Tezlify';
-          }
-          await session.sock.sendPresenceUpdate('unavailable');
-        } catch (err) {
-          logger.debug({ err: err?.message, session_ref: sessionRef(id) }, 'Periodic unavailable presence heartbeat skipped');
-        }
-      }, 60000);
 
       const priorSyncs = Number(state?.creds?.accountSyncCounter || 0);
       session.sync = priorSyncs > 0
