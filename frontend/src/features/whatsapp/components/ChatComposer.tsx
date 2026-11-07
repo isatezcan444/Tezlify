@@ -907,13 +907,13 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
   const inputPaddingRightClass = useMemo(() => {
     if (hasAiBtn && hasTemplateBtn) {
-      return 'pr-[84px] sm:pr-[172px]';
+      return 'pr-[74px] sm:pr-[140px]';
     }
     if (hasTemplateBtn) {
-      return 'pr-[52px] sm:pr-[116px]';
+      return 'pr-[44px] sm:pr-[94px]';
     }
     if (hasAiBtn) {
-      return 'pr-[52px] sm:pr-[76px]';
+      return 'pr-[44px] sm:pr-[62px]';
     }
     return 'pr-3.5';
   }, [hasAiBtn, hasTemplateBtn]);
