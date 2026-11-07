@@ -902,6 +902,22 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const isActionDisabled = disabled || isClosed || sending;
   const isInputDisabled = disabled || isClosed || !isWindowOpen;
 
+  const hasAiBtn = !isClosed && Boolean(conversationId);
+  const hasTemplateBtn = !isClosed && Boolean(onSendTemplate);
+
+  const inputPaddingRightClass = useMemo(() => {
+    if (hasAiBtn && hasTemplateBtn) {
+      return 'pr-[84px] sm:pr-[172px]';
+    }
+    if (hasTemplateBtn) {
+      return 'pr-[52px] sm:pr-[116px]';
+    }
+    if (hasAiBtn) {
+      return 'pr-[52px] sm:pr-[76px]';
+    }
+    return 'pr-3.5';
+  }, [hasAiBtn, hasTemplateBtn]);
+
 
   /**
    * Insert at the caret, not at the end: someone who moved the cursor back into
@@ -1390,7 +1406,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                     ? (t('whatsapp.windowExpiredPlaceholder'))
                     : (placeholder || t('leads.typeMessagePlaceholder'))
                 }
-                className={`w-full px-3.5 py-2.5 pr-20 text-base sm:text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden block ${
+                className={`w-full pl-3.5 py-2.5 ${inputPaddingRightClass} text-base sm:text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden block break-words ${
                   isInputDisabled
                     ? 'opacity-60 cursor-not-allowed bg-slate-100 dark:bg-white/[0.04]'
                     : ''
@@ -1399,7 +1415,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
               {/* Action Buttons inside Input: AI Co-Pilot & Quick Template */}
               {!isClosed && (
-                <div className="absolute right-2 top-3 flex items-center space-x-1">
+                <div className="absolute right-2 top-2.5 flex items-center space-x-1 z-10 pointer-events-auto">
                   {conversationId && (
                     <Tooltip content={t('whatsapp.aiCoPilotBtn')}>
                       <button
