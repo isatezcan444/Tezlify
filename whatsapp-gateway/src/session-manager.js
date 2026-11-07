@@ -1721,27 +1721,34 @@ export function createSessionManager({
       // yukari kaydirarak acikca istediginde (before veya oldestMsgId belirtilmisse) veya bellekte
       // yeterli mesaj yokken acikca fetchProvider istendiginde provider sorgulanir.
       const targetAnchorId = oldestMsgId || list[0]?.wa_message_id;
-      const providerFetchNeeded = fetchProvider && list.length < limit && Boolean(targetAnchorId);
-      if (providerFetchNeeded) {
-        const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function' && isSocketReady(session.sock);
-        if (!sockUsable) {
-          providerStatus = 'SOCKET_UNAVAILABLE';
+      if (fetchProvider && list.length < limit) {
+        if (!targetAnchorId) {
+          providerStatus = 'NO_ANCHOR';
           logger.info(
             historyDiag({
               requestId,
               jid: key,
-              extra: {
-                outcome: 'SOCKET_UNAVAILABLE',
-                has_sock: Boolean(session.sock),
-                has_method: typeof session.sock?.fetchMessageHistory === 'function',
-                ws_ready_state: session.sock?.ws?.readyState ?? null,
-              },
+              extra: { outcome: 'NO_ANCHOR', list_len: list.length, oldest_msg_id: oldestMsgId || null },
             }),
-            'Older history skipped: socket unusable'
+            'Older history skipped: no anchor message available for chat'
           );
         } else {
-          if (!targetAnchorId) {
-            providerStatus = 'NO_ANCHOR';
+          const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function' && isSocketReady(session.sock);
+          if (!sockUsable) {
+            providerStatus = 'SOCKET_UNAVAILABLE';
+            logger.info(
+              historyDiag({
+                requestId,
+                jid: key,
+                extra: {
+                  outcome: 'SOCKET_UNAVAILABLE',
+                  has_sock: Boolean(session.sock),
+                  has_method: typeof session.sock?.fetchMessageHistory === 'function',
+                  ws_ready_state: session.sock?.ws?.readyState ?? null,
+                },
+              }),
+              'Older history skipped: socket unusable'
+            );
           } else {
             const histResult = await this.requestOlderHistory(sessionId, jid, {
               count: limit,

@@ -1208,9 +1208,9 @@ def resolve_has_more(
         return True
     ev = evidence or {}
     state = ev.get("state")
-    if state in ("FULLY_EXHAUSTED", "CURSOR_STALLED") or ev.get("provider_exhausted"):
+    if state == "FULLY_EXHAUSTED" or ev.get("provider_exhausted"):
         return False
-    if state in ("TIMEOUT", "PROVIDER_ERROR"):
+    if state in ("TIMEOUT", "PROVIDER_ERROR", "CURSOR_STALLED"):
         return True
     if not ev.get("provider_checked") and (rows_returned > 0 or is_scroll_pagination):
         # The provider has not been queried yet and this thread has messages or is paginating:

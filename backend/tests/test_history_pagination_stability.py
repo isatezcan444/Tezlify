@@ -359,3 +359,78 @@ async def test_nearest_anchor_with_wa_message_id_fallback(tmp_path):
                 anchor_id = fallback_anchor
 
             assert anchor_id == "WA_VALID_ANCHOR_123"
+
+
+def test_empty_response_and_history_exhaustion_scenarios():
+    """Validates the 6 distinct empty response and history exhaustion scenarios."""
+    from backend.app.services.whatsapp_service import resolve_has_more
+
+    # 1. Empty response + exhausted: provider confirmed no older messages exist
+    res_exhausted = resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "FULLY_EXHAUSTED", "provider_exhausted": True, "provider_checked": True},
+        is_scroll_pagination=True,
+    )
+    assert res_exhausted is False, "Exhausted evidence must resolve has_more=False"
+
+    # 2. Empty response + timeout: provider timed out, must NOT falsely claim exhaustion
+    res_timeout = resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "TIMEOUT", "provider_exhausted": False, "provider_checked": True},
+        is_scroll_pagination=True,
+    )
+    assert res_timeout is True, "Timeout must keep has_more=True so the affordance allows retry"
+
+    # 3. Empty response + event missing: chunk not received / waiter timeout
+    res_event_missing = resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "TIMEOUT", "provider_signal": "NO_CHUNK", "provider_exhausted": False},
+        is_scroll_pagination=True,
+    )
+    assert res_event_missing is True, "Missing event / timeout must keep has_more=True"
+
+    # 4. Empty response + retryable failure: gateway socket or temporary provider error
+    res_retryable = resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "PROVIDER_ERROR", "provider_exhausted": False, "provider_checked": True},
+        is_scroll_pagination=True,
+    )
+    assert res_retryable is True, "Retryable provider error must keep has_more=True"
+
+    # 5. Empty response + valid next cursor: DB holds older rows even if current slice returned 0
+    res_cursor = resolve_has_more(
+        db_has_more=True,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "FULLY_EXHAUSTED", "provider_exhausted": True},
+        is_scroll_pagination=True,
+    )
+    assert res_cursor is True, "Local DB older messages always take precedence over provider exhaustion"
+
+    # 6. Empty response + confirmed protocol limitation: zero-message chat with no anchor
+    res_protocol_limited = resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "NOT_CHECKED", "provider_checked": False},
+        is_scroll_pagination=False,
+    )
+    assert res_protocol_limited is False, "Zero-anchor unpopulated chat must resolve has_more=False cleanly"
+
+    # 7. CURSOR_STALLED is an anomaly/stall, NOT proven exhaustion: must keep has_more=True for retry
+    res_stalled_retryable = resolve_has_more(
+        db_has_more=False,
+        page_size=50,
+        rows_returned=0,
+        evidence={"state": "CURSOR_STALLED", "provider_exhausted": False, "provider_checked": True},
+        is_scroll_pagination=True,
+    )
+    assert res_stalled_retryable is True, "CURSOR_STALLED without confirmed exhaustion must keep has_more=True (retryable anomaly)"

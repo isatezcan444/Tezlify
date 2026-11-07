@@ -85,7 +85,15 @@ try {
   assert.equal(fetchHistoryCalls.length, 1, 'Baileys sock with ws.isOpen=true should be recognized as usable');
   assert.notEqual(res6.provider_status, 'SOCKET_UNAVAILABLE', 'provider_status must NOT be SOCKET_UNAVAILABLE');
 
-  console.log('[test-history-orchestration] ALL 6 assertions passed.');
+  // TEST 7: Zero-message chat with no anchor returns NO_ANCHOR without calling provider
+  fetchHistoryCalls = [];
+  const emptyJid = '905550009988@s.whatsapp.net';
+  const emptyRes = await sm.getMessages(sid, emptyJid, { limit: 10, fetchProvider: true });
+  assert.equal(emptyRes.length, 0, 'Zero-message chat should return empty message list');
+  assert.equal(emptyRes.provider_status, 'NO_ANCHOR', 'Zero-message chat without anchor must report NO_ANCHOR');
+  assert.equal(fetchHistoryCalls.length, 0, 'Provider must not be called when no anchor is available');
+
+  console.log('[test-history-orchestration] ALL 7 assertions passed.');
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

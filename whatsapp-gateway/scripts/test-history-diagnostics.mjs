@@ -256,6 +256,37 @@ try {
   });
   assert.equal(scan3.resolved, 0);
   console.log('  ok: waiter yokken scan güvenli');
+
+  // --- 8. LID/Phone alias resolution: waiter resolves when chunk touches LID alias
+  const lidJid = '999888777@lid';
+  store.jidToLid.set(chatJid, lidJid);
+  store.lidToJid.set(lidJid, chatJid);
+  const pLidWaiter = sm.requestOlderHistory(sid, chatJid, {
+    count: 10,
+    timeoutMs: 5000,
+    requestId: 'req-lid-alias-match',
+  });
+  store.messagesByChat.get(chatJid).unshift({
+    id: 400,
+    wa_message_id: 'from_lid_chunk',
+    timestamp_s: 400,
+    direction: 'INBOUND',
+  });
+  const scanLid = resolveHistoryWaitersForChunk({
+    pendingHistoryWaiters: sm._pendingHistoryWaiters,
+    inFlightHistoryFetches: sm._inFlightHistoryFetches,
+    sessionId: session.id,
+    messagesByChat: store.messagesByChat,
+    touchedChatKeys: new Set([lidJid]), // chunk touched LID
+    store,
+    logger: fakeLogger,
+    chunkInfo: { syncType: 'ON_DEMAND', messageCount: 1 },
+  });
+  assert.equal(scanLid.resolved, 1, 'waiter LID alias ile çözülmeliydi');
+  const resLid = await pLidWaiter;
+  assert.equal(resLid.status, 'OK');
+  assert.ok(resLid.messages.some((m) => m.wa_message_id === 'from_lid_chunk'));
+  console.log('  ok: LID/Phone alias eşleşti, WAITER_MISMATCH önlendi');
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

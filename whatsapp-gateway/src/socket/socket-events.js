@@ -56,6 +56,7 @@ export function resolveHistoryWaitersForChunk({
   touchedChatKeys,
   logger = null,
   chunkInfo = null,
+  store = null,
 }) {
   if (!pendingHistoryWaiters || typeof pendingHistoryWaiters.entries !== 'function') {
     return { resolved: 0, waiting: 0 };
@@ -64,12 +65,23 @@ export function resolveHistoryWaitersForChunk({
   let waiting = 0;
   for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
     if (waiter.sessionId !== sessionId) continue;
-    if (!touchedChatKeys.has(waiter.key)) {
+    const waiterKey = waiter.key;
+    const waiterLid = store?.jidToLid?.get?.(waiterKey);
+    const waiterPn = store?.lidToJid?.get?.(waiterKey);
+    const isTouched =
+      touchedChatKeys.has(waiterKey) ||
+      (waiterLid && touchedChatKeys.has(waiterLid)) ||
+      (waiterPn && touchedChatKeys.has(waiterPn));
+    if (!isTouched) {
       // Bu chunk beklemediğimiz bir sohbeti adlandırdı: istek hâlâ beklemede.
       waiting += 1;
       continue;
     }
-    const chatMsgs = messagesByChat.get(waiter.key) || [];
+    const chatMsgs =
+      messagesByChat.get(waiterKey) ||
+      (waiterLid ? messagesByChat.get(waiterLid) : null) ||
+      (waiterPn ? messagesByChat.get(waiterPn) : null) ||
+      [];
     const getMsgTime = (m) => {
       if (typeof m.timestamp_s === 'number' && Number.isFinite(m.timestamp_s) && m.timestamp_s > 0) return m.timestamp_s * 1000;
       if (m.created_at) {
@@ -1068,6 +1080,9 @@ export function bindSocketEvents({
         // chunk answers; mark it before content filtering so an honestly empty
         // history page completes its own waiter instead of timing out.
         touchedHistoryKeys.add(key);
+        if (jid !== key) touchedHistoryKeys.add(jid);
+        const altMsgJid = store?.jidToLid?.get(key) || store?.lidToJid?.get(key);
+        if (altMsgJid) touchedHistoryKeys.add(altMsgJid);
         if (msg.key?.id === '__history__') continue;
 
         const proto = extractProtocolMessage(msg.message);
@@ -1258,6 +1273,9 @@ export function bindSocketEvents({
         const key = normalizeJid(jid);
         if (isBroadcastOnlyJid(key)) continue;
         touchedHistoryKeys.add(key);
+        if (jid !== key) touchedHistoryKeys.add(jid);
+        const altChatJid = store?.jidToLid?.get(key) || store?.lidToJid?.get(key);
+        if (altChatJid) touchedHistoryKeys.add(altChatJid);
         const contact = contacts.get(key);
         const list = messagesByChat.get(key) || [];
         const newest = list.reduce(
@@ -1350,6 +1368,7 @@ export function bindSocketEvents({
           messageCount: (historyMessages || []).length,
           peerDataRequestSessionId: peerDataRequestSessionId ?? null,
         },
+        store,
       });
       const cachedMessages = [...messagesByChat.values()].reduce((n, l) => n + l.length, 0);
       emitEvent({

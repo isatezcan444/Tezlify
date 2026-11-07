@@ -167,17 +167,41 @@ export function useWhatsAppConversation({
           const mergedOldest = merged.find((m) => typeof m.id === 'number' && m.id > 0)?.id;
           return {
             ...prev,
-            has_more: res.has_more,
+            has_more: Boolean(res.has_more),
             oldest_message_id:
               res.oldest_message_id ??
               (typeof mergedOldest === 'number' ? mergedOldest : prev.oldest_message_id),
             messages: merged,
           };
         });
+        setPagingError(false);
       } else {
-        // Zero older messages returned from backend/provider: mark conversation has_more as false
-        // so the top boundary is cleanly reached without getting stuck in a false retry error loop.
-        setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
+        // Zero older messages returned from backend/provider:
+        // Distinguish genuine exhaustion from retryable provider timeouts/failures and anomalies.
+        const evidence = res.history_evidence;
+        const isTrulyExhausted =
+          evidence?.provider_exhausted === true ||
+          evidence?.state === 'FULLY_EXHAUSTED';
+
+        if (isTrulyExhausted) {
+          // REMOTE_HISTORY_EXHAUSTED: Conclusively confirmed no older messages exist.
+          setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
+          setPagingError(false);
+        } else if (evidence?.state === 'CURSOR_STALLED') {
+          // CURSOR_STALLED: Anomaly where provider anchor did not advance; not proven exhausted.
+          // Keep has_more so user can retry, but flag pagingError to halt auto-scroll loop.
+          setPagingError(true);
+        } else if (res.has_more === false && (!evidence || evidence.state === 'NOT_CHECKED')) {
+          // PROTOCOL_LIMITED (e.g. zero-anchor unpopulated chat).
+          setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
+          setPagingError(false);
+        } else {
+          // REMOTE_FETCH_TIMEOUT / REMOTE_FETCH_EMPTY / RETRYABLE FAILURE:
+          // Provider hasn't confirmed exhaustion (e.g. timeout or temporary cooldown).
+          // Keep has_more so the affordance isn't permanently killed, but flag pagingError
+          // to stop auto-scroll request storms and offer manual retry.
+          setPagingError(true);
+        }
       }
     } catch (err: any) {
       if (controller.signal.aborted) return;
