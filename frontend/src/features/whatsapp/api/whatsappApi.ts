@@ -427,6 +427,9 @@ interface BackendMessage {
   deleted_for_me_at?: string | null;
   is_starred?: boolean | null;
   starred_at?: string | null;
+  sent_at?: string | null;
+  delivered_at?: string | null;
+  read_at?: string | null;
   created_at?: string | null;
 }
 
@@ -487,11 +490,15 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     deleted_for_me_at: m.deleted_for_me_at || null,
     is_starred: Boolean(m.is_starred),
     starred_at: m.starred_at || null,
+    sent_at: m.sent_at || null,
+    delivered_at: m.delivered_at || null,
+    read_at: m.read_at || null,
     is_view_once: Boolean(
       m.is_view_once ||
       m.body === '[VIEW_ONCE_PHOTO]' ||
       m.body === '[VIEW_ONCE_VIDEO]' ||
-      m.body === '[VIEW_ONCE_AUDIO]'
+      m.body === '[VIEW_ONCE_AUDIO]' ||
+      (typeof m.body === 'string' && m.body.startsWith('[VIEW_ONCE_'))
     ),
     external_timestamp: m.created_at ?? undefined,
     created_at: m.created_at || '',

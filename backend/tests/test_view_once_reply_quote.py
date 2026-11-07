@@ -182,3 +182,74 @@ async def test_resolve_quoted_message_snapshot_isolation():
     )
     assert snap_cross is None, "Cross-conversation quote MUST be rejected with None"
 
+
+@pytest.mark.asyncio
+async def test_build_message_from_gateway_view_once_read_status():
+    """build_message_from_gateway properly flags view once and sets read_at if status is READ."""
+    from backend.app.services.whatsapp.repositories.messages import build_message_from_gateway
+    conv = Conversation(id=10, user_id="tenant-1")
+    msg_data = {
+        "wa_message_id": "VO_TEST_1",
+        "conversation_id": "905551234567@s.whatsapp.net",
+        "direction": "INBOUND",
+        "message_type": "IMAGE",
+        "body": "[VIEW_ONCE_PHOTO]",
+        "is_view_once": True,
+        "status": "READ",
+        "played_timestamp": "2026-11-07T21:00:00Z",
+    }
+    row = build_message_from_gateway(
+        "tenant-1",
+        conv,
+        msg_data,
+    )
+    assert row.is_view_once is True
+    assert row.status == ConversationMessageStatus.READ
+    assert row.read_at is not None
+    assert row.read_at.year == 2026
+
+
+@pytest.mark.asyncio
+async def test_ingest_message_receipt_updated_played_timestamp():
+    """_ingest_message_receipt_updated with played_timestamp advances message to READ."""
+    from unittest.mock import MagicMock
+    from backend.app.services.whatsapp.orchestration.events import WhatsAppEventOrchestrator
+    orchestrator = WhatsAppEventOrchestrator()
+    mock_db = AsyncMock()
+
+    msg_row = Message(
+        id=77,
+        conversation_id=10,
+        user_id="tenant-1",
+        direction=MessageDirection.INBOUND,
+        message_type=MessageType.IMAGE,
+        status=ConversationMessageStatus.RECEIVED,
+        is_view_once=True,
+        body="[VIEW_ONCE_PHOTO]",
+        wa_message_id="VO_RECEIPT_TEST",
+    )
+    conv_row = Conversation(id=10, user_id="tenant-1")
+
+    mock_result = MagicMock()
+    mock_result.first.return_value = (msg_row, conv_row)
+    mock_db.execute.return_value = mock_result
+
+    with patch.object(orchestrator, "_get_helper") as mock_helper:
+        async def fake_resolve(*args, **kwargs):
+            return "tenant-1", "session-1"
+        mock_helper.return_value = fake_resolve
+
+        event_payload = {
+            "event": "message_receipt_updated",
+            "conversation_id": "905551234567@s.whatsapp.net",
+            "wa_message_id": "VO_RECEIPT_TEST",
+            "played_timestamp": "2026-11-07T21:15:00Z",
+        }
+        res = await orchestrator._ingest_message_receipt_updated(mock_db, event_payload)
+
+    assert res["status"] == "READ"
+    assert res["read_timestamp"] == "2026-11-07T21:15:00Z"
+    assert msg_row.status == ConversationMessageStatus.READ
+    assert msg_row.read_at is not None
+
+

@@ -2,9 +2,10 @@ import type { Message, ConversationMessageStatus } from '../../../types';
 import { compareMessagesChronological, isRealDbId } from './whatsappOrdering';
 
 export function mergeDeliveryStatus(current: ConversationMessageStatus, incoming: ConversationMessageStatus): ConversationMessageStatus {
-  const rank: Record<ConversationMessageStatus, number> = { PENDING: 0, FAILED: 0, SENT: 1, DELIVERED: 2, READ: 3, RECEIVED: 3 };
+  const rank: Record<ConversationMessageStatus, number> = { PENDING: 0, FAILED: 0, SENT: 1, DELIVERED: 2, RECEIVED: 2, READ: 3 };
   if (incoming === 'FAILED') return rank[current] > 0 ? current : incoming;
   if (current === 'FAILED' && incoming === 'PENDING') return current;
+  if (current === 'READ') return current;
   return rank[incoming] >= rank[current] ? incoming : current;
 }
 
@@ -35,6 +36,9 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
             ? previous.reactions
             : duplicate.reactions,
           status: mergeDeliveryStatus(previous.status, duplicate.status),
+          sent_at: previous.sent_at || duplicate.sent_at || null,
+          delivered_at: previous.delivered_at || duplicate.delivered_at || null,
+          read_at: previous.read_at || duplicate.read_at || null,
         } : duplicate;
         result[duplicateSlot] = undefined;
         for (const [key, value] of identities) if (value === duplicateSlot) identities.set(key, slot);
@@ -85,6 +89,9 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
       deleted_for_me_at: message.deleted_for_me_at || previous.deleted_for_me_at,
       is_starred: typeof message.is_starred === 'boolean' ? message.is_starred : previous.is_starred,
       starred_at: message.starred_at !== undefined ? message.starred_at : previous.starred_at,
+      sent_at: message.sent_at || previous.sent_at || null,
+      delivered_at: message.delivered_at || previous.delivered_at || null,
+      read_at: message.read_at || previous.read_at || null,
     } : message;
     for (const key of keys) identities.set(key, slot);
   }

@@ -3046,12 +3046,57 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               const matchesId = numericServerId && m.id === numericServerId;
               if (matchesWaId || matchesClientMid || matchesId) {
                 changed = true;
+                const mergedStatus = mergeDeliveryStatus(m.status, newStatus);
                 return {
                   ...m,
                   id: numericServerId ?? m.id,
                   wa_message_id: waId || m.wa_message_id,
-                  status: mergeDeliveryStatus(m.status, newStatus),
+                  status: mergedStatus,
+                  read_at: mergedStatus === 'READ' ? (m.read_at || new Date().toISOString()) : m.read_at,
                   error_message: errorMsg || m.error_message,
+                };
+              }
+              return m;
+            });
+            if (!changed) return prev;
+            return { ...prev, [convId]: updated };
+          });
+        }
+      }
+
+      // 2.1 MESSAGE RECEIPT UPDATE (played_timestamp, read_timestamp, receipt_timestamp)
+      if (eventData.event === 'message_receipt_updated') {
+        const convId = eventData.conversation_id;
+        const waId = eventData.wa_message_id;
+        const serverId = eventData.id;
+        const numericServerId =
+          typeof eventData.message_id === 'number' && eventData.message_id > 0
+            ? eventData.message_id
+            : typeof serverId === 'number' && serverId > 0
+              ? serverId
+              : undefined;
+        const readTs = eventData.read_timestamp || eventData.played_timestamp;
+        const receiptTs = eventData.receipt_timestamp;
+
+        if (convId) {
+          setMessagesMap((prev) => {
+            const list = prev[convId];
+            if (!list) return prev;
+            let changed = false;
+            const updated = list.map((m) => {
+              const matchesWaId = waId && m.wa_message_id === waId;
+              const matchesId = numericServerId && m.id === numericServerId;
+              if (matchesWaId || matchesId) {
+                changed = true;
+                const isRead = Boolean(readTs || eventData.status === 'READ');
+                const nextStatus: ConversationMessageStatus = isRead ? 'READ' : (m.status === 'READ' ? 'READ' : 'DELIVERED');
+                return {
+                  ...m,
+                  id: numericServerId ?? m.id,
+                  wa_message_id: waId || m.wa_message_id,
+                  status: nextStatus,
+                  read_at: readTs ? (m.read_at || readTs) : (isRead ? (m.read_at || new Date().toISOString()) : m.read_at),
+                  delivered_at: receiptTs ? (m.delivered_at || receiptTs) : m.delivered_at,
                 };
               }
               return m;

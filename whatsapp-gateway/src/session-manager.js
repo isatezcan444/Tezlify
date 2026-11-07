@@ -156,10 +156,6 @@ const ACK_RANK = { 0: 'FAILED', 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' 
 const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
 
 function resolveMessageStatus(msg, fromMe, reactions) {
-  if (!fromMe) return 'RECEIVED';
-  if (Array.isArray(reactions) && reactions.some((r) => r?.emoji || r?.text)) {
-    return 'READ';
-  }
   const rawStatus = msg?.status;
   if (typeof rawStatus === 'number') {
     if (rawStatus === 4 || rawStatus === 5) return 'READ';
@@ -172,6 +168,10 @@ function resolveMessageStatus(msg, fromMe, reactions) {
     if (s === 'DELIVERED' || s === 'DELIVERY_ACK') return 'DELIVERED';
     if (s === 'SENT' || s === 'SERVER_ACK') return 'SENT';
     if (s === 'FAILED' || s === 'ERROR') return 'FAILED';
+  }
+  if (!fromMe) return 'RECEIVED';
+  if (Array.isArray(reactions) && reactions.some((r) => r?.emoji || r?.text)) {
+    return 'READ';
   }
   return 'SENT';
 }
@@ -3479,12 +3479,12 @@ export function createSessionManager({
         unwrapped.videoMessage?.contextInfo ||
         unwrapped.documentMessage?.contextInfo;
       let text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
+      const isViewOnce = isViewOnceMessage(msg.message) || isViewOnceMessage(unwrapped);
       const mediaType = classifyMessageType(unwrapped);
-      const isViewOnce = isViewOnceMessage(msg.message);
       if (isViewOnce && (!text || text.trim() === '')) {
         text = mediaType === 'VIDEO' ? '[VIEW_ONCE_VIDEO]' : (mediaType === 'AUDIO' ? '[VIEW_ONCE_AUDIO]' : '[VIEW_ONCE_PHOTO]');
       }
-      if (!hasRecognizedContent(unwrapped) && !text) return null;
+      if (!hasRecognizedContent(unwrapped) && !text && !isViewOnce) return null;
 
       // Persist BEFORE the RAM push below. A held LID message must already have
       // a durable copy by the time it becomes invisible to the rest of the
@@ -3512,7 +3512,8 @@ export function createSessionManager({
         // A duplicate is only a duplicate if it carries nothing new.
         // If an existing record was a placeholder with no media and empty/marker body,
         // or has a content change (retry decryption, edited message), upgrade it in place.
-        const placeholder = !existingRecord.media_id && (!existingRecord.body || existingRecord.body.trim() === '' || existingRecord.body.startsWith('['));
+        const isExistingVo = Boolean(existingRecord.is_view_once || (existingRecord.body && existingRecord.body.startsWith('[VIEW_ONCE_')));
+        const placeholder = !isExistingVo && !existingRecord.media_id && (!existingRecord.body || existingRecord.body.trim() === '' || (existingRecord.body.startsWith('[') && !existingRecord.body.startsWith('[VIEW_ONCE_')));
         const incomingHasMedia = Boolean(unwrapped.imageMessage || unwrapped.videoMessage
           || unwrapped.audioMessage || unwrapped.documentMessage || unwrapped.stickerMessage);
         const incomingHasText = Boolean(text && text.trim().length > 0);
@@ -3621,13 +3622,13 @@ export function createSessionManager({
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
         conversation_id: key,
         direction: fromMe ? 'OUTBOUND' : 'INBOUND',
-        message_type: mediaType,
+        message_type: (mediaType && mediaType !== 'TEXT') ? mediaType : (isViewOnce ? (text === '[VIEW_ONCE_VIDEO]' ? 'VIDEO' : (text === '[VIEW_ONCE_AUDIO]' ? 'AUDIO' : 'IMAGE')) : (existingRecord?.message_type || mediaType)),
         status: existingRecord?.status && (ACK_ORDER[existingRecord.status] ?? 0) > (ACK_ORDER[resolveMessageStatus(msg, fromMe, msg.reactions)] ?? 0)
           ? existingRecord.status
           : resolveMessageStatus(msg, fromMe, msg.reactions),
         body: text || '',
         media_id: mediaInfo?.media_id || existingRecord?.media_id || null,
-        media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || (isViewOnce ? (mediaType === 'VIDEO' ? 'video/mp4' : (mediaType === 'AUDIO' ? 'audio/ogg' : 'image/jpeg')) : null),
+        media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || (isViewOnce ? (mediaType === 'VIDEO' || text === '[VIEW_ONCE_VIDEO]' ? 'video/mp4' : (mediaType === 'AUDIO' || text === '[VIEW_ONCE_AUDIO]' ? 'audio/ogg' : 'image/jpeg')) : null),
         media_filename: mediaInfo?.filename || existingRecord?.media_filename || null,
         media_caption: (text && !text.startsWith('[VIEW_ONCE_')) ? text : (existingRecord?.media_caption || null),
         native_link_preview: nativeLinkPreview,
@@ -3662,7 +3663,7 @@ export function createSessionManager({
       }
       if (msg.key?.id) {
         const placeholderAt = chatMsgs.findIndex(
-          (m) => m.wa_message_id === msg.key.id && !m.media_id
+          (m) => m.wa_message_id === msg.key.id && !m.media_id && !m.is_view_once && (!m.body || !m.body.startsWith('[VIEW_ONCE_'))
         );
         if (placeholderAt !== -1) chatMsgs.splice(placeholderAt, 1);
       }
@@ -3898,15 +3899,13 @@ export function createSessionManager({
 
     _applyMessageAck(sessionId, key, update) {
       const newStatus = ACK_RANK[update?.status];
-      if (!key?.fromMe || !key.id || !key.remoteJid || !newStatus) return;
+      if (!key?.id || !key.remoteJid || !newStatus) return;
       const store = this._storeOf(this._requireSession(sessionId));
       const jid = resolveJidKey(store, key.remoteJid);
       const msg = (store.messagesByChat.get(jid) || []).find((m) => m.wa_message_id === key.id);
-      // FAILED is terminal and must win over any earlier status, so it is
-      // checked before the monotonic guard. Ranking it alongside PENDING (0)
-      // meant a rejected message was silently discarded once it was SENT —
-      // which is the case that matters, since WhatsApp rejects after accept.
+      // FAILED is terminal and only applies to outbound sends
       if (newStatus === 'FAILED') {
+        if (!key.fromMe) return;
         if (msg && msg.status === 'FAILED') return;
         if (msg) {
           msg.status = 'FAILED';
@@ -3942,6 +3941,12 @@ export function createSessionManager({
       const store = this._storeOf(this._requireSession(sessionId));
       const jid = resolveJidKey(store, key.remoteJid);
       const msg = (store.messagesByChat.get(jid) || []).find((m) => m.wa_message_id === key.id);
+      const readTs = receipt.readTimestamp
+        ? new Date(Number(receipt.readTimestamp) * 1000).toISOString()
+        : (receipt.playedTimestamp ? new Date(Number(receipt.playedTimestamp) * 1000).toISOString() : null);
+      const playedTs = receipt.playedTimestamp
+        ? new Date(Number(receipt.playedTimestamp) * 1000).toISOString()
+        : null;
       if (msg) {
         msg.user_receipts = msg.user_receipts || {};
         const prev = msg.user_receipts[receipt.userJid] || {};
@@ -3950,13 +3955,12 @@ export function createSessionManager({
           receipt_timestamp: receipt.receiptTimestamp
             ? new Date(Number(receipt.receiptTimestamp) * 1000).toISOString()
             : prev.receipt_timestamp || null,
-          read_timestamp: receipt.readTimestamp
-            ? new Date(Number(receipt.readTimestamp) * 1000).toISOString()
-            : prev.read_timestamp || null,
-          played_timestamp: receipt.playedTimestamp
-            ? new Date(Number(receipt.playedTimestamp) * 1000).toISOString()
-            : prev.played_timestamp || null,
+          read_timestamp: readTs || prev.read_timestamp || null,
+          played_timestamp: playedTs || prev.played_timestamp || null,
         };
+        if (readTs && (!msg.status || ACK_ORDER[msg.status] < ACK_ORDER.READ)) {
+          msg.status = 'READ';
+        }
       }
       this._emit({
         event: 'message_receipt_updated',
@@ -3967,9 +3971,8 @@ export function createSessionManager({
         receipt_timestamp: receipt.receiptTimestamp
           ? new Date(Number(receipt.receiptTimestamp) * 1000).toISOString()
           : null,
-        read_timestamp: receipt.readTimestamp
-          ? new Date(Number(receipt.readTimestamp) * 1000).toISOString()
-          : null,
+        read_timestamp: readTs,
+        played_timestamp: playedTs,
       });
     },
 
@@ -5620,13 +5623,13 @@ export function createSessionManager({
         unwrapped.imageMessage?.contextInfo ||
         unwrapped.videoMessage?.contextInfo ||
         unwrapped.documentMessage?.contextInfo;
+      const isViewOnce = isViewOnceMessage(msg.message) || isViewOnceMessage(unwrapped);
       const mediaType = classifyMessageType(unwrapped);
-      const isViewOnce = isViewOnceMessage(msg.message);
       let text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
       if (isViewOnce && (!text || text.trim() === '')) {
         text = mediaType === 'VIDEO' ? '[VIEW_ONCE_VIDEO]' : (mediaType === 'AUDIO' ? '[VIEW_ONCE_AUDIO]' : '[VIEW_ONCE_PHOTO]');
       }
-      if (!hasRecognizedContent(unwrapped) && !text) return null;
+      if (!hasRecognizedContent(unwrapped) && !text && !isViewOnce) return null;
       const ts = messageTimestampMs(msg.messageTimestamp);
       const timestampSeconds = Number(msg.messageTimestamp);
       const rawMedia =
@@ -5684,7 +5687,7 @@ export function createSessionManager({
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
         conversation_id: key,
         direction: msg.key?.fromMe ? 'OUTBOUND' : 'INBOUND',
-        message_type: mediaType || 'TEXT',
+        message_type: (mediaType && mediaType !== 'TEXT') ? mediaType : (isViewOnce ? (text === '[VIEW_ONCE_VIDEO]' ? 'VIDEO' : (text === '[VIEW_ONCE_AUDIO]' ? 'AUDIO' : 'IMAGE')) : (mediaType || 'TEXT')),
         status: resolveMessageStatus(msg, Boolean(msg.key?.fromMe), reactions),
         body: text || '',
         media_id: mediaId,

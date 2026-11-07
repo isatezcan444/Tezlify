@@ -1077,18 +1077,31 @@ class WhatsAppEventOrchestrator:
                 # `replace` acik bir ICERIK guncellemesidir: `notify`'nin aksine
                 # gercek bir govdeyi de degistirebilir. `append` yer tutucu
                 # kuralini korur.
+                incoming_is_view_once = bool(
+                    msg.get("is_view_once")
+                    or (msg.get("body") and str(msg.get("body")).startswith("[VIEW_ONCE_"))
+                )
+                if incoming_is_view_once and not getattr(canonical, "is_view_once", False):
+                    canonical.is_view_once = True
+
                 if is_update and body_incoming:
-                    canonical.body = msg.get("body")
+                    if not (canonical.is_view_once and (not msg.get("body") or msg.get("body") == "")):
+                        canonical.body = msg.get("body")
                     if msg.get("is_edited") or is_update:
                         canonical.is_edited = True
                         canonical.edited_at = _as_naive_utc(_parse_dt(msg.get("edited_at"))) or utc_now_naive()
-                elif body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("["))):
+                elif body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("[") and not canonical.is_view_once)):
                     canonical.body = msg.get("body")
 
                 if msg.get("message_type") and (canonical.message_type == MessageType.TEXT or canonical_body_empty):
                     mtype_new = str(msg.get("message_type", "")).upper()
                     if mtype_new in MessageType.__members__:
                         canonical.message_type = MessageType[mtype_new]
+
+                if msg.get("status"):
+                    incoming_status = str(msg.get("status")).upper()
+                    if incoming_status in ("READ", "DELIVERED"):
+                        _advance_message_status(canonical, incoming_status)
 
                 if msg.get("media_id") and not canonical.media_id:
                     canonical.media_id = msg.get("media_id")
@@ -1097,8 +1110,6 @@ class WhatsAppEventOrchestrator:
                     canonical.media_caption = msg.get("media_caption") or canonical.media_caption
                 if msg.get("quoted_message") and not getattr(canonical, "quoted_message", None):
                     canonical.quoted_message = msg.get("quoted_message")
-                if msg.get("is_view_once") and not getattr(canonical, "is_view_once", False):
-                    canonical.is_view_once = True
 
                 content_changed = (canonical.body != body_before) or (canonical.media_id != media_before)
                 # A no-op replace must not touch the preview. A timeless update
@@ -1141,7 +1152,17 @@ class WhatsAppEventOrchestrator:
         is_view_once = bool(
             msg.get("is_view_once", False)
             or (body in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+            or (isinstance(body, str) and body.startswith("[VIEW_ONCE_"))
         )
+        initial_status = ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT
+        incoming_status_str = (msg.get("status") or "").upper()
+        if incoming_status_str in ConversationMessageStatus.__members__:
+            incoming_status = ConversationMessageStatus[incoming_status_str]
+            if incoming_status == ConversationMessageStatus.READ or (direction == MessageDirection.OUTBOUND and incoming_status in (ConversationMessageStatus.DELIVERED, ConversationMessageStatus.READ)):
+                initial_status = incoming_status
+        read_at = None
+        if initial_status == ConversationMessageStatus.READ:
+            read_at = _as_naive_utc(_parse_dt(msg.get("read_at") or msg.get("read_timestamp") or msg.get("played_timestamp"))) or utc_now_naive()
         row = Message(
             user_id=owner,
             conversation_id=conv.id,
@@ -1182,7 +1203,8 @@ class WhatsAppEventOrchestrator:
                 if direction == MessageDirection.INBOUND
                 else (msg.get("recipient_phone") or contact.phone_e164 or jid)
             ),
-            status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
+            status=initial_status,
+            read_at=read_at,
             is_edited=bool(msg.get("is_edited", False)),
             edited_at=_as_naive_utc(_parse_dt(msg.get("edited_at"))) if msg.get("edited_at") else None,
             external_timestamp=_as_naive_utc(_parse_dt(msg.get("created_at"))),
@@ -1825,7 +1847,8 @@ class WhatsAppEventOrchestrator:
             except Exception as sbx_rcpt_err:
                 logger.warning("[AUDIT] Sandbox receipt handling error, proceeding to normal receipt: %s", sbx_rcpt_err)
 
-        read_ts_str = event.get("read_timestamp")
+        read_ts_str = event.get("read_timestamp") or event.get("played_timestamp")
+        played_ts_str = event.get("played_timestamp")
         receipt_ts_str = event.get("receipt_timestamp")
 
         stmt = (
@@ -1857,6 +1880,10 @@ class WhatsAppEventOrchestrator:
                 _advance_message_status(msg_row, "DELIVERED")
             await db.commit()
 
+        status_val = "READ" if read_ts_str else ("DELIVERED" if receipt_ts_str else None)
+        if row and hasattr(msg_row, "status"):
+            status_val = msg_row.status.value
+
         return {
             "event": "message_receipt_updated",
             "user_id": owner,
@@ -1866,6 +1893,8 @@ class WhatsAppEventOrchestrator:
             "user_jid": event.get("user_jid"),
             "receipt_timestamp": receipt_ts_str,
             "read_timestamp": read_ts_str,
+            "played_timestamp": played_ts_str,
+            "status": status_val,
         }
 
     async def _ingest_lid_mapped(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:

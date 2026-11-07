@@ -3,7 +3,7 @@ import { useI18n } from '../../../context/I18nContext';
 import { translateApiError } from '../lib/translateError';
 import { WhatsAppRepository } from '../data/whatsappRepository';
 import { mapMessageItem } from '../api/whatsappApi';
-import { ConversationDetail, Message, ConversationStatus } from '../../../types';
+import { ConversationDetail, Message, ConversationStatus, ConversationMessageStatus } from '../../../types';
 import { compareMessagesChronological, isRealDbId } from '../lib/whatsappOrdering';
 
 // Kanonik kronolojik siralama `lib/whatsappOrdering.compareMessagesChronological`
@@ -424,10 +424,11 @@ export function useWhatsAppConversation({
 
       // Handle message status updates (PENDING -> SENT -> DELIVERED -> READ / FAILED).
       // Reconcile by client_message_id first (survives the optimistic phase),
-      // then numeric DB id. Merge the real id into the optimistic row instead
+      // then numeric DB id, then wa_message_id. Merge the real id into the optimistic row instead
       // of appending a duplicate.
       if (eventData.event === 'message_status_updated' && matchesConv) {
         const clientMid = eventData.client_message_id;
+        const waMid = eventData.wa_message_id;
         const serverId = eventData.id;
         const numericServerId =
           typeof eventData.message_id === 'number' && eventData.message_id > 0
@@ -443,13 +444,52 @@ export function useWhatsAppConversation({
           const updatedMessages = prev.messages.map((m) => {
             const matchesClientMid = clientMid && m.client_message_id === clientMid;
             const matchesId = numericServerId && m.id === numericServerId;
-            if (matchesClientMid || matchesId) {
+            const matchesWaMid = waMid && m.wa_message_id === waMid;
+            if (matchesClientMid || matchesId || matchesWaMid) {
               changed = true;
+              const nextStatus = newStatus || m.status;
               return {
                 ...m,
                 id: numericServerId ?? m.id,
-                status: newStatus,
-                error_message: eventData.error_message,
+                wa_message_id: waMid || m.wa_message_id,
+                status: nextStatus,
+                read_at: nextStatus === 'READ' ? (m.read_at || new Date().toISOString()) : m.read_at,
+                error_message: eventData.error_message ?? m.error_message,
+              };
+            }
+            return m;
+          });
+
+          if (!changed) return prev;
+          return { ...prev, messages: updatedMessages };
+        });
+      }
+
+      // Handle message receipt updates (played / read / delivered timestamps from WhatsApp)
+      if (eventData.event === 'message_receipt_updated' && matchesConv) {
+        const waMid = eventData.wa_message_id;
+        const numericServerId =
+          typeof eventData.message_id === 'number' && eventData.message_id > 0
+            ? eventData.message_id
+            : undefined;
+        const readTs = eventData.read_timestamp || eventData.played_timestamp;
+        const receiptTs = eventData.receipt_timestamp;
+
+        setConversation((prev) => {
+          if (!prev) return prev;
+          let changed = false;
+          const updatedMessages = prev.messages.map((m) => {
+            const matchesWaMid = Boolean(waMid && m.wa_message_id === waMid);
+            const matchesId = Boolean(numericServerId && m.id === numericServerId);
+            if (matchesWaMid || matchesId) {
+              changed = true;
+              const isRead = Boolean(readTs || eventData.status === 'READ');
+              const nextStatus: ConversationMessageStatus = isRead ? 'READ' : (m.status === 'READ' ? 'READ' : 'DELIVERED');
+              return {
+                ...m,
+                status: nextStatus,
+                read_at: readTs ? (m.read_at || readTs) : (isRead ? (m.read_at || new Date().toISOString()) : m.read_at),
+                delivered_at: receiptTs ? (m.delivered_at || receiptTs) : m.delivered_at,
               };
             }
             return m;

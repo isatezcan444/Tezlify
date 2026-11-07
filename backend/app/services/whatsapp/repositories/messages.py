@@ -196,6 +196,9 @@ def build_message_from_gateway(
         rx_list = msg.get("reactions") or []
         if any(bool(r.get("emoji") or r.get("text")) for r in rx_list):
             status = ConversationMessageStatus.READ
+    read_at = None
+    if status == ConversationMessageStatus.READ:
+        read_at = as_naive_utc(parse_dt(msg.get("read_at") or msg.get("read_timestamp") or msg.get("played_timestamp"))) or datetime.now(timezone.utc).replace(tzinfo=None)
     return Message(
         user_id=owner,
         conversation_id=conv.id,
@@ -227,8 +230,10 @@ def build_message_from_gateway(
         is_view_once=bool(
             msg.get("is_view_once", False)
             or (body in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+            or (isinstance(body, str) and body.startswith("[VIEW_ONCE_"))
         ),
         status=status,
+        read_at=read_at,
         external_timestamp=as_naive_utc(ts),
     )
 

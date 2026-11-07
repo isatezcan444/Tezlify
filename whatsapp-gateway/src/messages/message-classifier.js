@@ -14,9 +14,11 @@ import { extractMessageContent, getContentType } from '@whiskeysockets/baileys';
 export function unwrapMessageContent(content) {
   if (!content || typeof content !== 'object') return content;
   let current = content;
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     if (!current || typeof current !== 'object') break;
-    if (current.deviceSentMessage?.message) {
+    if (current.message && typeof current.message === 'object' && !current.imageMessage && !current.conversation && !current.extendedTextMessage && !current.videoMessage) {
+      current = current.message;
+    } else if (current.deviceSentMessage?.message) {
       current = current.deviceSentMessage.message;
     } else if (current.ephemeralMessage?.message) {
       current = current.ephemeralMessage.message;
@@ -72,8 +74,10 @@ export function extractProtocolMessage(content) {
  */
 export function isViewOnceMessage(content) {
   if (!content || typeof content !== 'object') return false;
+  if (content.is_view_once === true || content.isViewOnce === true) return true;
+  if (typeof content.body === 'string' && (content.body === '[VIEW_ONCE_PHOTO]' || content.body === '[VIEW_ONCE_VIDEO]' || content.body === '[VIEW_ONCE_AUDIO]' || content.body.startsWith('[VIEW_ONCE_'))) return true;
   let current = content;
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     if (!current || typeof current !== 'object') break;
     if (
       current.viewOnceMessage ||
@@ -82,7 +86,9 @@ export function isViewOnceMessage(content) {
     ) {
       return true;
     }
-    if (current.deviceSentMessage?.message) {
+    if (current.message && typeof current.message === 'object' && !current.imageMessage && !current.conversation && !current.extendedTextMessage && !current.videoMessage) {
+      current = current.message;
+    } else if (current.deviceSentMessage?.message) {
       current = current.deviceSentMessage.message;
     } else if (current.ephemeralMessage?.message) {
       current = current.ephemeralMessage.message;
@@ -96,7 +102,15 @@ export function isViewOnceMessage(content) {
   if (
     unwrapped.imageMessage?.viewOnce ||
     unwrapped.videoMessage?.viewOnce ||
-    unwrapped.audioMessage?.viewOnce
+    unwrapped.audioMessage?.viewOnce ||
+    unwrapped.ptvMessage?.viewOnce
+  ) {
+    return true;
+  }
+  if (
+    unwrapped.viewOnceMessage ||
+    unwrapped.viewOnceMessageV2 ||
+    unwrapped.viewOnceMessageV2Extension
   ) {
     return true;
   }
@@ -131,6 +145,11 @@ export function classifyMessageType(content) {
   if (c.contactMessage || c.contactsArrayMessage) return 'CONTACT';
   if (c.pollCreationMessage || c.pollCreationMessageV2 || c.pollCreationMessageV3 || c.pollUpdateMessage) return 'OTHER';
   if (c.templateMessage) return 'TEMPLATE';
+  if (isViewOnceMessage(content)) {
+    if (c.videoMessage || content.body === '[VIEW_ONCE_VIDEO]') return 'VIDEO';
+    if (c.audioMessage || content.body === '[VIEW_ONCE_AUDIO]') return 'AUDIO';
+    return 'IMAGE';
+  }
   if (c.conversation || c.extendedTextMessage || c.interactiveMessage || c.buttonsMessage || c.buttonsResponseMessage || c.listResponseMessage || c.groupInviteMessage || c.orderMessage) return 'TEXT';
   return 'TEXT';
 }

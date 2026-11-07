@@ -797,32 +797,99 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       message.is_view_once ||
       message.body === '[VIEW_ONCE_PHOTO]' ||
       message.body === '[VIEW_ONCE_VIDEO]' ||
-      message.body === '[VIEW_ONCE_AUDIO]'
+      message.body === '[VIEW_ONCE_AUDIO]' ||
+      (typeof message.body === 'string' && message.body.startsWith('[VIEW_ONCE_'))
     );
 
     if (isViewOnce) {
       const isVideo = message.message_type === 'VIDEO' || message.body === '[VIEW_ONCE_VIDEO]';
       const isAudio = message.message_type === 'AUDIO' || message.body === '[VIEW_ONCE_AUDIO]';
-      const title = isVideo
+      const isOpened = Boolean(
+        message.read_at ||
+        message.status === 'READ' ||
+        (message as any).played_at ||
+        message.body === '[VIEW_ONCE_OPENED]'
+      );
+
+      const title = isOpened
+        ? t('whatsapp.viewOnceOpened')
+        : isVideo
         ? t('whatsapp.viewOnceVideo')
         : isAudio
         ? t('whatsapp.viewOnceAudio')
         : t('whatsapp.viewOncePhoto');
-      const notice = isInbound
-        ? (isVideo
-            ? t('whatsapp.viewOnceNoticeInboundVideo')
-            : isAudio
-            ? t('whatsapp.viewOnceNoticeInboundAudio')
-            : t('whatsapp.viewOnceNoticeInbound'))
-        : t('whatsapp.viewOnceNoticeOutbound');
+
+      const notice = isOpened
+        ? (isInbound
+            ? t('whatsapp.viewOnceNoticeInboundOpened')
+            : t('whatsapp.viewOnceNoticeOutboundOpened'))
+        : (isInbound
+            ? (isVideo
+                ? t('whatsapp.viewOnceNoticeInboundVideo')
+                : isAudio
+                ? t('whatsapp.viewOnceNoticeInboundAudio')
+                : t('whatsapp.viewOnceNoticeInbound'))
+            : t('whatsapp.viewOnceNoticeOutboundPending'));
+
       const caption = message.media_caption || (message.body && !message.body.startsWith('[VIEW_ONCE_') ? message.body : null);
+
+      if (resolvedMediaUrl && !imageLoadError && !isVideo && !isAudio) {
+        return (
+          <div className="space-y-2">
+            <div
+              onClick={() => {
+                setLightboxMediaType('IMAGE');
+                setIsLightboxOpen(true);
+              }}
+              className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 w-[260px] h-[180px] max-w-full cursor-pointer"
+            >
+              <div className="absolute top-2 left-2 z-10 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/20 text-white text-[11px] font-medium flex items-center gap-1.5 shadow-md">
+                {isOpened ? (
+                  <>
+                    <Eye className="w-3.5 h-3.5 text-slate-300" />
+                    <span>{t('whatsapp.viewOnceOpened')}</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-4 h-4 rounded-full border border-dashed border-white flex items-center justify-center font-bold text-[10px]">
+                      1
+                    </div>
+                    <span>{title}</span>
+                  </>
+                )}
+              </div>
+              <img
+                src={resolvedMediaUrl}
+                alt="View once photo"
+                className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                onError={() => setImageLoadError(true)}
+              />
+            </div>
+            {caption && (
+              <p className="whitespace-pre-wrap break-words font-medium text-xs px-0.5">
+                {highlightMatches(caption)}
+              </p>
+            )}
+          </div>
+        );
+      }
 
       return (
         <div className="space-y-2 max-w-[280px]">
-          <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-900/5 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 select-none">
-            <div className="w-9 h-9 rounded-full border-2 border-dashed border-[#00a884] dark:border-[#00a884] flex items-center justify-center shrink-0 bg-[#00a884]/10 text-[#00a884] dark:text-[#25D366] font-bold text-sm shadow-sm mt-0.5">
-              1
-            </div>
+          <div className={`flex items-start gap-3 p-3 rounded-xl border select-none transition-colors ${
+            isOpened
+              ? 'bg-slate-900/[0.03] dark:bg-white/[0.03] border-black/5 dark:border-white/5 opacity-85'
+              : 'bg-slate-900/5 dark:bg-white/[0.06] border-black/5 dark:border-white/10'
+          }`}>
+            {isOpened ? (
+              <div className="w-9 h-9 rounded-full border border-slate-300 dark:border-white/20 flex items-center justify-center shrink-0 bg-slate-200/60 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-semibold text-xs shadow-sm mt-0.5">
+                <Eye className="w-4 h-4 opacity-80" />
+              </div>
+            ) : (
+              <div className="w-9 h-9 rounded-full border-2 border-dashed border-[#00a884] dark:border-[#00a884] flex items-center justify-center shrink-0 bg-[#00a884]/10 text-[#00a884] dark:text-[#25D366] font-bold text-sm shadow-sm mt-0.5">
+                1
+              </div>
+            )}
             <div className="flex-1 min-w-0">
               <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
                 <span>{title}</span>
