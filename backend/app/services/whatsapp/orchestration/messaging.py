@@ -160,7 +160,7 @@ def serialize_message(
     is_revoked = bool(getattr(row, "is_revoked", False))
     is_view_once = bool(
         getattr(row, "is_view_once", False)
-        or (getattr(row, "body", None) in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+        or (getattr(row, "body", None) in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]", "[VIEW_ONCE_MEDIA]"))
         or (isinstance(getattr(row, "body", None), str) and getattr(row, "body", None).startswith("[VIEW_ONCE_"))
     )
     media_key = None if (is_failed_outbound or is_media_expired or is_view_once) else (row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None))

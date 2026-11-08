@@ -580,16 +580,21 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
     const mediaLabel = (() => {
       if (isRevoked) {
-        return t('whatsapp.msgRevoked') || 'Bu mesaj silindi';
+        return isSelfSender
+          ? t('whatsapp.messageRevokedOutbound')
+          : t('whatsapp.messageRevokedInbound');
       }
       if (isViewOnce) {
         if (mType === 'VIDEO' || quoted.body === '[VIEW_ONCE_VIDEO]') {
-          return t('whatsapp.viewOnceVideo') || 'Tek görüntülemelik video';
+          return t('whatsapp.viewOnceVideo');
         }
         if (mType === 'AUDIO' || quoted.body === '[VIEW_ONCE_AUDIO]') {
-          return t('whatsapp.viewOnceAudio') || 'Tek görüntülemelik ses';
+          return t('whatsapp.viewOnceAudio');
         }
-        return t('whatsapp.viewOncePhoto') || 'Tek görüntülemelik fotoğraf';
+        if (mType === 'IMAGE' || quoted.body === '[VIEW_ONCE_PHOTO]') {
+          return t('whatsapp.viewOncePhoto');
+        }
+        return t('whatsapp.viewOnceMedia');
       }
       if (quoted.body && quoted.body !== 'Video' && quoted.body !== 'Fotoğraf' && quoted.body !== 'Belge') {
         return quoted.body;
@@ -804,6 +809,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     if (isViewOnce) {
       const isVideo = message.message_type === 'VIDEO' || message.body === '[VIEW_ONCE_VIDEO]';
       const isAudio = message.message_type === 'AUDIO' || message.body === '[VIEW_ONCE_AUDIO]';
+      const isPhoto = message.message_type === 'IMAGE' || message.body === '[VIEW_ONCE_PHOTO]';
       const isOpened = Boolean(
         message.read_at ||
         message.status === 'READ' ||
@@ -817,7 +823,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         ? t('whatsapp.viewOnceVideo')
         : isAudio
         ? t('whatsapp.viewOnceAudio')
-        : t('whatsapp.viewOncePhoto');
+        : isPhoto
+        ? t('whatsapp.viewOncePhoto')
+        : t('whatsapp.viewOnceMedia');
 
       const notice = isOpened
         ? (isInbound
@@ -828,12 +836,14 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 ? t('whatsapp.viewOnceNoticeInboundVideo')
                 : isAudio
                 ? t('whatsapp.viewOnceNoticeInboundAudio')
-                : t('whatsapp.viewOnceNoticeInbound'))
+                : isPhoto
+                ? t('whatsapp.viewOnceNoticeInbound')
+                : t('whatsapp.viewOnceNoticeInboundMedia'))
             : t('whatsapp.viewOnceNoticeOutboundPending'));
 
       const caption = message.media_caption || (message.body && !message.body.startsWith('[VIEW_ONCE_') ? message.body : null);
 
-      if (resolvedMediaUrl && !imageLoadError && !isVideo && !isAudio) {
+      if (resolvedMediaUrl && !imageLoadError && isPhoto && !isVideo && !isAudio) {
         return (
           <div className="space-y-2">
             <div

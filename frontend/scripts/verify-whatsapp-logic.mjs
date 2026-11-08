@@ -620,7 +620,8 @@ try {
     assert.equal(isRealDbId(1), true);
     assert.equal(isRealDbId(42), true);
     assert.equal(isRealDbId('42'), true);
-    assert.equal(isRealDbId(999999999), true);
+    assert.equal(isRealDbId(888888888), true);
+    assert.equal(isRealDbId(999000000), false);
     assert.equal(isRealDbId('optimistic_cmsg_123'), false);
     assert.equal(isRealDbId('temp_456'), false);
     assert.equal(isRealDbId(1730723849123), false);
@@ -638,8 +639,8 @@ try {
     assert.ok(compareMessagesChronological(msgOlder, msgNewer) < 0);
     assert.ok(compareMessagesChronological(msgNewer, msgOlder) > 0);
 
-    const msgInbound = { id: 20, created_at: t0, direction: 'INBOUND' };
-    const msgOutbound = { id: 10, created_at: t0, direction: 'OUTBOUND' };
+    const msgInbound = { id: 'temp_inbound', created_at: t0, direction: 'INBOUND' };
+    const msgOutbound = { id: 'temp_outbound', created_at: t0, direction: 'OUTBOUND' };
     assert.ok(compareMessagesChronological(msgInbound, msgOutbound) < 0, 'inbound must precede outbound when timestamp matches');
     assert.ok(compareMessagesChronological(msgOutbound, msgInbound) > 0);
 

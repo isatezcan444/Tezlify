@@ -2613,6 +2613,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           setMessagesMap((prev) => {
             const currentList = prev[targetConvId] || [];
             if (isRevoked) {
+              const found = currentList.some(
+                (m) => (targetMsgId && m.id === targetMsgId) || (waMsgId && m.wa_message_id === waMsgId)
+              );
+              if (!found && (targetMsgId || waMsgId)) {
+                const tombstoneMessage: Message = {
+                  id: targetMsgId || Date.now(),
+                  conversation_id: targetConvId,
+                  direction: 'INBOUND',
+                  message_type: 'TEXT',
+                  body: '',
+                  wa_message_id: waMsgId,
+                  status: 'RECEIVED',
+                  is_revoked: true,
+                  revoked_at: revokedAt,
+                  created_at: revokedAt,
+                };
+                return {
+                  ...prev,
+                  [targetConvId]: [...currentList, tombstoneMessage],
+                };
+              }
               return {
                 ...prev,
                 [targetConvId]: currentList.map((m) => {
@@ -2642,6 +2663,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               };
             }
           });
+          if (isRevoked) {
+            setConversations((prevConvs) =>
+              prevConvs.map((conv) => {
+                if (conv.id === targetConvId) {
+                  return {
+                    ...conv,
+                    last_message: 'Bu mesaj silindi',
+                    last_message_preview: 'Bu mesaj silindi',
+                  };
+                }
+                return conv;
+              })
+            );
+          }
         }
       }
 

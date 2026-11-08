@@ -229,7 +229,7 @@ def build_message_from_gateway(
         starred_at=as_naive_utc(parse_dt(msg.get("starred_at"))),
         is_view_once=bool(
             msg.get("is_view_once", False)
-            or (body in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]"))
+            or (body in ("[VIEW_ONCE_PHOTO]", "[VIEW_ONCE_VIDEO]", "[VIEW_ONCE_AUDIO]", "[VIEW_ONCE_MEDIA]"))
             or (isinstance(body, str) and body.startswith("[VIEW_ONCE_"))
         ),
         status=status,

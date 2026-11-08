@@ -36,6 +36,8 @@ TYPE_PREVIEW_LABELS: Dict[str, str] = {
     "VIEW_ONCE_PHOTO": "📷 Tek görüntülenmelik fotoğraf",
     "VIEW_ONCE_VIDEO": "🎥 Tek görüntülenmelik video",
     "VIEW_ONCE_AUDIO": "🎵 Tek görüntülenmelik sesli mesaj",
+    "VIEW_ONCE_MEDIA": "👁️ Tek görüntülenmelik medya",
+    "VIEW_ONCE": "👁️ Tek görüntülenmelik mesaj",
     "UNKNOWN": "Mesaj",
     "OTHER": "Mesaj",
 }

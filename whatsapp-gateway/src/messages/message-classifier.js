@@ -71,11 +71,23 @@ export function extractProtocolMessage(content) {
 /**
  * Detect whether a message is an ephemeral view-once message
  * (photos, videos, audio notes designed for single viewing).
+ * Supports both message content envelopes and Baileys message key hints (msg.key?.isViewOnce).
  */
-export function isViewOnceMessage(content) {
+export function isViewOnceMessage(content, key = null) {
+  if (key && typeof key === 'object' && key.isViewOnce === true) return true;
   if (!content || typeof content !== 'object') return false;
+  if (content.key && typeof content.key === 'object' && content.key.isViewOnce === true) return true;
   if (content.is_view_once === true || content.isViewOnce === true) return true;
-  if (typeof content.body === 'string' && (content.body === '[VIEW_ONCE_PHOTO]' || content.body === '[VIEW_ONCE_VIDEO]' || content.body === '[VIEW_ONCE_AUDIO]' || content.body.startsWith('[VIEW_ONCE_'))) return true;
+  if (
+    typeof content.body === 'string' &&
+    (content.body === '[VIEW_ONCE_PHOTO]' ||
+      content.body === '[VIEW_ONCE_VIDEO]' ||
+      content.body === '[VIEW_ONCE_AUDIO]' ||
+      content.body === '[VIEW_ONCE_MEDIA]' ||
+      content.body.startsWith('[VIEW_ONCE_'))
+  ) {
+    return true;
+  }
   let current = content;
   for (let i = 0; i < 8; i++) {
     if (!current || typeof current !== 'object') break;
@@ -134,7 +146,7 @@ export function resolveDownloadableMedia(messageContent) {
   return { contentType, mediaType, media };
 }
 
-export function classifyMessageType(content) {
+export function classifyMessageType(content, key = null) {
   const c = unwrapMessageContent(content) || {};
   if (c.imageMessage) return 'IMAGE';
   if (c.documentMessage) return 'DOCUMENT';
@@ -145,10 +157,11 @@ export function classifyMessageType(content) {
   if (c.contactMessage || c.contactsArrayMessage) return 'CONTACT';
   if (c.pollCreationMessage || c.pollCreationMessageV2 || c.pollCreationMessageV3 || c.pollUpdateMessage) return 'OTHER';
   if (c.templateMessage) return 'TEMPLATE';
-  if (isViewOnceMessage(content)) {
-    if (c.videoMessage || content.body === '[VIEW_ONCE_VIDEO]') return 'VIDEO';
-    if (c.audioMessage || content.body === '[VIEW_ONCE_AUDIO]') return 'AUDIO';
-    return 'IMAGE';
+  if (isViewOnceMessage(content, key)) {
+    if (c.videoMessage || c.ptvMessage || content?.body === '[VIEW_ONCE_VIDEO]') return 'VIDEO';
+    if (c.audioMessage || content?.body === '[VIEW_ONCE_AUDIO]') return 'AUDIO';
+    if (c.imageMessage || content?.body === '[VIEW_ONCE_PHOTO]') return 'IMAGE';
+    return 'UNKNOWN';
   }
   if (c.conversation || c.extendedTextMessage || c.interactiveMessage || c.buttonsMessage || c.buttonsResponseMessage || c.listResponseMessage || c.groupInviteMessage || c.orderMessage) return 'TEXT';
   return 'TEXT';
@@ -502,6 +515,7 @@ export function extractPollPayload(content) {
 }
 
 export function summarizeWaMessage(waMsg) {
+  const isVo = isViewOnceMessage(waMsg?.message, waMsg?.key);
   const rawContent = waMsg?.message || {};
   const content = unwrapMessageContent(rawContent) || rawContent;
   const contact = extractContactPayload(content);
@@ -531,10 +545,15 @@ export function summarizeWaMessage(waMsg) {
     content.groupInviteMessage?.caption ||
     content.orderMessage?.orderTitle ||
     '';
-  if (text) return { message_type: classifyMessageType(content), body: text };
+  if (text) return { message_type: classifyMessageType(content, waMsg?.key), body: text };
+  if (isVo) {
+    const voType = classifyMessageType(content, waMsg?.key);
+    const voBody = voType === 'VIDEO' ? '[VIEW_ONCE_VIDEO]' : (voType === 'AUDIO' ? '[VIEW_ONCE_AUDIO]' : (voType === 'IMAGE' ? '[VIEW_ONCE_PHOTO]' : '[VIEW_ONCE_MEDIA]'));
+    return { message_type: voType, body: voBody };
+  }
   // Metin yok. Medya tipleri icin `normalizePreviewText` kendi etiketini uretir;
   // metinsiz sistem turleri icin isareti biz veriyoruz ki preview bos kalmasin.
-  return { message_type: classifyMessageType(content), body: systemContentMarker(waMsg) || '' };
+  return { message_type: classifyMessageType(content, waMsg?.key), body: systemContentMarker(waMsg) || '' };
 }
 
 export function buildMediaContent({

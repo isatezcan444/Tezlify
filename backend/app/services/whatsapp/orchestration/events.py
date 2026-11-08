@@ -1084,14 +1084,19 @@ class WhatsAppEventOrchestrator:
                 if incoming_is_view_once and not getattr(canonical, "is_view_once", False):
                     canonical.is_view_once = True
 
-                if is_update and body_incoming:
-                    if not (canonical.is_view_once and (not msg.get("body") or msg.get("body") == "")):
+                is_canonical_revoked = bool(getattr(canonical, "is_revoked", False))
+                if not is_canonical_revoked:
+                    if is_update and body_incoming:
+                        if not (canonical.is_view_once and (not msg.get("body") or msg.get("body") == "")):
+                            canonical.body = msg.get("body")
+                        if msg.get("is_edited") or is_update:
+                            canonical.is_edited = True
+                            canonical.edited_at = _as_naive_utc(_parse_dt(msg.get("edited_at"))) or utc_now_naive()
+                    elif body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("[") and not canonical.is_view_once)):
                         canonical.body = msg.get("body")
-                    if msg.get("is_edited") or is_update:
-                        canonical.is_edited = True
-                        canonical.edited_at = _as_naive_utc(_parse_dt(msg.get("edited_at"))) or utc_now_naive()
-                elif body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("[") and not canonical.is_view_once)):
-                    canonical.body = msg.get("body")
+                else:
+                    canonical.body = ""
+                    canonical.media_id = None
 
                 if msg.get("message_type") and (canonical.message_type == MessageType.TEXT or canonical_body_empty):
                     mtype_new = str(msg.get("message_type", "")).upper()
@@ -1103,7 +1108,7 @@ class WhatsAppEventOrchestrator:
                     if incoming_status in ("READ", "DELIVERED"):
                         _advance_message_status(canonical, incoming_status)
 
-                if msg.get("media_id") and not canonical.media_id:
+                if msg.get("media_id") and not canonical.media_id and not is_canonical_revoked:
                     canonical.media_id = msg.get("media_id")
                     canonical.media_mime_type = msg.get("media_mime_type") or canonical.media_mime_type
                     canonical.media_filename = msg.get("media_filename") or canonical.media_filename
@@ -1708,7 +1713,7 @@ class WhatsAppEventOrchestrator:
         )
         jid_str = event.get("conversation_id")
         gw_sid = event.get("gateway_session_id") or event.get("session_id")
-        owner, session = await resolve_event_owner_and_session(db, jid_str or "", gw_sid)
+        owner, ws_session_id = await resolve_event_owner_and_session(db, jid_str or "", gw_sid)
         if not owner:
             return _skip_event(event, "message_deleted: kiracı çözülemedi")
 
@@ -1729,23 +1734,105 @@ class WhatsAppEventOrchestrator:
             )
         )
         row = (await db.execute(stmt)).first()
-        if not row:
-            return _skip_event(event, f"message_deleted: hedef mesaj #{target_wa_id} bulunamadı")
-
-        target_msg, conv = row
-        if is_revoked:
-            target_msg.is_revoked = True
-            target_msg.revoked_at = now
-            target_msg.body = ""
-            target_msg.media_id = None
-            target_msg.media_caption = None
-            target_msg.media_filename = None
-            target_msg.media_mime_type = None
-            if conv.last_message_preview and ("Bu mesaj" in conv.last_message_preview or not target_msg.direction or target_msg.direction.value == "OUTBOUND"):
-                conv.last_message_preview = "Bu mesaj silindi"
+        target_msg = None
+        conv = None
+        if row:
+            target_msg, conv = row
+            if is_revoked:
+                target_msg.is_revoked = True
+                target_msg.revoked_at = now
+                target_msg.body = ""
+                target_msg.media_id = None
+                target_msg.media_caption = None
+                target_msg.media_filename = None
+                target_msg.media_mime_type = None
+                if not conv.last_message_preview or "Bu mesaj" in conv.last_message_preview or not target_msg.direction or target_msg.direction.value == "OUTBOUND":
+                    conv.last_message_preview = "Bu mesaj silindi"
+            else:
+                target_msg.is_deleted_for_me = True
+                target_msg.deleted_for_me_at = now
         else:
-            target_msg.is_deleted_for_me = True
-            target_msg.deleted_for_me_at = now
+            # Orijinal mesaj henüz DB'ye girmemiş / ingest edilememiş.
+            # 1. Sohbet ve kiracı sahipliğini doğrula.
+            find_whatsapp_conversation = self._get_helper(
+                "_find_whatsapp_conversation", _find_whatsapp_conversation
+            )
+            conv = await find_whatsapp_conversation(db, owner, jid_str or "", session_id=ws_session_id)
+            if not conv and jid_str and "@" in jid_str:
+                ensure_conversation_race_safe = self._get_helper(
+                    "_ensure_conversation_race_safe", self._ensure_conversation_race_safe
+                )
+                conv = await ensure_conversation_race_safe(
+                    db, owner, jid_str, event, session_id=ws_session_id
+                )
+            if not conv:
+                return _skip_event(event, f"message_deleted: hedef mesaj #{target_wa_id} ve sohbet bulunamadı")
+
+            # 2. Kalıcı tombstone kaydını kontrol et (idempotency check)
+            existing_tombstone = (
+                await db.execute(
+                    select(Message).where(
+                        Message.wa_message_id == str(target_wa_id),
+                        Message.conversation_id == conv.id,
+                        get_user_filter(Message.user_id, owner),
+                    )
+                )
+            ).scalars().first()
+
+            if existing_tombstone:
+                target_msg = existing_tombstone
+                if is_revoked and not target_msg.is_revoked:
+                    target_msg.is_revoked = True
+                    target_msg.revoked_at = now
+                    target_msg.body = ""
+                    target_msg.media_id = None
+                    target_msg.media_caption = None
+                    target_msg.media_filename = None
+                    target_msg.media_mime_type = None
+            else:
+                # 3. Dayanıklı tombstone kaydı oluştur (sonradan gelecek orijinal mesajın silinmiş kalması için)
+                from_me = bool(event.get("from_me"))
+                direction = MessageDirection.OUTBOUND if from_me else MessageDirection.INBOUND
+                recipient_phone = "ME" if direction == MessageDirection.INBOUND else (jid_to_phone(jid_str or "") or jid_str or "ME")
+                sender_phone = (jid_to_phone(jid_str or "") or jid_str) if direction == MessageDirection.INBOUND else "ME"
+
+                target_msg = Message(
+                    user_id=owner,
+                    conversation_id=conv.id,
+                    direction=direction,
+                    message_type=MessageType.TEXT,
+                    body="",
+                    wa_message_id=str(target_wa_id),
+                    recipient_phone=(recipient_phone or "ME")[:50],
+                    sender_phone=(sender_phone or None)[:50] if sender_phone else None,
+                    is_revoked=is_revoked,
+                    revoked_at=now if is_revoked else None,
+                    is_deleted_for_me=not is_revoked,
+                    deleted_for_me_at=now if not is_revoked else None,
+                    status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
+                    created_at=now,
+                    updated_at=now,
+                )
+                try:
+                    async with db.begin_nested():
+                        db.add(target_msg)
+                        await db.flush()
+                except IntegrityError:
+                    # Eşzamanlı yarışta eklenen kaydı çek
+                    target_msg = (
+                        await db.execute(
+                            select(Message).where(
+                                Message.wa_message_id == str(target_wa_id),
+                                Message.conversation_id == conv.id,
+                                get_user_filter(Message.user_id, owner),
+                            )
+                        )
+                    ).scalars().first()
+                    if not target_msg:
+                        raise
+
+            if is_revoked and (not conv.last_message_preview or "Bu mesaj" in conv.last_message_preview or not target_msg.direction or target_msg.direction.value == "OUTBOUND"):
+                conv.last_message_preview = "Bu mesaj silindi"
 
         await db.commit()
 

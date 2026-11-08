@@ -288,7 +288,7 @@ try {
     installBoxModel(el);
     return el;
   };
-  const pill = (host) => host.querySelector('.bottom-4.right-4');
+  const pill = (host) => host.querySelector('[data-testid="new-message-pill"]')?.closest('.bottom-4') || null;
   // A switch must never leave a second thread behind in the pane.
   const scrollerCount = (host) => host.querySelectorAll('div.overflow-y-auto').length;
   const messageRowsOf = (container) => {

@@ -3479,10 +3479,29 @@ export function createSessionManager({
         unwrapped.videoMessage?.contextInfo ||
         unwrapped.documentMessage?.contextInfo;
       let text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
-      const isViewOnce = isViewOnceMessage(msg.message) || isViewOnceMessage(unwrapped);
-      const mediaType = classifyMessageType(unwrapped);
+      const isViewOnce = Boolean(
+        msg.key?.isViewOnce ||
+        isViewOnceMessage(msg.message, msg.key) ||
+        isViewOnceMessage(unwrapped, msg.key)
+      );
+      const mediaType = classifyMessageType(unwrapped, msg.key);
+      let viewOnceKind = 'UNKNOWN';
+      if (unwrapped.videoMessage || unwrapped.ptvMessage || mediaType === 'VIDEO' || text === '[VIEW_ONCE_VIDEO]') {
+        viewOnceKind = 'VIDEO';
+      } else if (unwrapped.audioMessage || mediaType === 'AUDIO' || text === '[VIEW_ONCE_AUDIO]') {
+        viewOnceKind = 'AUDIO';
+      } else if (unwrapped.imageMessage || mediaType === 'IMAGE' || text === '[VIEW_ONCE_PHOTO]') {
+        viewOnceKind = 'IMAGE';
+      } else {
+        viewOnceKind = 'UNKNOWN';
+      }
+
       if (isViewOnce && (!text || text.trim() === '')) {
-        text = mediaType === 'VIDEO' ? '[VIEW_ONCE_VIDEO]' : (mediaType === 'AUDIO' ? '[VIEW_ONCE_AUDIO]' : '[VIEW_ONCE_PHOTO]');
+        text = viewOnceKind === 'VIDEO'
+          ? '[VIEW_ONCE_VIDEO]'
+          : (viewOnceKind === 'AUDIO'
+              ? '[VIEW_ONCE_AUDIO]'
+              : (viewOnceKind === 'IMAGE' ? '[VIEW_ONCE_PHOTO]' : '[VIEW_ONCE_MEDIA]'));
       }
       if (!hasRecognizedContent(unwrapped) && !text && !isViewOnce) return null;
 
@@ -3622,13 +3641,23 @@ export function createSessionManager({
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
         conversation_id: key,
         direction: fromMe ? 'OUTBOUND' : 'INBOUND',
-        message_type: (mediaType && mediaType !== 'TEXT') ? mediaType : (isViewOnce ? (text === '[VIEW_ONCE_VIDEO]' ? 'VIDEO' : (text === '[VIEW_ONCE_AUDIO]' ? 'AUDIO' : 'IMAGE')) : (existingRecord?.message_type || mediaType)),
+        message_type: (mediaType && mediaType !== 'TEXT')
+          ? mediaType
+          : (isViewOnce
+              ? (text === '[VIEW_ONCE_VIDEO]' || viewOnceKind === 'VIDEO' ? 'VIDEO'
+                  : (text === '[VIEW_ONCE_AUDIO]' || viewOnceKind === 'AUDIO' ? 'AUDIO'
+                      : (text === '[VIEW_ONCE_PHOTO]' || viewOnceKind === 'IMAGE' ? 'IMAGE' : 'UNKNOWN')))
+              : (existingRecord?.message_type || mediaType)),
         status: existingRecord?.status && (ACK_ORDER[existingRecord.status] ?? 0) > (ACK_ORDER[resolveMessageStatus(msg, fromMe, msg.reactions)] ?? 0)
           ? existingRecord.status
           : resolveMessageStatus(msg, fromMe, msg.reactions),
         body: text || '',
         media_id: mediaInfo?.media_id || existingRecord?.media_id || null,
-        media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || (isViewOnce ? (mediaType === 'VIDEO' || text === '[VIEW_ONCE_VIDEO]' ? 'video/mp4' : (mediaType === 'AUDIO' || text === '[VIEW_ONCE_AUDIO]' ? 'audio/ogg' : 'image/jpeg')) : null),
+        media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || (isViewOnce
+          ? (text === '[VIEW_ONCE_VIDEO]' || viewOnceKind === 'VIDEO' ? 'video/mp4'
+              : (text === '[VIEW_ONCE_AUDIO]' || viewOnceKind === 'AUDIO' ? 'audio/ogg'
+                  : (text === '[VIEW_ONCE_PHOTO]' || viewOnceKind === 'IMAGE' ? 'image/jpeg' : null)))
+          : null),
         media_filename: mediaInfo?.filename || existingRecord?.media_filename || null,
         media_caption: (text && !text.startsWith('[VIEW_ONCE_')) ? text : (existingRecord?.media_caption || null),
         native_link_preview: nativeLinkPreview,
@@ -5623,11 +5652,29 @@ export function createSessionManager({
         unwrapped.imageMessage?.contextInfo ||
         unwrapped.videoMessage?.contextInfo ||
         unwrapped.documentMessage?.contextInfo;
-      const isViewOnce = isViewOnceMessage(msg.message) || isViewOnceMessage(unwrapped);
-      const mediaType = classifyMessageType(unwrapped);
+      const isViewOnce = Boolean(
+        msg.key?.isViewOnce ||
+        isViewOnceMessage(msg.message, msg.key) ||
+        isViewOnceMessage(unwrapped, msg.key)
+      );
+      const mediaType = classifyMessageType(unwrapped, msg.key);
       let text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
+      let viewOnceKind = 'UNKNOWN';
+      if (unwrapped.videoMessage || unwrapped.ptvMessage || mediaType === 'VIDEO' || text === '[VIEW_ONCE_VIDEO]') {
+        viewOnceKind = 'VIDEO';
+      } else if (unwrapped.audioMessage || mediaType === 'AUDIO' || text === '[VIEW_ONCE_AUDIO]') {
+        viewOnceKind = 'AUDIO';
+      } else if (unwrapped.imageMessage || mediaType === 'IMAGE' || text === '[VIEW_ONCE_PHOTO]') {
+        viewOnceKind = 'IMAGE';
+      } else {
+        viewOnceKind = 'UNKNOWN';
+      }
       if (isViewOnce && (!text || text.trim() === '')) {
-        text = mediaType === 'VIDEO' ? '[VIEW_ONCE_VIDEO]' : (mediaType === 'AUDIO' ? '[VIEW_ONCE_AUDIO]' : '[VIEW_ONCE_PHOTO]');
+        text = viewOnceKind === 'VIDEO'
+          ? '[VIEW_ONCE_VIDEO]'
+          : (viewOnceKind === 'AUDIO'
+              ? '[VIEW_ONCE_AUDIO]'
+              : (viewOnceKind === 'IMAGE' ? '[VIEW_ONCE_PHOTO]' : '[VIEW_ONCE_MEDIA]'));
       }
       if (!hasRecognizedContent(unwrapped) && !text && !isViewOnce) return null;
       const ts = messageTimestampMs(msg.messageTimestamp);
@@ -5646,7 +5693,9 @@ export function createSessionManager({
             ? 'video/mp4'
             : mediaType === 'AUDIO'
               ? 'audio/ogg'
-              : unwrapped.documentMessage?.mimetype || null);
+              : isViewOnce
+                ? (viewOnceKind === 'IMAGE' ? 'image/jpeg' : (viewOnceKind === 'VIDEO' ? 'video/mp4' : (viewOnceKind === 'AUDIO' ? 'audio/ogg' : null)))
+                : unwrapped.documentMessage?.mimetype || null);
       const mediaFilename =
         unwrapped.documentMessage?.fileName ||
         rawMedia?.fileName ||
@@ -5687,7 +5736,13 @@ export function createSessionManager({
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
         conversation_id: key,
         direction: msg.key?.fromMe ? 'OUTBOUND' : 'INBOUND',
-        message_type: (mediaType && mediaType !== 'TEXT') ? mediaType : (isViewOnce ? (text === '[VIEW_ONCE_VIDEO]' ? 'VIDEO' : (text === '[VIEW_ONCE_AUDIO]' ? 'AUDIO' : 'IMAGE')) : (mediaType || 'TEXT')),
+        message_type: (mediaType && mediaType !== 'TEXT')
+          ? mediaType
+          : (isViewOnce
+              ? (text === '[VIEW_ONCE_VIDEO]' || viewOnceKind === 'VIDEO' ? 'VIDEO'
+                  : (text === '[VIEW_ONCE_AUDIO]' || viewOnceKind === 'AUDIO' ? 'AUDIO'
+                      : (text === '[VIEW_ONCE_PHOTO]' || viewOnceKind === 'IMAGE' ? 'IMAGE' : 'UNKNOWN')))
+              : (mediaType || 'TEXT')),
         status: resolveMessageStatus(msg, Boolean(msg.key?.fromMe), reactions),
         body: text || '',
         media_id: mediaId,
