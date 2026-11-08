@@ -39,11 +39,13 @@ function getStoredSettings(): WhatsAppCustomizationSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    const hasGranted = 'Notification' in window && Notification.permission === 'granted';
     return {
       ...DEFAULT_WHATSAPP_SETTINGS,
-      desktopNotificationsEnabled: hasGranted ? (parsed.desktopNotificationsEnabled ?? true) : Boolean(parsed.desktopNotificationsEnabled),
       ...parsed,
+      desktopNotificationsEnabled:
+        typeof parsed.desktopNotificationsEnabled === 'boolean'
+          ? parsed.desktopNotificationsEnabled
+          : DEFAULT_WHATSAPP_SETTINGS.desktopNotificationsEnabled,
     };
   } catch (err) {
     console.warn('[WhatsApp Settings] Failed to read stored settings:', err);
@@ -115,6 +117,14 @@ export function useWhatsAppSettings() {
 
   const requestNotificationPermission = useCallback(async (): Promise<boolean> => {
     if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    // Eğer izin önceden kullanıcı/tarayıcı tarafından reddedilmişse tekrar sorma döngüsüne girme
+    if (Notification.permission === 'denied') {
+      return false;
+    }
+    if (Notification.permission === 'granted') {
+      updateSettings({ desktopNotificationsEnabled: true });
+      return true;
+    }
     try {
       const permission = await Notification.requestPermission();
       const granted = permission === 'granted';
@@ -128,6 +138,7 @@ export function useWhatsAppSettings() {
 
   const testDesktopNotification = useCallback(async (title?: string, body?: string): Promise<boolean> => {
     if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    if (Notification.permission === 'denied') return false;
     if (Notification.permission !== 'granted') {
       const granted = await requestNotificationPermission();
       if (!granted) return false;
@@ -139,11 +150,18 @@ export function useWhatsAppSettings() {
   }, [requestNotificationPermission]);
 
   const notifyInbound = useCallback((senderName?: string, body?: string) => {
+    // Masaüstü bildirimi ancak hem kullanıcı tercihi açık hem tarayıcı izni granted ise
+    const hasBrowserPermission =
+      typeof window !== 'undefined' &&
+      'Notification' in window &&
+      Notification.permission === 'granted';
+    const canDesktop = Boolean(settings.desktopNotificationsEnabled) && hasBrowserPermission;
+
     triggerInboundNotification({
       soundEnabled: settings.soundEnabled,
       soundPreset: settings.soundPreset,
       soundVolume: settings.soundVolume,
-      desktopNotificationsEnabled: settings.desktopNotificationsEnabled,
+      desktopNotificationsEnabled: canDesktop,
       senderName,
       body,
     });

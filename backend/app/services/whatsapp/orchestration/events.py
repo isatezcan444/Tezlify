@@ -12,7 +12,7 @@ Handles all incoming events from the Baileys gateway (/ws/gateway):
   held and retried instead of being discarded
 """
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import inspect
 import time
@@ -327,6 +327,65 @@ def _acknowledge_without_broadcast(event: Dict[str, Any], reason: str) -> Dict[s
     logger.debug("Gateway olayi bilincli olarak yayinlanmadi: %s", reason)
     event["_skip"] = reason
     return event
+
+
+def _is_historical_sync_message(
+    event: Dict[str, Any],
+    msg: Dict[str, Any],
+    owner: str,
+    msg_dt: Optional[datetime],
+    is_append: bool,
+) -> bool:
+    """Ayrım: Tarihsel senkronizasyon mesajı vs Canlı yeni inbound mesaj.
+
+    Kanıt Seviyeleri (Aşama 1.2 — Protokol ve Metadata Tabanlı Kesin Sözleşme):
+    1. Açık Senkronizasyon Metadata'sı (Güçlü Kanıt):
+       - is_sync, history_sync bayrakları (event veya msg içinde)
+       - source in ('history', 'history_sync', 'sync')
+    2. İlgili Aktif SyncJob Eşleşmesi (Destekleyici Kanıt):
+       - event veya msg içinde bir `sync_id` bulunması
+       - Bu `sync_id`'nin kullanıcının aktif olarak yürüyen SyncJob'ı
+         (state == 'SYNCING') ile birebir eşleşmesi.
+       - Başka bir işe ait, geçersiz veya tamamlanmış sync_id canlı mesajı SUSTURMAZ.
+    3. Zaman Damgası Kuralı (Kaldırıldı):
+       - Baileys protokolünde 15 dakika veya 24 saat gibi kanıtlanmış bir eşik yoktur.
+       - Gecikmeli teslim edilmiş, telefon kapalıyken bekleyen veya eksik timestamp
+         taşıyan gerçek bir mesaj yalnızca yaşına bakılarak ASLA susturulmaz.
+    4. DB'de İlk Kez Oluşturulan Mesaj:
+       - Tarihsel olduğu açık metadata ile kanıtlanamayan ve DB'ye ilk kez giren
+         her mesaj canlı yayınlanır (_no_broadcast verilmez).
+    5. Duplicate / Replay:
+       - Zaten DB'de var olan ve içerik değişikliği taşımayan mesajlar
+         dedup aşamasında _no_broadcast = True ile susturulur.
+    """
+    # 1. Açık senkronizasyon bayrakları (Güçlü Kanıt)
+    if (
+        event.get("is_sync")
+        or msg.get("is_sync")
+        or event.get("history_sync")
+        or msg.get("history_sync")
+        or event.get("source") in ("history", "history_sync", "sync")
+        or msg.get("source") in ("history", "history_sync", "sync")
+    ):
+        return True
+
+    # 2. Doğrudan ilişkilendirilebilen aktif SyncJob kanıtı
+    sync_id = event.get("sync_id") or msg.get("sync_id")
+    if sync_id and str(sync_id).strip().lower() not in ("", "none", "live", "null"):
+        try:
+            from backend.app.services.whatsapp.orchestration.sync import _sync_jobs
+            active_job = _sync_jobs.get(str(owner)) or _sync_jobs.get(owner)
+            if (
+                active_job
+                and getattr(active_job, "state", None) == "SYNCING"
+                and (not hasattr(active_job.done, "is_set") or not active_job.done.is_set())
+                and str(getattr(active_job, "sync_id", "")).strip() == str(sync_id).strip()
+            ):
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
 def _log_orphan_event(evt: str, exc: Exception, gw_session_id: Optional[str]) -> None:
@@ -1027,6 +1086,15 @@ class WhatsAppEventOrchestrator:
                 session_id=ws_session_id,
             )
 
+        msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or utc_now_naive()
+        is_historical = _is_historical_sync_message(
+            event=event,
+            msg=msg,
+            owner=owner,
+            msg_dt=msg_dt,
+            is_append=is_append,
+        )
+
         wa_id = msg.get("wa_message_id")
         client_id = msg.get("client_message_id")
         if wa_id or client_id:
@@ -1135,14 +1203,18 @@ class WhatsAppEventOrchestrator:
                 await db.commit()
                 event["conversation_id"] = conv.id
                 event["message"] = serialize_message(canonical)
-                # Duplicate append: satir zaten var, ama yayin da YAPILMAMALI.
-                # `notify` ile gelen ayni mesaj bir kez yayinlandi; append'in
-                # onu ikinci kez yayinlamasi cift bildirim olurdu.
-                if is_append:
-                    event["_no_broadcast"] = True
-                elif is_update and not content_changed:
-                    # A replace that carried no real change must not re-broadcast.
-                    event["_no_broadcast"] = True
+                # Duplicate ve değişen içerik ayrımı (Aşama 1.2):
+                # 1. İçerik değiştiyse (body veya media güncellendiyse):
+                #    Tarihsel sync değilse YAYINLANMALIDIR (is_append gelse bile
+                #    içerik güncellemesi canlı yansıtılır).
+                # 2. İçerik DEĞİŞMEDİYSE (aynı wa_message_id, aynı içerik):
+                #    Duplicate / replay varışıdır: ikinci kez yayın yapılmamalıdır.
+                if content_changed:
+                    if is_historical:
+                        event["_no_broadcast"] = True
+                else:
+                    if is_append or is_update or is_historical:
+                        event["_no_broadcast"] = True
                 return event  # dedup
 
         mtype_str = (msg.get("message_type") or "TEXT").upper()
@@ -1251,9 +1323,9 @@ class WhatsAppEventOrchestrator:
                     event,
                     f"message_new: yaris kaybedildi, kazanan satir bulunamadi ({jid_str})",
                 )
-            # Kurtarma yolu kazanan satiri yeniden yayinlar; append icin bu da
-            # yayin olmamali (gecmis mesaj canli bildirim uretmez).
-            if is_append:
+            # Kurtarma yolu kazanan satiri yeniden yayinlar; tarihsel senkronizasyon
+            # icin bu da yayin olmamali (gecmis mesaj canli bildirim uretmez).
+            if is_historical:
                 recovered["_no_broadcast"] = True
             return recovered
         summary = build_last_message_summary(
@@ -1263,18 +1335,13 @@ class WhatsAppEventOrchestrator:
             is_group=is_group_jid,
             direction=direction.value,
         )
-        msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or utc_now_naive()
-        # `append` gecmis bir mesajdir: sohbetin onizlemesini/son aktivitesini
-        # yalnizca GERCEKTEN daha yeni ise oynatabilir (`should_apply_last_message`
-        # `ts <= cur` durumunu zaten reddeder). Zaman damgasi yokken "simdi" gibi
-        # davranmak gecmisi listenin en ustune tasirdi; bu yuzden append + zaman
-        # damgasi yok -> onizlemeye hic dokunulmaz.
+        # `append` veya `update` mesajında zaman damgası yokken "şimdi" gibi
+        # davranmak geçmişi listenin en üstüne taşırdı; bu yüzden append/update +
+        # zaman damgası yok -> önizlemeye hiç dokunulmaz.
         if not ((is_append or is_update) and not msg.get("created_at")):
             apply_last_message(conv, msg_dt, summary)
-        if direction == MessageDirection.INBOUND and not is_append and not is_update:
-            # `append` bir GECMIS mesajidir, yeni bir varis degil. Rozeti artirmak
-            # kullanicinin telefonunda coktan okudugu bir mesaji "yeni" sayar ve
-            # rozet WhatsApp'in kendi sayisiyla celisir.
+        if direction == MessageDirection.INBOUND and not is_historical and not is_update:
+            # Tarihsel mesaj yeni bir varis degildir. Canli yeni varista rozet artirilir.
             raw_uc = msg.get("unread_count") if msg.get("unread_count") is not None else event.get("unread_count")
             if raw_uc is not None:
                 conv.unread_count = max(0, int(raw_uc))
@@ -1345,11 +1412,11 @@ class WhatsAppEventOrchestrator:
         event["is_group"] = is_group_jid
         event["lead_phone"] = contact.phone_e164 if contact else None
         event["message"] = serialize_message(row, preview=preview_data)
-        # Kalici yazma TAMAM; canli yayin YAPILMAZ. `_skip` burada kullanilamiyor:
-        # o yol `db.commit()`'i yalnizca postgres + event_id varsa cagiriyor, yani
-        # SQLite/test yolunda persist'i commit'siz birakirdi. `_no_broadcast` ise
-        # commit'ten SONRA okunur (main.py) ve yalnizca yayini kapatir.
-        if is_append:
+        # Kalici yazma TAMAM; canli yayin karari:
+        # Tarihsel senkronizasyon kapsaminda gelen mesajlar canli yayinlanmaz.
+        # Yeni inbound mesajlar (Baileys kisa baglanti kopmasinda append ile
+        # gonderse bile) gercek zamanli olarak yayinlanir.
+        if is_historical:
             event["_no_broadcast"] = True
         return event
 

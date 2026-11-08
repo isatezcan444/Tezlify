@@ -1776,6 +1776,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, [reportReadSync, clearInsertedComposerText]);
 
+  const handleSelectConversationRef = useRef(handleSelectConversation);
+  handleSelectConversationRef.current = handleSelectConversation;
+
   const handleNewChat = useCallback(() => setIsNewChatModalOpen(true), []);
 
   const handleRetryLoadConversations = useCallback(() => {
@@ -2922,6 +2925,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
         const targetConvId = convId ?? (isActiveConversation && activeConv ? Number(activeConv.id) : null);
 
+        // In-app visual toast when message arrives for a different conversation while on WhatsApp tab
+        if (!isOutbound && !isReplayedEvent && !isActiveConversation && targetConvId != null) {
+          const previewSnippet =
+            typeof msgText === 'string' && msgText.trim()
+              ? (msgText.length > 60 ? msgText.slice(0, 57) + '...' : msgText)
+              : '';
+          const toastTitle = tRef.current('whatsapp.newIncomingMessage') || 'Yeni WhatsApp Mesajı';
+          const toastBody = previewSnippet
+            ? `${senderLabel || 'WhatsApp'}: ${previewSnippet}`
+            : (senderLabel || 'WhatsApp');
+
+          toastRef.current.info(toastBody, toastTitle, () => {
+            const hit = conversationsRef.current.find((c) => Number(c.id) === Number(targetConvId));
+            if (hit) {
+              handleSelectConversationRef.current(hit);
+            } else {
+              hydrateConversation(targetConvId);
+            }
+          });
+        }
+
         if (targetConvId != null) {
           const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
           const waId = msgObj?.wa_message_id || eventData.wa_message_id || eventData.message_id;
@@ -2962,11 +2986,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           };
 
           setMessagesMap((prev) => {
-            // Update if active or if thread is already in memory
-            if (isActiveConversation || prev[targetConvId]) {
-              return { ...prev, [targetConvId]: mergeWhatsAppMessages(prev[targetConvId] || [], [newMsg]) };
-            }
-            return prev;
+            // Unconditionally merge: background/unloaded threads retain their live message
+            // and do not drop it before the user switches to that chat
+            const currentList = prev[targetConvId] || [];
+            return {
+              ...prev,
+              [targetConvId]: mergeWhatsAppMessages(currentList, [newMsg]),
+            };
           });
 
           // Auto-mark conversation as read if user is actively viewing it
@@ -3653,11 +3679,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
     };
 
+    const handleSelectConversationEvent = (e: Event) => {
+      const customEvent = e as CustomEvent<{ conversationId?: number }>;
+      const targetId = customEvent.detail?.conversationId;
+      if (targetId && Number.isInteger(Number(targetId))) {
+        const numId = Number(targetId);
+        const hit = conversationsRef.current.find((c) => Number(c.id) === numId);
+        if (hit) {
+          handleSelectConversationRef.current(hit);
+        } else {
+          hydrateConversation(numId);
+        }
+      }
+    };
+
     window.addEventListener('tezlify:ws_event', handleWsEvent);
     window.addEventListener('tezlify:ws_connected', handleReconnect);
+    window.addEventListener('tezlify:select_conversation', handleSelectConversationEvent);
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
+      window.removeEventListener('tezlify:select_conversation', handleSelectConversationEvent);
     };
     // Deliberately narrower than what the handler closes over. These are the
     // long-lived, memoised entry points; the rest are read through refs or are

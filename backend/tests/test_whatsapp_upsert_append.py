@@ -203,14 +203,17 @@ async def test_append_is_persisted():
 
 @pytest.mark.asyncio
 async def test_append_is_marked_not_to_broadcast():
-    """`append` canlı yayın üretmez: sonuç `_no_broadcast` taşır."""
+    """Tarihsel senkronizasyon `append` mesajı canlı yayın üretmez: sonuç `_no_broadcast` taşır."""
     phone = _new_identity()
     jid = _jid_for(phone)
     gw_id = await _make_session()
     wa_id = f"{_PREFIX}-nb-{_uuid.uuid4().hex[:8]}"
     try:
-        result = await ingest_gateway_event(_event(gw_id, jid, wa_id, upsert_type="append"))
-        assert result.get("_no_broadcast") is True, "append yayinlanmamali"
+        result = await ingest_gateway_event({
+            **_event(gw_id, jid, wa_id, upsert_type="append"),
+            "is_sync": True,
+        })
+        assert result.get("_no_broadcast") is True, "tarihsel sync append yayinlanmamali"
     finally:
         await _purge(jid, gw_id)
 
@@ -221,13 +224,16 @@ async def test_append_is_marked_not_to_broadcast():
 
 @pytest.mark.asyncio
 async def test_append_then_notify_does_not_duplicate():
-    """Aynı mesaj önce `append` sonra `notify` gelirse TEK satır kalır."""
+    """Aynı mesaj önce tarihsel `append` sonra `notify` gelirse TEK satır kalır."""
     phone = _new_identity()
     jid = _jid_for(phone)
     gw_id = await _make_session()
     wa_id = f"{_PREFIX}-dup1-{_uuid.uuid4().hex[:8]}"
     try:
-        first = await ingest_gateway_event(_event(gw_id, jid, wa_id, upsert_type="append"))
+        first = await ingest_gateway_event({
+            **_event(gw_id, jid, wa_id, upsert_type="append"),
+            "is_sync": True,
+        })
         assert first.get("_no_broadcast") is True
         second = await ingest_gateway_event(_event(gw_id, jid, wa_id, upsert_type="notify"))
         assert await _message_count(wa_id) == 1, "ayni wa_message_id iki satir olmamali"
@@ -291,7 +297,7 @@ async def test_append_does_not_move_conversation_preview():
 
 @pytest.mark.asyncio
 async def test_append_does_not_increase_unread():
-    """Geçmiş mesaj rozeti artırmaz."""
+    """Tarihsel mesaj rozeti artırmaz."""
     phone = _new_identity()
     jid = _jid_for(phone)
     gw_id = await _make_session()
@@ -304,12 +310,15 @@ async def test_append_does_not_increase_unread():
         conv_id = live["conversation_id"]
         before = (await _conversation_row(conv_id))[0]
 
-        await ingest_gateway_event(_event(
-            gw_id, jid, old_id, body="Gecmis", created_at="2025-01-01T09:00:00Z",
-            upsert_type="append",
-        ))
+        await ingest_gateway_event({
+            **_event(
+                gw_id, jid, old_id, body="Gecmis", created_at="2025-01-01T09:00:00Z",
+                upsert_type="append",
+            ),
+            "is_sync": True,
+        })
         after = (await _conversation_row(conv_id))[0]
-        assert after == before, f"append rozeti artirmamali ({before} -> {after})"
+        assert after == before, f"tarihsel append rozeti artirmamali ({before} -> {after})"
     finally:
         await _purge(jid, gw_id)
 
@@ -579,3 +588,286 @@ async def test_bridge_still_broadcasts_notify(monkeypatch) -> None:
 
     broadcast.assert_awaited_once()
     assert socket.sent == [{"type": "gateway_event_ack", "event_id": event_id}]
+
+
+# ---------------------------------------------------------------------------
+# 15. Canlı vs Tarihsel Append Yayın Ayrımı (Phase Realtime Fix)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_recent_live_append_is_broadcastable():
+    """Yeni oluşturulan, yakın zamanlı bir `append` mesajı (socket yeniden bağlanması) canlı yayınlanır."""
+    from datetime import datetime, timezone
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-live-app-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        result = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="append", created_at=now_iso, body="Canli append mesaj"
+        ))
+        assert isinstance(result, dict)
+        assert result.get("_no_broadcast") is None, "yeni ve canli append yayinlanmali"
+        assert result.get("message", {}).get("body") == "Canli append mesaj"
+    finally:
+        await _purge(jid, gw_id)
+
+
+@pytest.mark.asyncio
+async def test_sync_flag_append_suppresses_broadcast():
+    """Senkronizasyon bayrağı (is_sync / sync_id) taşıyan append mesajı yayınlanmaz."""
+    from datetime import datetime, timezone
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-sync-app-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        result = await ingest_gateway_event({
+            **_event(gw_id, jid, wa_id, upsert_type="append", created_at=now_iso, body="Sync mesaji"),
+            "is_sync": True,
+        })
+        assert isinstance(result, dict)
+        assert result.get("_no_broadcast") is True, "sync bayrakli mesaj yayinlanmamali"
+    finally:
+        await _purge(jid, gw_id)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_live_append_suppresses_second_broadcast():
+    """Canlı append ilk varışta yayınlanır, ancak duplicate/tekrar geldiğinde ikinci kez yayınlanmaz."""
+    from datetime import datetime, timezone
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-dup-live-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        first = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="append", created_at=now_iso
+        ))
+        assert first.get("_no_broadcast") is None, "ilk varis yayinlanmali"
+
+        second = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="append", created_at=now_iso
+        ))
+        assert second.get("_no_broadcast") is True, "duplicate varis yayinlanmamali"
+    finally:
+        await _purge(jid, gw_id)
+
+
+@pytest.mark.asyncio
+async def test_live_append_not_suppressed_by_active_sync_job():
+    """SyncJob aktifken gelen canlı yeni mesaj (sync_id taşımayan) yanlışlıkla susturulmaz."""
+    from datetime import datetime, timezone
+    from backend.app.services.whatsapp.orchestration.sync import _sync_jobs, SyncJob
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-syncjob-live-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    fake_job = SyncJob(sync_id="active-job-xyz", user_id=TEST_USER)
+    fake_job.state = "SYNCING"
+    _sync_jobs[TEST_USER] = fake_job
+
+    try:
+        result = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="append", created_at=now_iso, body="Canli mesaj sync varken"
+        ))
+        assert result.get("_no_broadcast") is None, "SyncJob varken de baglantisiz canli mesaj yayinlanmali"
+    finally:
+        _sync_jobs.pop(TEST_USER, None)
+        await _purge(jid, gw_id)
+
+
+@pytest.mark.asyncio
+async def test_delayed_delivery_append_is_broadcastable():
+    """Gecikmeli teslim edilmiş (örneğin 2 saat önceki) canlı mesaj append ile gelse de yayınlanır."""
+    from datetime import datetime, timezone, timedelta
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-delayed-{_uuid.uuid4().hex[:8]}"
+    delayed_iso = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    try:
+        result = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="append", created_at=delayed_iso, body="Gecikmeli mesaj"
+        ))
+        assert result.get("_no_broadcast") is None, "gecikmeli gelen gercek mesaj susturulmamali"
+    finally:
+        await _purge(jid, gw_id)
+
+
+# ---------------------------------------------------------------------------
+# 16. Aşama 1.2: SyncJob İlişkilendirme ve Kapsam İzolasyonu
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_syncjob_matching_sync_id_suppressed():
+    """İlgili aktif SyncJob ve doğru sync_id ile gelen tarihsel event susturulur."""
+    from datetime import datetime, timezone
+    from backend.app.services.whatsapp.orchestration.sync import _sync_jobs, SyncJob
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-syncjob-match-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    target_sync_id = f"job-sync-{_uuid.uuid4().hex[:6]}"
+    fake_job = SyncJob(sync_id=target_sync_id, user_id=TEST_USER)
+    fake_job.state = "SYNCING"
+    _sync_jobs[TEST_USER] = fake_job
+
+    try:
+        result = await ingest_gateway_event({
+            **_event(gw_id, jid, wa_id, upsert_type="append", created_at=now_iso, body="Sync mesaj"),
+            "sync_id": target_sync_id,
+        })
+        assert result.get("_no_broadcast") is True, "Aktif SyncJob ile eşleşen sync_id susturulmalıdır"
+    finally:
+        _sync_jobs.pop(TEST_USER, None)
+        await _purge(jid, gw_id)
+
+
+@pytest.mark.asyncio
+async def test_syncjob_mismatched_sync_id_not_suppressed():
+    """Başka bir SyncJob'ın sync_id değerini taşıyan event yanlışlıkla tarihsel sayılmaz."""
+    from datetime import datetime, timezone
+    from backend.app.services.whatsapp.orchestration.sync import _sync_jobs, SyncJob
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-syncjob-mismatch-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    my_sync_id = f"job-my-{_uuid.uuid4().hex[:6]}"
+    other_sync_id = f"job-other-{_uuid.uuid4().hex[:6]}"
+    fake_job = SyncJob(sync_id=my_sync_id, user_id=TEST_USER)
+    fake_job.state = "SYNCING"
+    _sync_jobs[TEST_USER] = fake_job
+
+    try:
+        result = await ingest_gateway_event({
+            **_event(gw_id, jid, wa_id, upsert_type="append", created_at=now_iso, body="Canli mesaj"),
+            "sync_id": other_sync_id,
+        })
+        assert result.get("_no_broadcast") is None, "Başka sync_id taşıyan canlı mesaj susturulmamalıdır"
+    finally:
+        _sync_jobs.pop(TEST_USER, None)
+        await _purge(jid, gw_id)
+
+
+@pytest.mark.asyncio
+async def test_invalid_or_stale_sync_id_does_not_suppress_live_message():
+    """Eksik veya geçersiz sync_id tek başına canlı mesajı susturmaz."""
+    from datetime import datetime, timezone
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-stale-sync-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        result = await ingest_gateway_event({
+            **_event(gw_id, jid, wa_id, upsert_type="append", created_at=now_iso, body="Canli mesaj"),
+            "sync_id": "completed-or-unknown-job",
+        })
+        assert result.get("_no_broadcast") is None, "Geçersiz/tamamlanmış sync_id canlı mesajı susturmamalıdır"
+    finally:
+        await _purge(jid, gw_id)
+
+
+# ---------------------------------------------------------------------------
+# 17. Aşama 1.2: Duplicate ve Değişen İçerik Ayrımı
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_duplicate_same_wa_id_changed_content_is_broadcast():
+    """Aynı wa_message_id ile gelen içerik güncellemesi (örn. retry decrypt) broadcast edilmelidir."""
+    from datetime import datetime, timezone
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-content-change-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        # 1. İlk varış: yer tutucu gövde
+        first = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="notify", created_at=now_iso, body="[VIEW_ONCE_PHOTO]"
+        ))
+        assert first.get("_no_broadcast") is None
+
+        # 2. İkinci varış: gerçek çözülmüş metin içeriği (content_changed = True)
+        second = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="replace", created_at=now_iso, body="Gerçek çözülmüş fotoğraf başlığı"
+        ))
+        assert second.get("_no_broadcast") is None, "İçerik değiştiğinde broadcast yapılmalıdır"
+        assert second["message"]["body"] == "Gerçek çözülmüş fotoğraf başlığı"
+    finally:
+        await _purge(jid, gw_id)
+
+
+@pytest.mark.asyncio
+async def test_status_only_update_does_not_re_broadcast():
+    """Aynı wa_message_id ile yalnızca teslim/status güncellemesi duplicate broadcast üretmemelidir."""
+    from datetime import datetime, timezone
+    phone = _new_identity()
+    jid = _jid_for(phone)
+    gw_id = await _make_session()
+    wa_id = f"{_PREFIX}-status-only-{_uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        first = await ingest_gateway_event(_event(
+            gw_id, jid, wa_id, upsert_type="notify", created_at=now_iso, body="Aynı mesaj"
+        ))
+        assert first.get("_no_broadcast") is None
+
+        # İkinci varış: aynı gövde, yalnızca status=DELIVERED (content_changed = False)
+        second = await ingest_gateway_event({
+            **_event(gw_id, jid, wa_id, upsert_type="append", created_at=now_iso, body="Aynı mesaj"),
+            "status": "DELIVERED",
+        })
+        assert second.get("_no_broadcast") is True, "Status-only duplicate olay ikinci kez broadcast edilmemelidir"
+    finally:
+        await _purge(jid, gw_id)
+
+
+# ---------------------------------------------------------------------------
+# 18. Aşama 1.2: DB Commit Başarısızlığı ve Broadcast Sıralaması
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_db_commit_failure_prevents_broadcast_and_nacks(monkeypatch):
+    """DB commit hatası enjekte edildiğinde broadcast çağrılmaz ve NACK gönderilir."""
+    from unittest.mock import AsyncMock
+    from sqlalchemy.exc import SQLAlchemyError
+
+    event_id = str(_uuid.uuid4())
+    socket = _FakeGatewaySocket({
+        "event": "message_new",
+        "event_id": event_id,
+        "message": {"body": "Hata testi"},
+    })
+
+    # 1. ingest_gateway_event'in DB commit/persistence hatası almasını sağla
+    monkeypatch.setattr(
+        whatsapp_service,
+        "ingest_gateway_event",
+        AsyncMock(side_effect=SQLAlchemyError("DB connection dropped")),
+    )
+
+    broadcast_mock = AsyncMock()
+    monkeypatch.setattr(ws_manager, "broadcast", broadcast_mock)
+
+    await gateway_websocket_endpoint(socket, token=TEST_GATEWAY_SECRET)
+
+    # Broadcast ASLA çağrılmamalıdır
+    broadcast_mock.assert_not_awaited()
+
+    # Gateway socket'ine kalıcı NACK iletilmelidir
+    assert socket.sent == [{
+        "type": "gateway_event_nack",
+        "event_id": event_id,
+        "permanent": True,
+    }]

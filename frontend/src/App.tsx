@@ -10,6 +10,7 @@ import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { useWhatsAppSettings } from './features/whatsapp/hooks/useWhatsAppSettings';
+import { initAudioUnlock } from './features/whatsapp/lib/whatsappAudio';
 import { LandingPage } from './features/landing';
 
 interface AppContentProps {
@@ -151,6 +152,11 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
     setActiveTab(tab);
   }, [setActiveTab]);
 
+  // Unlock Web Audio API on first user interaction anywhere in the app
+  useEffect(() => {
+    return initAudioUnlock();
+  }, []);
+
   // Listen to desktop notification clicks or internal cross-tab navigation requests
   useEffect(() => {
     const handleNavEvent = (e: Event) => {
@@ -230,6 +236,7 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
               eventData.direction === 'outbound' ||
               eventData.is_outbound === true ||
               eventData.message?.direction === 'outbound' ||
+              eventData.message?.direction === 'OUTBOUND' ||
               eventData.message?.is_outbound === true;
 
             if (!isOutbound && activeTabRef.current !== 'whatsapp') {
@@ -240,26 +247,65 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
                 eventData.phone ||
                 t('whatsapp.newIncomingMessage') ||
                 'WhatsApp';
-              const msgText =
+
+              const rawBody =
+                eventData.message?.body ||
+                eventData.body ||
                 eventData.content ||
                 eventData.text ||
                 eventData.message?.content ||
                 eventData.message?.text ||
                 '';
+              const msgType = String(
+                eventData.message?.message_type || eventData.message_type || 'TEXT'
+              ).toUpperCase();
+              const mediaCaption =
+                eventData.message?.media_caption || eventData.media_caption || '';
 
-              notifyInboundRef.current(
-                senderLabel,
-                typeof msgText === 'string' ? msgText : ''
-              );
+              let previewText = typeof rawBody === 'string' ? rawBody.trim() : '';
+              if (!previewText) {
+                if (mediaCaption) {
+                  previewText = mediaCaption;
+                } else if (msgType === 'IMAGE') {
+                  previewText = `📷 ${t('whatsapp.photo') || 'Fotoğraf'}`;
+                } else if (msgType === 'VIDEO') {
+                  previewText = `🎬 ${t('whatsapp.video') || 'Video'}`;
+                } else if (msgType === 'AUDIO' || msgType === 'VOICE') {
+                  previewText = `🎵 ${t('whatsapp.audio') || 'Ses'}`;
+                } else if (msgType === 'DOCUMENT') {
+                  previewText = `📄 ${t('whatsapp.document') || 'Belge'}`;
+                } else if (msgType === 'LOCATION') {
+                  previewText = `📍 ${t('whatsapp.location') || 'Konum'}`;
+                } else if (msgType === 'CONTACT') {
+                  previewText = `👤 ${t('whatsapp.contact') || 'Kişi'}`;
+                }
+              }
+
+              notifyInboundRef.current(senderLabel, previewText);
 
               const previewSnippet =
-                typeof msgText === 'string' && msgText.trim()
-                  ? (msgText.length > 60 ? msgText.slice(0, 57) + '...' : msgText)
-                  : '';
+                previewText.length > 60 ? previewText.slice(0, 57) + '...' : previewText;
+
+              const targetConvId =
+                eventData.conversation_id ??
+                eventData.conversation?.id ??
+                eventData.message?.conversation_id;
 
               toast.info(
                 previewSnippet ? `${senderLabel}: ${previewSnippet}` : senderLabel,
-                t('whatsapp.newIncomingMessage') || 'Yeni WhatsApp Mesajı'
+                t('whatsapp.newIncomingMessage') || 'Yeni WhatsApp Mesajı',
+                () => {
+                  handleNavigate('whatsapp', targetConvId ? { conversationId: targetConvId } : null);
+                  if (targetConvId) {
+                    setTimeout(() => {
+                      window.dispatchEvent(
+                        new CustomEvent('tezlify:select_conversation', {
+                          detail: { conversationId: targetConvId },
+                        })
+                      );
+                    }, 50);
+                  }
+                }
               );
             }
           } else if (eventData.event === 'scraper_completed') {

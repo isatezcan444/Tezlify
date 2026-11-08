@@ -49,6 +49,10 @@ let audioCtx: AudioContext | null = null;
 let lastPlayedAt = 0;
 const THROTTLE_WINDOW_MS = 600;
 
+let unlockListenersAttached = false;
+let unlockCleanupFn: (() => void) | null = null;
+let activeUnlockSubscribers = 0;
+
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -59,7 +63,7 @@ function getAudioContext(): AudioContext | null {
       }
     }
     if (audioCtx && audioCtx.state === 'suspended') {
-      void audioCtx.resume();
+      audioCtx.resume().catch(() => {});
     }
     return audioCtx;
   } catch (err) {
@@ -69,21 +73,46 @@ function getAudioContext(): AudioContext | null {
 }
 
 /**
- * Attaches a one-time user gesture listener to automatically unlock AudioContext.
+ * Attaches user gesture listeners across the application to unlock AudioContext.
+ * Reference-counted so multiple components mounting it do not duplicate listeners
+ * or prematurely detach them on unmount.
  */
 export function initAudioUnlock(): () => void {
   if (typeof window === 'undefined') return () => {};
-  const unlock = () => {
-    const ctx = getAudioContext();
-    if (ctx && ctx.state === 'suspended') {
-      void ctx.resume();
-    }
-  };
-  window.addEventListener('click', unlock, { once: true, passive: true });
-  window.addEventListener('keydown', unlock, { once: true, passive: true });
+
+  activeUnlockSubscribers += 1;
+
+  if (!unlockListenersAttached) {
+    const unlock = () => {
+      const ctx = getAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().catch((err) => {
+          console.debug('[WhatsApp Audio] AudioContext resume failed on user gesture:', err);
+        });
+      }
+    };
+
+    window.addEventListener('click', unlock, { passive: true });
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock, { passive: true });
+    window.addEventListener('touchstart', unlock, { passive: true });
+    unlockListenersAttached = true;
+
+    unlockCleanupFn = () => {
+      window.removeEventListener('click', unlock);
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      window.removeEventListener('touchstart', unlock);
+      unlockListenersAttached = false;
+      unlockCleanupFn = null;
+    };
+  }
+
   return () => {
-    window.removeEventListener('click', unlock);
-    window.removeEventListener('keydown', unlock);
+    activeUnlockSubscribers = Math.max(0, activeUnlockSubscribers - 1);
+    if (activeUnlockSubscribers === 0 && unlockCleanupFn) {
+      unlockCleanupFn();
+    }
   };
 }
 

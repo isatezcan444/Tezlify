@@ -24,6 +24,7 @@ export interface ToastItem {
   desc?: string;
   type: ToastType;
   duration?: number;
+  onClick?: () => void;
 }
 
 
@@ -41,7 +42,7 @@ interface ToastContextType {
   success: (desc: string, title?: string) => string;
   error: (desc: string, title?: string) => string;
   warning: (desc: string, title?: string) => string;
-  info: (desc: string, title?: string) => string;
+  info: (desc: string, title?: string, onClick?: () => void) => string;
   reply: (desc: string, title?: string) => string;
   confirm: (options: ConfirmDialogOptions) => Promise<boolean>;
 }
@@ -79,13 +80,14 @@ function defaultToastTitle(type: ToastType): string {
 }
 
 export const toast = {
-  show: (type: ToastType, desc: string, title?: string) => {
+  show: (type: ToastType, desc: string, title?: string, onClick?: () => void) => {
     const item: ToastItem = {
       id: Math.random().toString(36).substring(2, 9),
       type,
       desc,
       title: title || defaultToastTitle(type),
       duration: type === 'error' ? 8500 : 4500,
+      onClick,
     };
     listeners.forEach((fn) => fn(item));
     return item.id;
@@ -93,7 +95,7 @@ export const toast = {
   success: (desc: string, title?: string) => toast.show('success', desc, title || defaultToastTitle('success')),
   error: (desc: string, title?: string) => toast.show('error', desc, title || defaultToastTitle('error')),
   warning: (desc: string, title?: string) => toast.show('warning', desc, title || defaultToastTitle('warning')),
-  info: (desc: string, title?: string) => toast.show('info', desc, title || defaultToastTitle('info')),
+  info: (desc: string, title?: string, onClick?: () => void) => toast.show('info', desc, title || defaultToastTitle('info'), onClick),
   reply: (desc: string, title?: string) => toast.show('reply', desc, title || defaultToastTitle('reply')),
 };
 
@@ -112,10 +114,10 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const showToast = useCallback(
-    ({ title, desc, type, duration }: Omit<ToastItem, 'id'>) => {
+    ({ title, desc, type, duration, onClick }: Omit<ToastItem, 'id'>) => {
       const id = Math.random().toString(36).substring(2, 9);
       const effectiveDuration = duration !== undefined ? duration : (type === 'error' ? 8500 : 4500);
-      const newItem: ToastItem = { id, title, desc, type, duration: effectiveDuration };
+      const newItem: ToastItem = { id, title, desc, type, duration: effectiveDuration, onClick };
 
       setToasts((prev) => [newItem, ...prev.slice(0, 4)]);
 
@@ -149,7 +151,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const success = useCallback((desc: string, title?: string) => showToast({ type: 'success', title: title ?? t('common.successTitle'), desc }), [showToast, t]);
   const error = useCallback((desc: string, title?: string) => showToast({ type: 'error', title: title ?? t('common.errorTitle'), desc, duration: 8500 }), [showToast, t]);
   const warning = useCallback((desc: string, title?: string) => showToast({ type: 'warning', title: title ?? t('common.warningTitle'), desc }), [showToast, t]);
-  const info = useCallback((desc: string, title?: string) => showToast({ type: 'info', title: title ?? t('common.infoTitle'), desc }), [showToast, t]);
+  const info = useCallback((desc: string, title?: string, onClick?: () => void) => showToast({ type: 'info', title: title ?? t('common.infoTitle'), desc, onClick }), [showToast, t]);
   const reply = useCallback((desc: string, title?: string) => showToast({ type: 'reply', title: title ?? t('common.replyTitle'), desc }), [showToast, t]);
 
   const confirm = useCallback((options: ConfirmDialogOptions): Promise<boolean> => {
@@ -217,7 +219,15 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   className={`pointer-events-auto p-4 rounded-xl shadow-xl border bg-white dark:bg-[#2F3349] flex items-start space-x-3 animate-slide-left transition-all duration-200 ${borderStyles}`}
                 >
                   <div className="mt-0.5">{iconStyles}</div>
-                  <div className="flex-1 text-xs min-w-0">
+                  <div
+                    className={`flex-1 text-xs min-w-0 ${toastItem.onClick ? 'cursor-pointer hover:opacity-90' : ''}`}
+                    onClick={() => {
+                      if (toastItem.onClick) {
+                        toastItem.onClick();
+                        removeToast(toastItem.id);
+                      }
+                    }}
+                  >
                     <h4 className="font-bold text-slate-900 dark:text-white mb-0.5 tracking-tight">
                       {toastItem.title}
                     </h4>
