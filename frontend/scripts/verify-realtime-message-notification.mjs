@@ -261,5 +261,50 @@ check('triggerInboundNotification respects soundEnabled: false', () => {
   assert.ok(true);
 });
 
+// Scenario 6: Inbound realtime message with quoted_message preserves quote in merged thread
+check('Scenario 6: mergeWhatsAppMessages preserves quoted_message on live inbound message', () => {
+  const incoming = [{
+    id: 99992,
+    conversation_id: 39352,
+    direction: 'INBOUND',
+    message_type: 'TEXT',
+    status: 'RECEIVED',
+    body: 'Harika bir yanıt',
+    wa_message_id: '3A_QUOTE_TEST_1',
+    quoted_message: {
+      stanza_id: 'ORIGINAL_WA_ID',
+      participant: '905413749073@s.whatsapp.net',
+      sender_name: 'Ahmet',
+      message_type: 'TEXT',
+      body: 'Orijinal mesaj metni',
+    },
+    created_at: '2026-11-09T10:00:00.000Z',
+  }];
+  const merged = mergeWhatsAppMessages([], incoming);
+  assert.equal(merged.length, 1);
+  assert.ok(merged[0].quoted_message, 'quoted_message must be preserved');
+  assert.equal(merged[0].quoted_message.stanza_id, 'ORIGINAL_WA_ID');
+  assert.equal(merged[0].quoted_message.body, 'Orijinal mesaj metni');
+});
+
+// Scenario 7: Inbound realtime message with is_view_once preserves privacy flag
+check('Scenario 7: mergeWhatsAppMessages preserves is_view_once flag on live inbound message', () => {
+  const incoming = [{
+    id: 99993,
+    conversation_id: 39352,
+    direction: 'INBOUND',
+    message_type: 'IMAGE',
+    status: 'RECEIVED',
+    body: '[VIEW_ONCE_PHOTO]',
+    wa_message_id: '3A_VO_TEST_1',
+    is_view_once: true,
+    created_at: '2026-11-09T10:01:00.000Z',
+  }];
+  const merged = mergeWhatsAppMessages([], incoming);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].is_view_once, true, 'is_view_once must remain true');
+  assert.equal(merged[0].body, '[VIEW_ONCE_PHOTO]');
+});
+
 console.log(`\n${passed} checks passed in verify-realtime-message-notification.mjs`);
 await rm(tmp, { recursive: true, force: true });

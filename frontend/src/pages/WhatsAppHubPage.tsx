@@ -2915,11 +2915,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // background conversation must not keep a stale "yazıyor...".
         if (!isOutbound && convId != null) clearPeerTyping(convId);
 
+        const incomingMsgType = String(
+          msgObj0?.message_type || eventData.message_type || 'TEXT'
+        ).toUpperCase();
+        const incomingCaption = msgObj0?.media_caption || eventData.media_caption || '';
+        let incomingPreview = typeof msgText === 'string' ? msgText.trim() : '';
+        if (!incomingPreview) {
+          if (incomingCaption) {
+            incomingPreview = incomingCaption;
+          } else if (incomingMsgType === 'IMAGE') {
+            incomingPreview = `📷 ${tRef.current('whatsapp.photo') || 'Fotoğraf'}`;
+          } else if (incomingMsgType === 'VIDEO') {
+            incomingPreview = `🎬 ${tRef.current('whatsapp.video') || 'Video'}`;
+          } else if (incomingMsgType === 'AUDIO' || incomingMsgType === 'VOICE') {
+            incomingPreview = `🎵 ${tRef.current('whatsapp.audio') || 'Ses'}`;
+          } else if (incomingMsgType === 'DOCUMENT') {
+            incomingPreview = `📄 ${tRef.current('whatsapp.document') || 'Belge'}`;
+          } else if (incomingMsgType === 'LOCATION') {
+            incomingPreview = `📍 ${tRef.current('whatsapp.location') || 'Konum'}`;
+          } else if (incomingMsgType === 'CONTACT') {
+            incomingPreview = `👤 ${tRef.current('whatsapp.contact') || 'Kişi'}`;
+          }
+        }
+
         // Alert on incoming genuine messages (play sound preset / desktop notification)
         if (!isOutbound && !isReplayedEvent) {
           notifyInboundRef.current(
             senderLabel || t('whatsapp.newIncomingMessage'),
-            typeof msgText === 'string' ? msgText : ''
+            incomingPreview
           );
         }
 
@@ -2928,9 +2951,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // In-app visual toast when message arrives for a different conversation while on WhatsApp tab
         if (!isOutbound && !isReplayedEvent && !isActiveConversation && targetConvId != null) {
           const previewSnippet =
-            typeof msgText === 'string' && msgText.trim()
-              ? (msgText.length > 60 ? msgText.slice(0, 57) + '...' : msgText)
-              : '';
+            incomingPreview.length > 60 ? incomingPreview.slice(0, 57) + '...' : incomingPreview;
           const toastTitle = tRef.current('whatsapp.newIncomingMessage') || 'Yeni WhatsApp Mesajı';
           const toastBody = previewSnippet
             ? `${senderLabel || 'WhatsApp'}: ${previewSnippet}`
@@ -2958,30 +2979,56 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             eventData.media_url ||
             (incomingMediaId ? `/api/v1/whatsapp/media/${incomingMediaId}` : undefined);
 
+          const rawQuoted = msgObj?.quoted_message ?? eventData.quoted_message ?? null;
+          const rawIsViewOnce = Boolean(
+            msgObj?.is_view_once ??
+            eventData.is_view_once ??
+            (typeof msgText === 'string' && msgText.startsWith('[VIEW_ONCE_'))
+          );
+          const rawIsRevoked = Boolean(msgObj?.is_revoked ?? eventData.is_revoked ?? false);
+
           const newMsg: Message = {
             id: msgId || Date.now(),
             conversation_id: targetConvId,
             direction: isOutbound ? 'OUTBOUND' : 'INBOUND',
             message_type: (msgObj?.message_type || eventData.message_type || 'TEXT').toUpperCase() as any,
             status: msgObj?.status || (isOutbound ? 'PENDING' : 'RECEIVED'),
-            body: typeof msgText === 'string' ? msgText : '',
+            body: rawIsRevoked ? '' : (typeof msgText === 'string' ? msgText : ''),
             wa_message_id: waId,
             client_message_id: clientMid,
             sender_name: senderLabel || (isOutbound ? t('whatsapp.youLabel') : undefined),
             sender_phone: msgObj?.sender_phone || eventData.phone || '',
-            media_id: incomingMediaId,
-            media_mime_type: msgObj?.media_mime_type || eventData.media_mime_type,
-            media_filename: msgObj?.media_filename || eventData.media_filename,
-            media_caption: msgObj?.media_caption || eventData.media_caption,
-            media_url: incomingMediaUrl,
-            link_preview: msgObj?.link_preview || eventData.link_preview || undefined,
-            reactions: Array.isArray(msgObj?.reactions)
-              ? msgObj.reactions
-              : Array.isArray(eventData.reactions)
-              ? eventData.reactions
-              : [],
+            recipient_phone: msgObj?.recipient_phone || eventData.recipient_phone,
+            media_id: rawIsRevoked ? undefined : incomingMediaId,
+            media_mime_type: rawIsRevoked ? undefined : (msgObj?.media_mime_type || eventData.media_mime_type),
+            media_filename: rawIsRevoked ? undefined : (msgObj?.media_filename || eventData.media_filename),
+            media_caption: rawIsRevoked ? undefined : (msgObj?.media_caption || eventData.media_caption),
+            media_url: rawIsRevoked ? undefined : incomingMediaUrl,
+            link_preview: rawIsRevoked ? undefined : (msgObj?.link_preview || eventData.link_preview || undefined),
+            reactions: rawIsRevoked
+              ? []
+              : (Array.isArray(msgObj?.reactions)
+                ? msgObj.reactions
+                : Array.isArray(eventData.reactions)
+                ? eventData.reactions
+                : []),
+            quoted_message: rawIsRevoked ? null : (rawQuoted || null),
+            is_forwarded: Boolean(msgObj?.is_forwarded || eventData.is_forwarded),
+            is_pinned: Boolean(msgObj?.is_pinned || eventData.is_pinned),
+            pinned_at: msgObj?.pinned_at || eventData.pinned_at || null,
+            pinned_until: msgObj?.pinned_until || eventData.pinned_until || null,
+            is_view_once: rawIsViewOnce,
             is_edited: Boolean(msgObj?.is_edited || eventData.is_edited || eventData.upsert_type === 'replace'),
             edited_at: msgObj?.edited_at || eventData.edited_at || null,
+            is_revoked: rawIsRevoked,
+            revoked_at: msgObj?.revoked_at || eventData.revoked_at || null,
+            is_deleted_for_me: Boolean(msgObj?.is_deleted_for_me || eventData.is_deleted_for_me),
+            deleted_for_me_at: msgObj?.deleted_for_me_at || eventData.deleted_for_me_at || null,
+            is_starred: Boolean(msgObj?.is_starred || eventData.is_starred),
+            starred_at: msgObj?.starred_at || eventData.starred_at || null,
+            sent_at: msgObj?.sent_at || eventData.sent_at || null,
+            delivered_at: msgObj?.delivered_at || eventData.delivered_at || null,
+            read_at: msgObj?.read_at || eventData.read_at || null,
             created_at: msgTime,
           };
 
