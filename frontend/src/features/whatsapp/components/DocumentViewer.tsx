@@ -168,6 +168,11 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
       setPdfVerified(false);
       return;
     }
+    if (src.startsWith('blob:') || src.startsWith('data:')) {
+      setPdfVerified(true);
+      setLoading(false);
+      return;
+    }
 
     const controller = new AbortController();
     setLoading(true);

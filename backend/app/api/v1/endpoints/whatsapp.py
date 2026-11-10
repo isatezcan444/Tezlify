@@ -983,6 +983,11 @@ async def send_media(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="media_url veya media_base64 zorunludur.",
         )
+    if payload.media_base64 and len(payload.media_base64) > 90 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="FILE_TOO_LARGE: Dosya boyutu 64 MB sınırını aşıyor.",
+        )
     media = {
         "media_type": payload.media_type,
         "media_url": payload.media_url,
@@ -1010,7 +1015,20 @@ async def send_media(
         if "client_message_id" in str(exc):
             raise _conflict(exc) from exc
         raise _unprocessable(exc) from exc
+    except WhatsAppGatewayError as exc:
+        if exc.status_code == 413:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="FILE_TOO_LARGE: Dosya boyutu 64 MB sınırını aşıyor.",
+            ) from exc
+        raise _bad_gateway(exc) from exc
     except Exception as exc:
+        import httpx
+        if isinstance(exc, httpx.TimeoutException):
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="UPLOAD_TIMEOUT: Medya aktarımı zaman aşımına uğradı.",
+            ) from exc
         raise _bad_gateway(exc) from exc
     return WhatsAppSendResult(
         id=msg.get("id"),

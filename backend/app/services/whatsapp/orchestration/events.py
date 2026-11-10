@@ -1204,7 +1204,7 @@ class WhatsAppEventOrchestrator:
                             or canonical.created_at
                             or utc_now_naive()
                         )
-                        apply_last_message(conv, msg_dt, summary)
+                        apply_last_message(conv, msg_dt, summary, allow_equal=is_update)
 
                 await db.commit()
                 event["conversation_id"] = conv.id
@@ -2680,12 +2680,15 @@ class WhatsAppEventOrchestrator:
                     orig_status = row.status
                     orig_wa_id = row.wa_message_id
                     row.wa_message_id = wa_id or row.wa_message_id
+                    effective_status = "READ" if new_status == "PLAYED" else new_status
+                    if (new_status == "PLAYED" or event.get("played_timestamp")) and getattr(row, "is_view_once", False):
+                        row.body = "[VIEW_ONCE_OPENED]"
                     if new_status == "FAILED" and row.status == ConversationMessageStatus.PENDING:
                         row.status = ConversationMessageStatus.FAILED
                         row.failed_at = utc_now_naive()
                         row.error_message = event.get("error_message")
                     else:
-                        advance_message_status(row, new_status)
+                        advance_message_status(row, effective_status)
                     if row.status != orig_status or row.wa_message_id != orig_wa_id:
                         # Sync MessageLog and Campaign statistics
                         try:

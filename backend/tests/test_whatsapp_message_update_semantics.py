@@ -313,7 +313,10 @@ async def test_notify_and_append_unchanged():
     try:
         n = await ingest_gateway_event(_event(gw_id, jid, notify_id, body="Canli", upsert_type="notify"))
         assert n.get("_no_broadcast") is None
-        a = await ingest_gateway_event(_event(gw_id, jid, append_id, body="Gecmis", upsert_type="append"))
+        a = await ingest_gateway_event({
+            **_event(gw_id, jid, append_id, body="Gecmis", upsert_type="append"),
+            "is_sync": True,
+        })
         assert a.get("_no_broadcast") is True
     finally:
         await _purge(jid, gw_id)

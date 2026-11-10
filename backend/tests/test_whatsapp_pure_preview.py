@@ -125,11 +125,17 @@ def test_should_apply_last_message_timestamp_ordering():
     # Older incoming message does not replace newer preview
     assert should_apply_last_message(t2, t1, "Eski mesaj") is False
 
-    # Same timestamp does not overwrite
+    # Same timestamp does not overwrite by default
     assert should_apply_last_message(t1, t1, "Aynı zaman") is False
 
-    # Empty summary never applies
-    assert should_apply_last_message(t1, t2, "") is False
+    # Same timestamp overwrites when allow_equal=True (message edit)
+    assert should_apply_last_message(t1, t1, "Düzenlenmiş mesaj", allow_equal=True) is True
+
+    # Older timestamp still does not overwrite even when allow_equal=True
+    assert should_apply_last_message(t2, t1, "Eski mesaj", allow_equal=True) is False
+
+    # Empty summary never applies even with allow_equal=True
+    assert should_apply_last_message(t1, t1, "", allow_equal=True) is False
 
 
 def test_should_apply_last_message_realtime():

@@ -152,19 +152,21 @@ function historyDiag({ requestId, jid, extra } = {}) {
 //
 // The user saw a permanent, silent false positive — AGENTS.md 1.1 forbids
 // exactly this.
-const ACK_RANK = { 0: 'FAILED', 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' };
-const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
+const ACK_RANK = { 0: 'FAILED', 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'PLAYED' };
+const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, PLAYED: 4, FAILED: 0 };
 
 function resolveMessageStatus(msg, fromMe, reactions) {
   const rawStatus = msg?.status;
   if (typeof rawStatus === 'number') {
-    if (rawStatus === 4 || rawStatus === 5) return 'READ';
+    if (rawStatus === 5) return 'PLAYED';
+    if (rawStatus === 4) return 'READ';
     if (rawStatus === 3) return 'DELIVERED';
     if (rawStatus === 2) return 'SENT';
     if (rawStatus === 0) return 'FAILED';
   } else if (typeof rawStatus === 'string') {
     const s = rawStatus.toUpperCase();
-    if (s === 'READ' || s === 'PLAYED') return 'READ';
+    if (s === 'PLAYED') return 'PLAYED';
+    if (s === 'READ') return 'READ';
     if (s === 'DELIVERED' || s === 'DELIVERY_ACK') return 'DELIVERED';
     if (s === 'SENT' || s === 'SERVER_ACK') return 'SENT';
     if (s === 'FAILED' || s === 'ERROR') return 'FAILED';
@@ -2359,7 +2361,7 @@ export function createSessionManager({
       const type = (media_type || 'document').toLowerCase();
       const clientMessageId = client_message_id || uuidv4();
       const expectedBody = caption || filename || media_url || '';
-      const isVo = Boolean(view_once || is_view_once);
+      const isVo = (type === 'image' || type === 'video') && Boolean(view_once || is_view_once);
       const existing = (this._storeOf(session).messagesByChat.get(key) || [])
         .find((m) => m.client_message_id === clientMessageId);
       if (existing) {
@@ -3677,7 +3679,7 @@ export function createSessionManager({
         participant_name: isGroup ? this._resolveDisplayName(session, msg.key?.participant, msg.pushName) : null,
         is_edited: isReplace || Boolean(existingRecord?.is_edited),
         edited_at: isReplace ? new Date(ts).toISOString() : (existingRecord?.edited_at || null),
-        created_at: new Date(ts).toISOString(),
+        created_at: (isReplace && existingRecord?.created_at) ? existingRecord.created_at : new Date(ts).toISOString(),
       };
       // Upgrading a media-less placeholder (see the duplicate check above):
       // drop the synthetic row so the chat keeps ONE record per wa_message_id
@@ -3951,6 +3953,27 @@ export function createSessionManager({
         });
         return;
       }
+      if (newStatus === 'PLAYED') {
+        const playedTs = new Date().toISOString();
+        if (msg) {
+          msg.status = 'PLAYED';
+          msg.played_at = playedTs;
+          if (msg.is_view_once) {
+            msg.body = '[VIEW_ONCE_OPENED]';
+          }
+        }
+        this._emit({
+          event: 'message_status_updated',
+          gateway_session_id: sessionId,
+          conversation_id: jid,
+          wa_message_id: key.id,
+          client_message_id: msg?.client_message_id,
+          status: 'PLAYED',
+          played_timestamp: playedTs,
+          timestamp: playedTs,
+        });
+        return;
+      }
       if (msg && ACK_ORDER[newStatus] <= (ACK_ORDER[msg.status] ?? 0)) return;
       if (msg) msg.status = newStatus;
       this._emit({
@@ -3987,6 +4010,10 @@ export function createSessionManager({
           read_timestamp: readTs || prev.read_timestamp || null,
           played_timestamp: playedTs || prev.played_timestamp || null,
         };
+        if (playedTs && msg.is_view_once) {
+          msg.played_at = playedTs;
+          msg.body = '[VIEW_ONCE_OPENED]';
+        }
         if (readTs && (!msg.status || ACK_ORDER[msg.status] < ACK_ORDER.READ)) {
           msg.status = 'READ';
         }

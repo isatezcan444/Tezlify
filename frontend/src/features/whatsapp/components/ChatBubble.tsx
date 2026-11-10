@@ -48,6 +48,7 @@ import { useMessageReactions } from '../hooks/useMessageReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 import { isMessageStarred, toggleMessageStar, subscribeStarredChanges } from '../lib/starredMessages';
 import { isMessagePinned, toggleMessagePin, subscribePinnedChanges } from '../lib/pinnedMessages';
+import { normalizePreviewText } from '../lib/whatsappPreview';
 import { useMediaCoordinator } from '../hooks/useMediaCoordinator';
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
@@ -597,7 +598,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         return t('whatsapp.viewOnceMedia');
       }
       if (quoted.body && quoted.body !== 'Video' && quoted.body !== 'Fotoğraf' && quoted.body !== 'Belge') {
-        return quoted.body;
+        return normalizePreviewText(mType, quoted.body, t);
       }
       switch (mType) {
         case 'VIDEO':

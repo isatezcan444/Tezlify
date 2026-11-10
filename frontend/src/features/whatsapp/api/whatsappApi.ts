@@ -1241,7 +1241,7 @@ export const WhatsAppApi = {
   ): Promise<Message> {
     const base64 = await fileToBase64(file);
     const type = mediaTypeFromFile(file.type, file.name);
-    const isViewOnceAllowed = type !== 'document';
+    const isViewOnceAllowed = type === 'image' || type === 'video';
     return WhatsAppApi.sendMedia(
       conversationId,
       {

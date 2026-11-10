@@ -36,7 +36,7 @@ export const DeleteMessageModal: React.FC<DeleteMessageModalProps> = ({
   if (!isOpen || typeof document === 'undefined') return null;
 
   const isOutbound = message?.direction === 'OUTBOUND';
-  const rawBody = message?.body || message?.media_caption || message?.media_filename || '';
+  const rawBody = message?.body || message?.media_caption || message?.media_filename || (message?.is_view_once ? '[VIEW_ONCE_MEDIA]' : '');
   const messageSnippet = normalizePreviewText(message?.message_type, rawBody, t) || rawBody || t('whatsapp.messagePreview');
 
   return createPortal(

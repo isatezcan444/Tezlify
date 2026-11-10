@@ -373,9 +373,9 @@ export const ChatMessageInfoDrawer: React.FC<ChatMessageInfoDrawerProps> = ({
             </div>
           )}
 
-          {/* Text body */}
-          {message.body && (
-            <p className="whitespace-pre-wrap">{normalizePreviewText(message.message_type, message.body, t)}</p>
+          {/* Text body or View Once indicator */}
+          {(message.body || message.is_view_once) && (
+            <p className="whitespace-pre-wrap">{normalizePreviewText(message.message_type, message.body || (message.is_view_once ? '[VIEW_ONCE_MEDIA]' : ''), t)}</p>
           )}
 
           {message.media_caption && !message.body && (

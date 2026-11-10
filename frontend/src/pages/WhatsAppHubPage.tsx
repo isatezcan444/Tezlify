@@ -2863,8 +2863,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             // onizleme ayrica degerlendirilir — siralama ile metin birbirini
             // bloklamaz.
             const tsFresh = shouldApplyPreview(msgTime, existing.last_message_at);
-            const applyPreview = Boolean(summary) && tsFresh;
-            // Tekrar oynatilan olayda sayaclar/rozet ARTMAZ; mesaj balonu
+            const applyPreview = Boolean(summary) && (tsFresh || isUpdateEvent);
+            // Tekrar oynatilan veya guncellenen olayda sayaclar/rozet ARTMAZ; mesaj balonu
             // messagesMap'te ayrica dedup edilir, veri kaybi olmaz.
             const updated: Conversation = {
               ...existing,
@@ -2881,7 +2881,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   : tsFresh || !existing.last_message_at
                     ? msgTime
                     : existing.last_message_at,
-              message_count: isReplayedEvent ? (existing.message_count ?? 0) : (existing.message_count ?? 0) + 1,
+              message_count: (isReplayedEvent || isUpdateEvent) ? (existing.message_count ?? 0) : (existing.message_count ?? 0) + 1,
               last_message_state: applyPreview ? 'RESOLVED' : existing.last_message_state,
               unread_count: (() => {
                 if (isReplayedEvent) return existing.unread_count;

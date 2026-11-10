@@ -448,12 +448,33 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     };
   }, []);
 
+  const MAX_FILE_SIZE = 64 * 1024 * 1024; // 64 MB
+
+  const filterOversizedFiles = (fileList: File[]): File[] => {
+    const valid: File[] = [];
+    let hasOversized = false;
+    for (const f of fileList) {
+      if (f.size > MAX_FILE_SIZE) {
+        hasOversized = true;
+      } else {
+        valid.push(f);
+      }
+    }
+    if (hasOversized) {
+      toast.error(t('whatsapp.fileTooLarge'));
+    }
+    return valid;
+  };
+
   // Synchronize externally staged files (e.g. dropped onto the chat thread or column)
   useEffect(() => {
     if (stagedFiles && stagedFiles.files && stagedFiles.files.length > 0 && onSendMediaFile) {
-      setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...stagedFiles.files] : stagedFiles.files));
-      setActiveFileIndex(0);
-      setIsFileModalOpen(true);
+      const valid = filterOversizedFiles(stagedFiles.files);
+      if (valid.length > 0) {
+        setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...valid] : valid));
+        setActiveFileIndex(0);
+        setIsFileModalOpen(true);
+      }
       onClearStagedFiles?.();
     }
   }, [stagedFiles, onSendMediaFile, onClearStagedFiles]);
@@ -467,7 +488,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   };
 
   const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const chosen = e.target.files ? Array.from(e.target.files) : [];
+    const chosen = e.target.files ? filterOversizedFiles(Array.from(e.target.files)) : [];
     if (chosen.length === 0 || !onSendMediaFile) return;
     setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...chosen] : chosen));
     setIsFileModalOpen(true);
@@ -515,8 +536,11 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     if (filesFound.length > 0 && onSendMediaFile) {
       e.preventDefault();
       e.stopPropagation();
-      setPendingFiles((prev) => deduplicateFiles(prev, filesFound));
-      setIsFileModalOpen(true);
+      const valid = filterOversizedFiles(filesFound);
+      if (valid.length > 0) {
+        setPendingFiles((prev) => deduplicateFiles(prev, valid));
+        setIsFileModalOpen(true);
+      }
     }
   };
 
@@ -557,8 +581,11 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       if (filesFound.length > 0) {
         e.preventDefault();
         e.stopPropagation();
-        setPendingFiles((prev) => deduplicateFiles(prev, filesFound));
-        setIsFileModalOpen(true);
+        const valid = filterOversizedFiles(filesFound);
+        if (valid.length > 0) {
+          setPendingFiles((prev) => deduplicateFiles(prev, valid));
+          setIsFileModalOpen(true);
+        }
       }
     };
 
@@ -845,9 +872,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             const cap = fileCaptions[i]?.trim() || undefined;
             const ext = (f.name.split('.').pop() || '').toLowerCase();
             const mt = (f.type || '').toLowerCase();
-            const isMedia = mt.startsWith('image/') || mt.startsWith('video/') || mt.startsWith('audio/')
-              || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'mp3', 'ogg', 'wav'].includes(ext);
-            const isVo = isMedia && Boolean(fileViewOnce[i]);
+            const isImageOrVideo = mt.startsWith('image/') || mt.startsWith('video/')
+              || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm'].includes(ext);
+            const isVo = isImageOrVideo && Boolean(fileViewOnce[i]);
             const sendOpts = {
               is_view_once: isVo,
               quoted_message_id: replyingTo?.id,

@@ -192,7 +192,10 @@ async def find_whatsapp_conversation(
 
 
 def apply_conversation_last_message(
-    conv: Conversation, ts: Optional[datetime], summary: str
+    conv: Conversation,
+    ts: Optional[datetime],
+    summary: str,
+    allow_equal: bool = False,
 ) -> bool:
     """Sohbetin son mesaj alanlarini ZAMAN DAMGALI kurala gore gunceller.
 
@@ -213,7 +216,7 @@ def apply_conversation_last_message(
     """
     previous_ts = conv.last_message_at
     ts_naive = as_naive_utc(ts)
-    apply_preview = should_apply_last_message(previous_ts, ts, summary)
+    apply_preview = should_apply_last_message(previous_ts, ts, summary, allow_equal=allow_equal)
 
     changed = False
     if ts_naive is not None and (previous_ts is None or ts_naive > previous_ts):

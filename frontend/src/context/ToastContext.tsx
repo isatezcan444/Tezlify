@@ -352,10 +352,19 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   );
 };
 
+const NOOP_CONFIRM = async () => false;
+const FALLBACK_TOAST: ToastContextType = {
+  showToast: (item) => toast.show(item.type, item.desc || '', item.title, item.onClick),
+  removeToast: () => {},
+  success: (desc, title) => toast.success(desc, title),
+  error: (desc, title) => toast.error(desc, title),
+  warning: (desc, title) => toast.warning(desc, title),
+  info: (desc, title, onClick) => toast.info(desc, title, onClick),
+  reply: (desc, title) => toast.reply(desc, title),
+  confirm: NOOP_CONFIRM,
+};
+
 export const useToast = (): ToastContextType => {
   const context = useContext(ToastContext);
-  if (!context) {
-    throw new Error('useToast must be used within a ToastProvider');
-  }
-  return context;
+  return context || FALLBACK_TOAST;
 };

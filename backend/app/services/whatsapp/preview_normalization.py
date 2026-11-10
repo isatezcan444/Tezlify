@@ -177,19 +177,25 @@ def should_apply_last_message(
     current_ts: Optional[datetime],
     incoming_ts: Optional[datetime],
     summary: str,
+    allow_equal: bool = False,
 ) -> bool:
     """Pure decision logic governing whether an incoming message preview should update conversation state.
 
     - Empty summary never updates (preserves existing preview).
-    - Older or equal timestamp never updates (preserves newer message preview).
+    - Older or equal timestamp never updates (preserves newer message preview), unless allow_equal=True (e.g. edited message replace).
     - Realtime message (no timestamp) or newer timestamp always updates.
     """
     if not summary:
         return False
     ts = as_naive_utc(incoming_ts)
     cur = as_naive_utc(current_ts)
-    if ts is not None and cur is not None and ts <= cur:
-        return False
+    if ts is not None and cur is not None:
+        if allow_equal:
+            if ts < cur:
+                return False
+        else:
+            if ts <= cur:
+                return False
     return True
 
 

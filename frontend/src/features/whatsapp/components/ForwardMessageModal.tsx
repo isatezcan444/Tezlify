@@ -118,8 +118,8 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({
           <div className="flex items-center space-x-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
             <span>{t('whatsapp.forwardMessagePreview')}</span>
             {isMedia && (
-              <span className="px-1.5 py-0.2 rounded text-[10px] bg-slate-200/60 dark:bg-white/10 font-bold uppercase tracking-wider">
-                {message.message_type}
+              <span className="px-1.5 py-0.2 rounded text-[10px] bg-slate-200/60 dark:bg-white/10 font-bold tracking-wider">
+                {normalizePreviewText(message.message_type, '', t) || message.message_type}
               </span>
             )}
           </div>

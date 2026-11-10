@@ -130,8 +130,8 @@ if (DATABASE_URL) {
 }
 
 const app = express();
-app.use(express.json({ limit: '64mb' }));
-app.use(express.urlencoded({ limit: '64mb', extended: true }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 const server = http.createServer(app);
 // noServer mode: the raw HTTP upgrade is inspected below so we can reject
