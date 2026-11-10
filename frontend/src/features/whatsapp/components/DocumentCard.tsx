@@ -57,6 +57,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   // Automatically fetch size via HEAD request if not provided
   useEffect(() => {
     if (!resolvedUrl || resolvedSize) return;
+    if (resolvedUrl.startsWith('blob:') || resolvedUrl.startsWith('data:')) return;
     const controller = new AbortController();
     fetch(resolvedUrl, { method: 'HEAD', signal: controller.signal })
       .then((res) => {

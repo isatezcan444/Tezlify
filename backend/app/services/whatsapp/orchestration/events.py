@@ -1189,7 +1189,7 @@ class WhatsAppEventOrchestrator:
                 # has no "newer than" evidence, so it must not move the chat to
                 # the top either (same trap as append).
                 if (body_incoming or msg.get("media_id")) and not (is_update and not content_changed):
-                    if not (is_update and not msg.get("created_at")):
+                    if not (is_update and not (msg.get("created_at") or msg.get("edited_at"))):
                         summary = build_last_message_summary(
                             message_type=canonical.message_type.value,
                             body=canonical.body or "",
@@ -1197,7 +1197,13 @@ class WhatsAppEventOrchestrator:
                             is_group=is_group_jid,
                             direction=canonical.direction.value,
                         )
-                        msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or canonical.external_timestamp or canonical.created_at or utc_now_naive()
+                        msg_dt = (
+                            _as_naive_utc(_parse_dt(msg.get("edited_at")))
+                            or _as_naive_utc(_parse_dt(msg.get("created_at")))
+                            or canonical.external_timestamp
+                            or canonical.created_at
+                            or utc_now_naive()
+                        )
                         apply_last_message(conv, msg_dt, summary)
 
                 await db.commit()
@@ -2032,6 +2038,8 @@ class WhatsAppEventOrchestrator:
                 except Exception:
                     msg_row.delivered_at = utc_now_naive()
                 _advance_message_status(msg_row, "DELIVERED")
+            if played_ts_str and getattr(msg_row, "is_view_once", False):
+                msg_row.body = "[VIEW_ONCE_OPENED]"
             await db.commit()
 
         status_val = "READ" if read_ts_str else ("DELIVERED" if receipt_ts_str else None)

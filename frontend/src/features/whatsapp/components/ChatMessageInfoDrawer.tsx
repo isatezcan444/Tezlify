@@ -25,6 +25,7 @@ import {
 } from '../lib/whatsappIdentity';
 import { formatMessageDate, formatMessageTime, parseServerTime } from '../../../lib/utils';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
+import { normalizePreviewText } from '../lib/whatsappPreview';
 
 export interface ChatMessageInfoDrawerProps {
   isOpen: boolean;
@@ -374,7 +375,7 @@ export const ChatMessageInfoDrawer: React.FC<ChatMessageInfoDrawerProps> = ({
 
           {/* Text body */}
           {message.body && (
-            <p className="whitespace-pre-wrap">{message.body}</p>
+            <p className="whitespace-pre-wrap">{normalizePreviewText(message.message_type, message.body, t)}</p>
           )}
 
           {message.media_caption && !message.body && (

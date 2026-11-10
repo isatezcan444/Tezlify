@@ -18,6 +18,7 @@ import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 import { WhatsAppApi } from '../api/whatsappApi';
 import { formatPhoneNumber } from '../lib/whatsappIdentity';
+import { normalizePreviewText } from '../lib/whatsappPreview';
 import { Conversation, Message } from '../../../types';
 
 export interface ForwardMessageModalProps {
@@ -123,7 +124,7 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({
             )}
           </div>
           <p className="text-xs text-slate-700 dark:text-slate-200 truncate mt-0.5">
-            {message.body || message.media_caption || message.media_filename || (isMedia ? t('whatsapp.mediaMessage') : '')}
+            {normalizePreviewText(message.message_type, message.body || message.media_caption || message.media_filename, t) || (isMedia ? t('whatsapp.mediaMessage') : '')}
           </p>
         </div>
       </div>

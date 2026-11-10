@@ -829,6 +829,7 @@ export const en = {
     previewViewOnceVideo: '🎥 View once video',
     previewViewOnceAudio: '🎵 View once audio',
     previewViewOnceMedia: '👁️ View once media',
+    previewViewOnceOpened: 'Opened',
     viewOncePhoto: 'View once photo',
     viewOnceVideo: 'View once video',
     viewOnceAudio: 'View once audio',

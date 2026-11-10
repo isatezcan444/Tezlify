@@ -843,7 +843,11 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             setSendingIndex(i);
             const f = pendingFiles[i];
             const cap = fileCaptions[i]?.trim() || undefined;
-            const isVo = Boolean(fileViewOnce[i]);
+            const ext = (f.name.split('.').pop() || '').toLowerCase();
+            const mt = (f.type || '').toLowerCase();
+            const isMedia = mt.startsWith('image/') || mt.startsWith('video/') || mt.startsWith('audio/')
+              || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'mp3', 'ogg', 'wav'].includes(ext);
+            const isVo = isMedia && Boolean(fileViewOnce[i]);
             const sendOpts = {
               is_view_once: isVo,
               quoted_message_id: replyingTo?.id,

@@ -811,9 +811,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       const isAudio = message.message_type === 'AUDIO' || message.body === '[VIEW_ONCE_AUDIO]';
       const isPhoto = message.message_type === 'IMAGE' || message.body === '[VIEW_ONCE_PHOTO]';
       const isOpened = Boolean(
-        message.read_at ||
-        message.status === 'READ' ||
         (message as any).played_at ||
+        (message as any).played_timestamp ||
+        (message as any).is_view_once_opened ||
         message.body === '[VIEW_ONCE_OPENED]'
       );
 

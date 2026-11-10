@@ -50,6 +50,9 @@ const TYPE_LABEL_KEYS: Record<string, string> = {
   VIEW_ONCE_PHOTO: 'whatsapp.previewViewOncePhoto',
   VIEW_ONCE_VIDEO: 'whatsapp.previewViewOnceVideo',
   VIEW_ONCE_AUDIO: 'whatsapp.previewViewOnceAudio',
+  VIEW_ONCE_MEDIA: 'whatsapp.previewViewOnceMedia',
+  VIEW_ONCE_OPENED: 'whatsapp.previewViewOnceOpened',
+  MEDIA: 'whatsapp.previewImage',
   UNKNOWN: 'whatsapp.previewGeneric',
   OTHER: 'whatsapp.previewGeneric',
 };
@@ -72,6 +75,8 @@ const FALLBACK_LABELS: Record<string, string> = {
   'whatsapp.previewViewOncePhoto': '📷 Tek görüntülenmelik fotoğraf',
   'whatsapp.previewViewOnceVideo': '🎥 Tek görüntülenmelik video',
   'whatsapp.previewViewOnceAudio': '🎵 Tek görüntülenmelik sesli mesaj',
+  'whatsapp.previewViewOnceMedia': '👁️ Tek görüntülenmelik medya',
+  'whatsapp.previewViewOnceOpened': 'Açıldı',
   'whatsapp.previewGeneric': 'Mesaj',
 };
 

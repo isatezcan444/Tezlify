@@ -11,6 +11,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { useWhatsAppSettings } from './features/whatsapp/hooks/useWhatsAppSettings';
 import { initAudioUnlock } from './features/whatsapp/lib/whatsappAudio';
+import { normalizePreviewText } from './features/whatsapp/lib/whatsappPreview';
 import { LandingPage } from './features/landing';
 
 interface AppContentProps {
@@ -262,24 +263,10 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
               const mediaCaption =
                 eventData.message?.media_caption || eventData.media_caption || '';
 
-              let previewText = typeof rawBody === 'string' ? rawBody.trim() : '';
-              if (!previewText) {
-                if (mediaCaption) {
-                  previewText = mediaCaption;
-                } else if (msgType === 'IMAGE') {
-                  previewText = `📷 ${t('whatsapp.photo') || 'Fotoğraf'}`;
-                } else if (msgType === 'VIDEO') {
-                  previewText = `🎬 ${t('whatsapp.video') || 'Video'}`;
-                } else if (msgType === 'AUDIO' || msgType === 'VOICE') {
-                  previewText = `🎵 ${t('whatsapp.audio') || 'Ses'}`;
-                } else if (msgType === 'DOCUMENT') {
-                  previewText = `📄 ${t('whatsapp.document') || 'Belge'}`;
-                } else if (msgType === 'LOCATION') {
-                  previewText = `📍 ${t('whatsapp.location') || 'Konum'}`;
-                } else if (msgType === 'CONTACT') {
-                  previewText = `👤 ${t('whatsapp.contact') || 'Kişi'}`;
-                }
-              }
+              const previewText =
+                (typeof rawBody === 'string' && rawBody.trim() && !rawBody.startsWith('[') ? rawBody.trim() : '') ||
+                (mediaCaption ? mediaCaption.trim() : '') ||
+                normalizePreviewText(msgType, typeof rawBody === 'string' ? rawBody : '', t);
 
               notifyInboundRef.current(senderLabel, previewText);
 

@@ -503,7 +503,9 @@ async def send_text_message(
 
 
 async def send_media_message(gateway_id: str, jid: str, media: Dict[str, Any]) -> Dict[str, Any]:
-    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/media", json=media)
+    file_length = len(media.get("media_base64") or "") if media.get("media_base64") else None
+    timeout = gateway_media_timeout(media.get("mime_type"), file_length=file_length)
+    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/media", json=media, timeout=timeout)
 
 
 async def forward_message(gateway_id: str, jid: str, payload: Dict[str, Any]) -> Dict[str, Any]:

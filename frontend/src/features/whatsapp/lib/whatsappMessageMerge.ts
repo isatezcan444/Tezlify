@@ -48,7 +48,7 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
     const keepPreviousEdited = Boolean(
       previous?.is_edited && (
         !message.is_edited ||
-        (previous.edited_at && message.edited_at && new Date(previous.edited_at).getTime() >= new Date(message.edited_at).getTime())
+        (previous.edited_at && message.edited_at && new Date(previous.edited_at).getTime() > new Date(message.edited_at).getTime())
       )
     );
     const resolvedBody = isRevoked

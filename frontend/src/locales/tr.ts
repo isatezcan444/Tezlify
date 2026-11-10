@@ -830,6 +830,7 @@ export const tr = {
     previewViewOnceVideo: '🎥 Tek görüntülenmelik video',
     previewViewOnceAudio: '🎵 Tek görüntülenmelik sesli mesaj',
     previewViewOnceMedia: '👁️ Tek görüntülenmelik medya',
+    previewViewOnceOpened: 'Açıldı',
     viewOncePhoto: 'Tek görüntülenmelik fotoğraf',
     viewOnceVideo: 'Tek görüntülenmelik video',
     viewOnceAudio: 'Tek görüntülenmelik sesli mesaj',

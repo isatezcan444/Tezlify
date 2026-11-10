@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { X, Trash2, Users, User } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import type { Message } from '../../../types';
+import { normalizePreviewText } from '../lib/whatsappPreview';
 
 export interface DeleteMessageModalProps {
   isOpen: boolean;
@@ -35,8 +36,8 @@ export const DeleteMessageModal: React.FC<DeleteMessageModalProps> = ({
   if (!isOpen || typeof document === 'undefined') return null;
 
   const isOutbound = message?.direction === 'OUTBOUND';
-  const messageSnippet =
-    message?.body || message?.media_caption || message?.media_filename || t('whatsapp.messagePreview');
+  const rawBody = message?.body || message?.media_caption || message?.media_filename || '';
+  const messageSnippet = normalizePreviewText(message?.message_type, rawBody, t) || rawBody || t('whatsapp.messagePreview');
 
   return createPortal(
     <div

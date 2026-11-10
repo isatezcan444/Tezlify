@@ -2813,7 +2813,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // emit) liste sayaclarini SISIRMEZ. `wa_message_id` yoksa (nadir:
         // optimistic/eski olay) eski davranis korunur — sessizce yutmayiz.
         const waIdForDedup = msgObj0?.wa_message_id || eventData.wa_message_id || eventData.message_id;
-        const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup), convId ?? undefined);
+        const isUpdateEvent = eventData.upsert_type === 'replace' || eventData.upsert_type === 'update' || Boolean(msgObj0?.is_edited);
+        const isReplayedEvent = !isUpdateEvent && Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup), convId ?? undefined);
 
         const activeConv = selectedConvRef.current;
         // The active chat is recognised through the SAME canonical identity
@@ -3183,7 +3184,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : typeof serverId === 'number' && serverId > 0
               ? serverId
               : undefined;
-        const readTs = eventData.read_timestamp || eventData.played_timestamp;
+        const playedTs = eventData.played_timestamp;
+        const readTs = eventData.read_timestamp || playedTs;
         const receiptTs = eventData.receipt_timestamp;
 
         if (convId) {
@@ -3205,6 +3207,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   status: nextStatus,
                   read_at: readTs ? (m.read_at || readTs) : (isRead ? (m.read_at || new Date().toISOString()) : m.read_at),
                   delivered_at: receiptTs ? (m.delivered_at || receiptTs) : m.delivered_at,
+                  played_at: playedTs || (m as any).played_at || null,
+                  ...(playedTs && m.is_view_once ? { body: '[VIEW_ONCE_OPENED]' } : {}),
                 };
               }
               return m;

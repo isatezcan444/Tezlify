@@ -146,6 +146,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   // Fetch size via HEAD request if not provided
   useEffect(() => {
     if (!isOpen || !src || resolvedSize) return;
+    if (src.startsWith('blob:') || src.startsWith('data:')) return;
     const controller = new AbortController();
     fetch(src, { method: 'HEAD', signal: controller.signal })
       .then((res) => {

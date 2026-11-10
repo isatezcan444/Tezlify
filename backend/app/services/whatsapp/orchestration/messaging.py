@@ -1120,6 +1120,7 @@ class WhatsAppMessagingOrchestrator:
             msg_type = MessageType.VIDEO
         else:
             msg_type = MessageType.DOCUMENT
+            is_view_once_val = False  # WhatsApp protocol only supports View Once on image/video/audio
         caption = media.get("caption")
         filename = media.get("filename")
         _now = utc_now_naive()
