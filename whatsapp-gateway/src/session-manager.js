@@ -14,7 +14,8 @@ import { diagnostic, sessionRef, latency } from './observability.js';
 import { SocketLifecycle } from './domain/socket-lifecycle.js';
 import { createBoundedCache, isAvatarUrlExpired, sanitizeAvatarUrl } from './domain/bounded-cache.js';
 import { expandAppStateKeys } from 'whatsapp-rust-bridge';
-import { hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
+import { proto } from '@whiskeysockets/baileys';
+import { aesDecryptGCM, hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
 import { EventEmitter } from 'events';
 
 // Utils
@@ -440,6 +441,82 @@ export {
   buildMediaContent,
 };
 
+export function safeTimestampMs(rawTs, fallback = Date.now()) {
+  if (rawTs === null || rawTs === undefined) return fallback;
+  if (typeof rawTs === 'number') {
+    return Number.isFinite(rawTs) && rawTs > 0 ? rawTs : fallback;
+  }
+  if (typeof rawTs === 'string') {
+    const n = Number(rawTs);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  }
+  if (typeof rawTs?.toNumber === 'function') {
+    const n = rawTs.toNumber();
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  }
+  if (typeof rawTs?.low === 'number' && typeof rawTs?.high === 'number') {
+    const n = rawTs.high * 4294967296 + (rawTs.low >>> 0);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  }
+  return fallback;
+}
+
+export function decryptSecretEncryptedEdit(secEnc, store, session, key, msg) {
+  if (!secEnc || typeof secEnc !== 'object') return null;
+  const secType = Number(secEnc.secretEncType);
+  if (secType !== 2 && String(secEnc.secretEncType) !== 'MESSAGE_EDIT') {
+    return null;
+  }
+  const targetWaId = secEnc.targetMessageKey?.id;
+  if (!targetWaId) return null;
+  const targetChatJid = secEnc.targetMessageKey?.remoteJid ||
+    msg?.message?.deviceSentMessage?.destinationJid ||
+    key;
+
+  const rawTarget = lookupRawMessage(store, { remoteJid: targetChatJid, id: targetWaId });
+  let msgSecret = rawTarget?.messageContextInfo?.messageSecret ||
+    rawTarget?.message?.messageContextInfo?.messageSecret;
+  if (!msgSecret && rawTarget?.message) {
+    for (const k of Object.keys(rawTarget.message)) {
+      if (rawTarget.message[k]?.contextInfo?.messageSecret) {
+        msgSecret = rawTarget.message[k].contextInfo.messageSecret;
+        break;
+      }
+    }
+  }
+  if (!msgSecret || !secEnc.encPayload || !secEnc.encIv) {
+    return null;
+  }
+
+  try {
+    const senderJid = msg?.key?.participant || msg?.key?.remoteJid || targetChatJid;
+    const toBinary = (txt) => Buffer.from(String(txt), 'utf8');
+    const senderBuf = toBinary(senderJid);
+    const sign = Buffer.concat([
+      toBinary(targetWaId),
+      senderBuf,
+      senderBuf,
+      toBinary('Message Edit'),
+      new Uint8Array([1])
+    ]);
+    const key0 = hmacSign(msgSecret, new Uint8Array(32), 'sha256');
+    const decKey = hmacSign(sign, key0, 'sha256');
+    const decrypted = aesDecryptGCM(secEnc.encPayload, decKey, secEnc.encIv, Buffer.alloc(0));
+    const innerMsg = proto.Message.decode(decrypted);
+    return {
+      protocolMessage: {
+        type: 14,
+        key: secEnc.targetMessageKey || { id: targetWaId, remoteJid: targetChatJid, fromMe: true },
+        editedMessage: innerMsg,
+        timestampMs: safeTimestampMs(msg?.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : null),
+      }
+    };
+  } catch (err) {
+    logger.warn({ err: err?.message, targetWaId }, 'Failed to decrypt secretEncryptedMessage edit');
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session Manager Factory
 // ---------------------------------------------------------------------------
@@ -597,6 +674,7 @@ export function createSessionManager({
   });
 
   const sessionManager = {
+    _pool: pool,
     _listeners: new Set(),
 
     // Teşhis/ölçüm için okunabilir bekleyen-PDO haritaları. Üretim kodunda
@@ -3108,6 +3186,9 @@ export function createSessionManager({
           logger,
         });
       }
+      if (pool && !session.store._pool) {
+        session.store._pool = pool;
+      }
       return session.store;
     },
 
@@ -3347,6 +3428,17 @@ export function createSessionManager({
 
       const unwrapped = unwrapMessageContent(msg.message) || msg.message || {};
 
+      // Check for secretEncryptedMessage edit (newer WhatsApp clients)
+      const secEnc = msg.message?.secretEncryptedMessage ||
+        unwrapped.secretEncryptedMessage ||
+        msg.message?.deviceSentMessage?.message?.secretEncryptedMessage;
+      if (secEnc) {
+        const decryptedEdit = decryptSecretEncryptedEdit(secEnc, store, session, key, msg);
+        if (decryptedEdit) {
+          msg.message = decryptedEdit;
+        }
+      }
+
       // Protocol messages (history sync notifications, app state keys, ephemeral settings, peer data ops, revokes, edits)
       // are internal control frames and must never create a duplicate chat bubble / message row.
       const protoMsg = extractProtocolMessage(msg.message) || unwrapped.protocolMessage;
@@ -3370,14 +3462,36 @@ export function createSessionManager({
             rawTargetJid = msg.key.remoteJid;
           }
           let targetChatKey = normalizeJid(rawTargetJid);
-          if (!messagesByChat.has(targetChatKey) || !messagesByChat.get(targetChatKey).some((m) => m.wa_message_id === targetWaId)) {
+          let foundInRam = false;
+          if (messagesByChat.has(targetChatKey) && messagesByChat.get(targetChatKey).some((m) => m.wa_message_id === targetWaId)) {
+            foundInRam = true;
+          } else {
             for (const [cKey, cList] of messagesByChat.entries()) {
               if (cList.some((m) => m.wa_message_id === targetWaId)) {
                 targetChatKey = cKey;
+                foundInRam = true;
                 break;
               }
             }
           }
+          const isSelfJid = targetChatKey === normalizeJid(session?.phoneNumberJid || '') ||
+            targetChatKey === normalizeJid(session?.self_jid || '') ||
+            (session?.sock?.user?.id && targetChatKey === normalizeJid(session.sock.user.id));
+          const dbPool = pool || store?._pool || this._pool;
+          if ((!foundInRam || isBroadcastOnlyJid(targetChatKey) || isSelfJid) && dbPool) {
+            try {
+              const dbRow = await dbPool.query(
+                `SELECT c.jid FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE m.wa_message_id = $1 LIMIT 1`,
+                [targetWaId]
+              );
+              if (dbRow.rows[0]?.jid) {
+                targetChatKey = normalizeJid(dbRow.rows[0].jid);
+              }
+            } catch (dbErr) {
+              logger.debug({ dbErr: dbErr?.message, targetWaId }, 'Database lookup for revoke target chat failed');
+            }
+          }
+          if (!messagesByChat.has(targetChatKey)) messagesByChat.set(targetChatKey, []);
           const chatMsgs = messagesByChat.get(targetChatKey) || [];
           const target = chatMsgs.find((m) => m.wa_message_id === targetWaId);
           const revokedAt = new Date().toISOString();
@@ -3397,7 +3511,8 @@ export function createSessionManager({
           });
           return null;
         }
-        if (ptype === 14 && protoMsg.key?.id && protoMsg.editedMessage) {
+        const isProtoEdit = (ptype === 14 || String(protoMsg.type) === 'MESSAGE_EDIT') && protoMsg.key?.id;
+        if (isProtoEdit) {
           // MESSAGE_EDIT (14): Mesaj düzenlendi (örn. 'günaydın' -> 'günaydınlar')
           const targetWaId = String(protoMsg.key.id);
           const protoKeyJid = protoMsg.key?.remoteJid;
@@ -3415,16 +3530,39 @@ export function createSessionManager({
             rawTargetJid = msg.key.remoteJid;
           }
           let targetChatKey = normalizeJid(rawTargetJid);
-          if (!messagesByChat.has(targetChatKey) || !messagesByChat.get(targetChatKey).some((m) => m.wa_message_id === targetWaId)) {
+          let foundInRam = false;
+          if (messagesByChat.has(targetChatKey) && messagesByChat.get(targetChatKey).some((m) => m.wa_message_id === targetWaId)) {
+            foundInRam = true;
+          } else {
             for (const [cKey, cList] of messagesByChat.entries()) {
               if (cList.some((m) => m.wa_message_id === targetWaId)) {
                 targetChatKey = cKey;
+                foundInRam = true;
                 break;
               }
             }
           }
+          const isSelfJid = targetChatKey === normalizeJid(session?.phoneNumberJid || '') ||
+            targetChatKey === normalizeJid(session?.self_jid || '') ||
+            (session?.sock?.user?.id && targetChatKey === normalizeJid(session.sock.user.id));
+          const dbPool = pool || store?._pool || this._pool;
+          if ((!foundInRam || isBroadcastOnlyJid(targetChatKey) || isSelfJid) && dbPool) {
+            try {
+              const dbRow = await dbPool.query(
+                `SELECT c.jid FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE m.wa_message_id = $1 LIMIT 1`,
+                [targetWaId]
+              );
+              if (dbRow.rows[0]?.jid) {
+                targetChatKey = normalizeJid(dbRow.rows[0].jid);
+              }
+            } catch (dbErr) {
+              logger.debug({ dbErr: dbErr?.message, targetWaId }, 'Database lookup for edit target chat failed');
+            }
+          }
+
           const targetFromMe = protoMsg.key.fromMe !== undefined ? Boolean(protoMsg.key.fromMe) : fromMe;
-          const editedUnwrapped = unwrapMessageContent(protoMsg.editedMessage) || protoMsg.editedMessage;
+          const rawEdited = protoMsg.editedMessage?.message || protoMsg.editedMessage;
+          const editedUnwrapped = unwrapMessageContent(rawEdited) || rawEdited || {};
           const editedContact = extractContactPayload(editedUnwrapped);
           const editedLocation = extractLocationPayload(editedUnwrapped);
           const editedPoll = extractPollPayload(editedUnwrapped);
@@ -3445,7 +3583,7 @@ export function createSessionManager({
               editedUnwrapped.interactiveMessage?.body?.text ||
               '';
           }
-          const editTs = protoMsg.timestampMs ? Number(protoMsg.timestampMs) : Date.now();
+          const editTs = safeTimestampMs(protoMsg.timestampMs);
 
           if (!messagesByChat.has(targetChatKey)) messagesByChat.set(targetChatKey, []);
           const chatMsgs = messagesByChat.get(targetChatKey);
@@ -3503,6 +3641,7 @@ export function createSessionManager({
             unread_count: chat?.unread_count ?? 0,
             upsert_type: 'replace',
           });
+
           return record;
         }
         return null;

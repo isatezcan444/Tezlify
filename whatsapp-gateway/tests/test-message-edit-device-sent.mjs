@@ -505,7 +505,97 @@ try {
   assert.equal(recB.is_edited, false);
   console.log('  ok - Test 13 passed');
 
-  console.log('=== ALL 13 SCENARIOS PASSED WITH FULL ACCEPTANCE EVIDENCE ===');
+  // -------------------------------------------------------------
+  // Scenario 14: Protobuf Long object for timestampMs
+  // -------------------------------------------------------------
+  console.log('Test 14: Protobuf Long object for timestampMs without RangeError');
+  const origMsg14 = {
+    key: { remoteJid: jid, id: 'SCENARIO_14_ORIG', fromMe: true },
+    message: { conversation: 'long ts test' },
+    messageTimestamp: 1730890000,
+  };
+  await sm._ingestUpsertMessage(origMsg14, sock, sid, { upsertType: 'notify' });
+
+  // Simulate protobuf Long object
+  const fakeLong = {
+    low: -359487440,
+    high: 417,
+    unsigned: false,
+    toNumber() {
+      return 1794388469000;
+    },
+  };
+
+  const editLongTsMsg = {
+    key: { remoteJid: jid, id: 'STANZA_PHONE_EDIT_14', fromMe: true },
+    message: {
+      deviceSentMessage: {
+        destinationJid: jid,
+        message: {
+          protocolMessage: {
+            type: 14,
+            key: { id: 'SCENARIO_14_ORIG', remoteJid: jid, fromMe: true },
+            editedMessage: { conversation: 'long ts test (edited with Long)' },
+            timestampMs: fakeLong,
+          },
+        },
+      },
+    },
+    messageTimestamp: 1794388469,
+  };
+  await sm._ingestUpsertMessage(editLongTsMsg, sock, sid, { upsertType: 'notify' });
+
+  const chatMsgs14 = store.messagesByChat.get(jid) || [];
+  const rec14 = chatMsgs14.find((m) => m.wa_message_id === 'SCENARIO_14_ORIG');
+  assert.ok(rec14);
+  assert.equal(rec14.body, 'long ts test (edited with Long)');
+  assert.equal(rec14.is_edited, true);
+  assert.equal(rec14.edited_at, new Date(1794388469000).toISOString());
+  console.log('  ok - Test 14 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 15: DB Pool Lookup Fallback for Target Chat across Restarts
+  // -------------------------------------------------------------
+  console.log('Test 15: DB Pool Lookup Fallback for Target Chat across Restarts');
+  const mockDbChat = '905073333333@s.whatsapp.net';
+  const mockTargetWaId = 'DB_FALLBACK_WA_ID';
+  session.phoneNumberJid = '905413749073@s.whatsapp.net';
+  sm._pool = {
+    async query(sql, params) {
+      if (params?.[0] === mockTargetWaId) {
+        return { rows: [{ jid: mockDbChat }] };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const editMissingFromRam = {
+    key: { remoteJid: '905413749073@s.whatsapp.net', id: 'STANZA_DB_FALLBACK', fromMe: true },
+    message: {
+      deviceSentMessage: {
+        destinationJid: '905413749073@s.whatsapp.net',
+        message: {
+          protocolMessage: {
+            type: 14,
+            key: { id: mockTargetWaId, fromMe: true },
+            editedMessage: { conversation: 'resolved via db pool' },
+            timestampMs: 1794388500000,
+          },
+        },
+      },
+    },
+    messageTimestamp: 1794388500,
+  };
+  await sm._ingestUpsertMessage(editMissingFromRam, sock, sid, { upsertType: 'notify' });
+
+  const fallbackMsgs = store.messagesByChat.get(mockDbChat) || [];
+  const rec15 = fallbackMsgs.find((m) => m.wa_message_id === mockTargetWaId);
+  assert.ok(rec15, 'Target record must be created under DB-resolved chat');
+  assert.equal(rec15.body, 'resolved via db pool');
+  assert.equal(rec15.is_edited, true);
+  console.log('  ok - Test 15 passed');
+
+  console.log('=== ALL 15 SCENARIOS PASSED WITH FULL ACCEPTANCE EVIDENCE ===');
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

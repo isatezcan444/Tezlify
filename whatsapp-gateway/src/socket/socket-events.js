@@ -1730,13 +1730,29 @@ export function bindSocketEvents({
           if (key?.id) {
             const currentJid = normalizeJid(key.remoteJid);
             const listForCurrent = messagesByChat.get(currentJid) || [];
-            if (!listForCurrent.some((m) => m.wa_message_id === key.id)) {
+            let foundKey = false;
+            if (listForCurrent.some((m) => m.wa_message_id === key.id)) {
+              foundKey = true;
+            } else {
               for (const [cKey, cList] of messagesByChat.entries()) {
                 if (cList.some((m) => m.wa_message_id === key.id)) {
                   effectiveKey = { ...key, remoteJid: cKey };
+                  foundKey = true;
                   break;
                 }
               }
+            }
+            const dbPool = manager?._pool || store?._pool;
+            if (!foundKey && dbPool) {
+              try {
+                const dbRow = await dbPool.query(
+                  `SELECT c.jid FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE m.wa_message_id = $1 LIMIT 1`,
+                  [key.id]
+                );
+                if (dbRow.rows[0]?.jid) {
+                  effectiveKey = { ...key, remoteJid: normalizeJid(dbRow.rows[0].jid) };
+                }
+              } catch { /* best effort */ }
             }
           }
           const msg = {
@@ -1747,7 +1763,7 @@ export function bindSocketEvents({
           };
           await manager._ingestUpsertMessage(msg, sock, id, { upsertType: 'replace' });
         } catch (uErr) {
-          logger.debug({ uErr, key }, 'Failed to ingest updated message on retry/edit');
+          logger.warn({ err: uErr?.message, key }, 'Failed to ingest updated message on retry/edit');
         }
       }
     }
