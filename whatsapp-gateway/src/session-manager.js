@@ -3286,9 +3286,17 @@ export function createSessionManager({
       }
 
       const fromMe = Boolean(msg.key?.fromMe);
-      const jid = msg.key?.remoteJid;
+      const jid = msg.key?.remoteJid ||
+        msg.message?.deviceSentMessage?.destinationJid ||
+        extractProtocolMessage(msg.message)?.key?.remoteJid;
       if (!jid) return null;
-      if (isBroadcastOnlyJid(jid)) return null;
+      if (isBroadcastOnlyJid(jid)) {
+        const destJid = msg.message?.deviceSentMessage?.destinationJid ||
+          extractProtocolMessage(msg.message)?.key?.remoteJid;
+        if (!destJid || isBroadcastOnlyJid(destJid)) {
+          return null;
+        }
+      }
       this._ensurePresenceSubscribed(session, jid);
 
       if (msg.key?.senderLid && msg.key?.senderPn) {
@@ -3307,7 +3315,11 @@ export function createSessionManager({
       for (const [lidJid, phoneJid] of lidPairsFromMessageKey(msg.key)) {
         this._applyLidMapping(session, lidJid, phoneJid);
       }
-      const key = normalizeJid(jid);
+      const explicitDestJid = msg.message?.deviceSentMessage?.destinationJid;
+      const keyCandidate = (explicitDestJid && !isLidJid(explicitDestJid) && !isBroadcastOnlyJid(explicitDestJid))
+        ? explicitDestJid
+        : jid;
+      const key = normalizeJid(keyCandidate);
       if (isBroadcastOnlyJid(key)) return null;
 
       // Reaksiyonlar mesaj DEGILDIR ve asla mesaj satirina donusmemelidir.
@@ -3343,7 +3355,29 @@ export function createSessionManager({
         if (ptype === 0 && protoMsg.key?.id) {
           // REVOKE (0) = "Bu mesaj silindi": hedef mesaji bellek icinde guncelle
           const targetWaId = String(protoMsg.key.id);
-          const targetChatKey = normalizeJid(protoMsg.key.remoteJid || key);
+          const protoKeyJid = protoMsg.key?.remoteJid;
+          const destJid = msg.message?.deviceSentMessage?.destinationJid;
+          let rawTargetJid = key;
+          if (protoKeyJid && !isBroadcastOnlyJid(protoKeyJid) && !isLidJid(protoKeyJid)) {
+            rawTargetJid = protoKeyJid;
+          } else if (destJid && !isBroadcastOnlyJid(destJid) && !isLidJid(destJid)) {
+            rawTargetJid = destJid;
+          } else if (protoKeyJid && !isBroadcastOnlyJid(protoKeyJid)) {
+            rawTargetJid = protoKeyJid;
+          } else if (destJid && !isBroadcastOnlyJid(destJid)) {
+            rawTargetJid = destJid;
+          } else if (msg.key?.remoteJid && !isBroadcastOnlyJid(msg.key.remoteJid)) {
+            rawTargetJid = msg.key.remoteJid;
+          }
+          let targetChatKey = normalizeJid(rawTargetJid);
+          if (!messagesByChat.has(targetChatKey) || !messagesByChat.get(targetChatKey).some((m) => m.wa_message_id === targetWaId)) {
+            for (const [cKey, cList] of messagesByChat.entries()) {
+              if (cList.some((m) => m.wa_message_id === targetWaId)) {
+                targetChatKey = cKey;
+                break;
+              }
+            }
+          }
           const chatMsgs = messagesByChat.get(targetChatKey) || [];
           const target = chatMsgs.find((m) => m.wa_message_id === targetWaId);
           const revokedAt = new Date().toISOString();
@@ -3366,7 +3400,29 @@ export function createSessionManager({
         if (ptype === 14 && protoMsg.key?.id && protoMsg.editedMessage) {
           // MESSAGE_EDIT (14): Mesaj düzenlendi (örn. 'günaydın' -> 'günaydınlar')
           const targetWaId = String(protoMsg.key.id);
-          const targetChatKey = normalizeJid(protoMsg.key.remoteJid || key);
+          const protoKeyJid = protoMsg.key?.remoteJid;
+          const destJid = msg.message?.deviceSentMessage?.destinationJid;
+          let rawTargetJid = key;
+          if (protoKeyJid && !isBroadcastOnlyJid(protoKeyJid) && !isLidJid(protoKeyJid)) {
+            rawTargetJid = protoKeyJid;
+          } else if (destJid && !isBroadcastOnlyJid(destJid) && !isLidJid(destJid)) {
+            rawTargetJid = destJid;
+          } else if (protoKeyJid && !isBroadcastOnlyJid(protoKeyJid)) {
+            rawTargetJid = protoKeyJid;
+          } else if (destJid && !isBroadcastOnlyJid(destJid)) {
+            rawTargetJid = destJid;
+          } else if (msg.key?.remoteJid && !isBroadcastOnlyJid(msg.key.remoteJid)) {
+            rawTargetJid = msg.key.remoteJid;
+          }
+          let targetChatKey = normalizeJid(rawTargetJid);
+          if (!messagesByChat.has(targetChatKey) || !messagesByChat.get(targetChatKey).some((m) => m.wa_message_id === targetWaId)) {
+            for (const [cKey, cList] of messagesByChat.entries()) {
+              if (cList.some((m) => m.wa_message_id === targetWaId)) {
+                targetChatKey = cKey;
+                break;
+              }
+            }
+          }
           const targetFromMe = protoMsg.key.fromMe !== undefined ? Boolean(protoMsg.key.fromMe) : fromMe;
           const editedUnwrapped = unwrapMessageContent(protoMsg.editedMessage) || protoMsg.editedMessage;
           const editedContact = extractContactPayload(editedUnwrapped);
@@ -3397,9 +3453,13 @@ export function createSessionManager({
 
           let record = null;
           if (target) {
-            target.body = editedText;
-            target.is_edited = true;
-            target.edited_at = new Date(editTs).toISOString();
+            // Guard against out-of-order edits: do not clobber if existing edit is newer
+            const targetEditTs = target.edited_at ? Date.parse(target.edited_at) : 0;
+            if (!targetEditTs || editTs >= targetEditTs) {
+              target.body = editedText;
+              target.is_edited = true;
+              target.edited_at = new Date(editTs).toISOString();
+            }
             record = target;
           } else {
             // Bellek henüz hedef mesajı taşımıyorsa (ör. gateway restart / tarihsel mesaj)
@@ -3427,9 +3487,12 @@ export function createSessionManager({
           // Sohbet önizlemesini güncelle
           const chat = chats.get(targetChatKey);
           if (chat) {
-            chat.last_message_preview = editedText;
-            if (!chat.last_message_at || new Date(editTs).toISOString() > chat.last_message_at) {
-              chat.last_message_at = new Date(editTs).toISOString();
+            const targetEditTs = target?.edited_at ? Date.parse(target.edited_at) : 0;
+            if (!targetEditTs || editTs >= targetEditTs) {
+              chat.last_message_preview = editedText;
+              if (!chat.last_message_at || new Date(editTs).toISOString() > chat.last_message_at) {
+                chat.last_message_at = new Date(editTs).toISOString();
+              }
             }
           }
 

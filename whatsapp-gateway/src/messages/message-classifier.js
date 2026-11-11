@@ -56,15 +56,48 @@ export function unwrapMessageContent(content) {
 
 /**
  * Extracts inner ProtocolMessage (REVOKE, MESSAGE_EDIT, etc.) from raw or wrapped messages.
+ * Deeply unwraps only verified WhatsApp envelopes (deviceSentMessage, ephemeralMessage,
+ * viewOnceMessage, viewOnceMessageV2, documentWithCaptionMessage, editedMessage, etc.)
+ * with explicit cycle detection and maximum depth bounds.
  */
 export function extractProtocolMessage(content) {
   if (!content || typeof content !== 'object') return null;
-  if (content.protocolMessage) return content.protocolMessage;
-  if (content.editedMessage?.message?.protocolMessage) return content.editedMessage.message.protocolMessage;
-  if (content.ephemeralMessage?.message?.protocolMessage) return content.ephemeralMessage.message.protocolMessage;
-  if (content.viewOnceMessage?.message?.protocolMessage) return content.viewOnceMessage.message.protocolMessage;
-  if (content.viewOnceMessageV2?.message?.protocolMessage) return content.viewOnceMessageV2.message.protocolMessage;
-  if (content.documentWithCaptionMessage?.message?.protocolMessage) return content.documentWithCaptionMessage.message.protocolMessage;
+  const visited = new Set();
+  let current = content;
+  for (let i = 0; i < 8; i++) {
+    if (!current || typeof current !== 'object' || visited.has(current)) break;
+    visited.add(current);
+    if (current.protocolMessage && typeof current.protocolMessage === 'object') {
+      return current.protocolMessage;
+    }
+    if (current.deviceSentMessage?.message) {
+      current = current.deviceSentMessage.message;
+    } else if (current.editedMessage?.message?.protocolMessage && typeof current.editedMessage.message.protocolMessage === 'object') {
+      return current.editedMessage.message.protocolMessage;
+    } else if (current.editedMessage?.message) {
+      current = current.editedMessage.message;
+    } else if (current.ephemeralMessage?.message) {
+      current = current.ephemeralMessage.message;
+    } else if (current.viewOnceMessage?.message) {
+      current = current.viewOnceMessage.message;
+    } else if (current.viewOnceMessageV2?.message) {
+      current = current.viewOnceMessageV2.message;
+    } else if (current.viewOnceMessageV2Extension?.message) {
+      current = current.viewOnceMessageV2Extension.message;
+    } else if (current.documentWithCaptionMessage?.message) {
+      current = current.documentWithCaptionMessage.message;
+    } else if (current.associatedChildMessage?.message) {
+      current = current.associatedChildMessage.message;
+    } else if (current.groupStatusMessage?.message) {
+      current = current.groupStatusMessage.message;
+    } else if (current.groupStatusMessageV2?.message) {
+      current = current.groupStatusMessageV2.message;
+    } else if (current.botInvokeMessage?.message) {
+      current = current.botInvokeMessage.message;
+    } else {
+      break;
+    }
+  }
   return null;
 }
 
