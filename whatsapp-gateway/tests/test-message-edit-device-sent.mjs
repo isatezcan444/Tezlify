@@ -13,7 +13,7 @@ import {
 import { createSessionManager } from '../src/session-manager.js';
 import { bindSocketEvents } from '../src/socket/socket-events.js';
 
-console.log('=== RUNNING 10-SCENARIO MESSAGE EDIT DEVICE SENT HOTFIX TEST SUITE ===');
+console.log('=== RUNNING 20-SCENARIO MESSAGE EDIT DEVICE SENT HOTFIX TEST SUITE ===');
 
 const dir = await mkdtemp(path.join(os.tmpdir(), 'wa-edit-device-sent-test-'));
 
@@ -595,7 +595,257 @@ try {
   assert.equal(rec15.is_edited, true);
   console.log('  ok - Test 15 passed');
 
-  console.log('=== ALL 15 SCENARIOS PASSED WITH FULL ACCEPTANCE EVIDENCE ===');
+  // -------------------------------------------------------------
+  // Scenario 16: Voice/Audio message edited with text ("Ses" -> "Ses44")
+  // -------------------------------------------------------------
+  console.log('Test 16: Voice/Audio message edited with text ("Ses" -> "Ses44")');
+  const audioWaId = 'SCENARIO_16_AUDIO_ORIG';
+  const origAudioRecord = {
+    id: 1730890100000,
+    timestamp_s: 1730890100,
+    conversation_id: jid,
+    direction: 'OUTBOUND',
+    message_type: 'AUDIO',
+    status: 'SENT',
+    body: 'Ses',
+    media_id: 'media_audio_ses_123',
+    media_mime_type: 'audio/ogg; codecs=opus',
+    media_filename: 'voice_note.ogg',
+    media_caption: 'Ses',
+    wa_message_id: audioWaId,
+    sender_phone: 'ME',
+    recipient_phone: jid,
+    sender_name: 'ME',
+    is_edited: false,
+    edited_at: null,
+    created_at: new Date(1730890100000).toISOString(),
+  };
+  const chatMsgs16 = store.messagesByChat.get(jid) || [];
+  chatMsgs16.push(origAudioRecord);
+  store.messagesByChat.set(jid, chatMsgs16);
+
+  const editAudioMsg = {
+    key: { remoteJid: jid, id: 'STANZA_AUDIO_EDIT_16', fromMe: true },
+    message: {
+      deviceSentMessage: {
+        destinationJid: jid,
+        message: {
+          protocolMessage: {
+            type: 14,
+            key: { id: audioWaId, remoteJid: jid, fromMe: true },
+            editedMessage: { conversation: 'Ses44' },
+            timestampMs: 1730890150000,
+          },
+        },
+      },
+    },
+    messageTimestamp: 1730890150,
+  };
+  await sm._ingestUpsertMessage(editAudioMsg, sock, sid, { upsertType: 'notify' });
+
+  const target16 = chatMsgs16.find((m) => m.wa_message_id === audioWaId);
+  assert.ok(target16, 'Original audio message must exist in chat list');
+  assert.equal(target16.body, 'Ses44', 'Body must be updated to Ses44');
+  assert.equal(target16.is_edited, true, 'is_edited must be true');
+  assert.equal(target16.message_type, 'AUDIO', 'AUDIO message_type must be preserved');
+  assert.equal(target16.media_id, 'media_audio_ses_123', 'media_id must be preserved');
+  assert.equal(target16.media_mime_type, 'audio/ogg; codecs=opus', 'media_mime_type must be preserved');
+
+  const rep16 = emittedEvents.filter((e) => e.upsert_type === 'replace' && e.message?.wa_message_id === audioWaId);
+  assert.equal(rep16.length, 1, 'Replace event emitted for audio message edit');
+  assert.equal(rep16[0].message.body, 'Ses44');
+  assert.equal(rep16[0].message.media_id, 'media_audio_ses_123');
+  console.log('  ok - Test 16 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 17: Voice/Audio message edited across restart (hydrated from DB)
+  // -------------------------------------------------------------
+  console.log('Test 17: Voice/Audio message edited across restart (hydrated from DB)');
+  const dbAudioWaId = 'SCENARIO_17_DB_AUDIO_WA_ID';
+  const mockAudioChat = '905074444444@s.whatsapp.net';
+  sm._pool = {
+    async query(sql, params) {
+      if (params?.[0] === dbAudioWaId) {
+        return {
+          rows: [{
+            id: 180001,
+            conversation_id: 39999,
+            direction: 'OUTBOUND',
+            message_type: 'AUDIO',
+            body: 'Ses',
+            media_id: 'media_db_audio_456',
+            media_mime_type: 'audio/ogg; codecs=opus',
+            media_filename: 'ptt.ogg',
+            media_caption: 'Ses',
+            status: 'SENT',
+            created_at: '2026-11-12T09:03:52.000Z',
+            recipient_phone: '+905074444444',
+            sender_phone: 'ME',
+            is_group: false,
+            parent_jid: null,
+            contact_phone: '+905074444444',
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const editDbAudioMsg = {
+    key: { remoteJid: 'status@broadcast', id: 'STANZA_DB_AUDIO_EDIT', fromMe: true },
+    message: {
+      deviceSentMessage: {
+        destinationJid: mockAudioChat,
+        message: {
+          protocolMessage: {
+            type: 14,
+            key: { id: dbAudioWaId, fromMe: true },
+            editedMessage: { conversation: 'Ses44' },
+            timestampMs: 1794388600000,
+          },
+        },
+      },
+    },
+    messageTimestamp: 1794388600,
+  };
+  await sm._ingestUpsertMessage(editDbAudioMsg, sock, sid, { upsertType: 'notify' });
+
+  const chatMsgs17 = store.messagesByChat.get(mockAudioChat) || [];
+  const target17 = chatMsgs17.find((m) => m.wa_message_id === dbAudioWaId);
+  assert.ok(target17, 'Hydrated audio record must be created under DB-resolved chat');
+  assert.equal(target17.body, 'Ses44');
+  assert.equal(target17.is_edited, true);
+  assert.equal(target17.message_type, 'AUDIO', 'Hydrated record must preserve AUDIO type');
+  assert.equal(target17.media_id, 'media_db_audio_456', 'Hydrated record must preserve media_id');
+  console.log('  ok - Test 17 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 18: Baileys messages.update with editedMessage wrapper
+  // -------------------------------------------------------------
+  console.log('Test 18: Baileys messages.update with editedMessage wrapper');
+  const updateWaId = 'SCENARIO_18_BAILEYS_UPDATE_ORIG';
+  const origUpdateMsg = {
+    key: { remoteJid: jid, id: updateWaId, fromMe: true },
+    message: { conversation: 'Önceki Mesaj' },
+    messageTimestamp: 1730890300,
+  };
+  await sm._ingestUpsertMessage(origUpdateMsg, sock, sid, { upsertType: 'notify' });
+
+  // Simulate Baileys messages.update event
+  sock.ev.emit('messages.update', [{
+    key: { id: updateWaId, remoteJid: jid, fromMe: true },
+    update: {
+      message: {
+        editedMessage: {
+          message: {
+            conversation: 'Güncellenmiş Mesaj',
+          },
+        },
+      },
+      messageTimestamp: 1730890350,
+    },
+  }]);
+  // Allow async handler to complete
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const chatMsgs18 = store.messagesByChat.get(jid) || [];
+  const target18 = chatMsgs18.find((m) => m.wa_message_id === updateWaId);
+  assert.ok(target18);
+  assert.equal(target18.body, 'Güncellenmiş Mesaj', 'Body updated via messages.update');
+  assert.equal(target18.is_edited, true, 'is_edited set via messages.update');
+
+  const rep18 = emittedEvents.filter((e) => e.upsert_type === 'replace' && e.message?.wa_message_id === updateWaId);
+  assert.equal(rep18.length, 1, 'Replace event emitted for messages.update');
+  console.log('  ok - Test 18 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 19: Note-to-Self / Self-Chat edit
+  // -------------------------------------------------------------
+  console.log('Test 19: Note-to-Self / Self-Chat edit');
+  const selfChatJid = '905413749073@s.whatsapp.net';
+  session.phoneNumberJid = selfChatJid;
+  const selfWaId = 'SCENARIO_19_SELF_NOTE';
+
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: selfChatJid, id: selfWaId, fromMe: true },
+    message: { conversation: 'Ses' },
+    messageTimestamp: 1730890400,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const selfEditMsg = {
+    key: { remoteJid: selfChatJid, id: 'STANZA_SELF_EDIT_19', fromMe: true },
+    message: {
+      deviceSentMessage: {
+        destinationJid: selfChatJid,
+        message: {
+          protocolMessage: {
+            type: 14,
+            key: { id: selfWaId, remoteJid: selfChatJid, fromMe: true },
+            editedMessage: { conversation: 'Ses44' },
+            timestampMs: 1730890450000,
+          },
+        },
+      },
+    },
+    messageTimestamp: 1730890450,
+  };
+  await sm._ingestUpsertMessage(selfEditMsg, sock, sid, { upsertType: 'notify' });
+
+  const selfChatList = store.messagesByChat.get(selfChatJid) || [];
+  const target19 = selfChatList.find((m) => m.wa_message_id === selfWaId);
+  assert.ok(target19, 'Self chat message must exist');
+  assert.equal(target19.body, 'Ses44', 'Self chat message updated to Ses44');
+  assert.equal(target19.is_edited, true);
+
+  const rep19 = emittedEvents.filter((e) => e.upsert_type === 'replace' && e.message?.wa_message_id === selfWaId);
+  assert.equal(rep19.length, 1, 'Replace event emitted for self chat edit');
+  console.log('  ok - Test 19 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 20: Real PostgreSQL schema compatibility (no c.jid column required)
+  // -------------------------------------------------------------
+  console.log('Test 20: Real PostgreSQL schema compatibility (no c.jid column required)');
+  const { lookupMessageDbInfo } = await import('../src/database/message-lookup.js');
+  const mockRealSchemaPool = {
+    async query(sql, params) {
+      assert.ok(!sql.includes('c.jid'), 'SQL query must NOT reference c.jid');
+      assert.ok(sql.includes('ct.phone_e164 as contact_phone'), 'SQL query must join contacts');
+      if (params?.[0] === 'TEST_1_ON_1') {
+        return {
+          rows: [{
+            id: 1,
+            is_group: false,
+            parent_jid: null,
+            contact_phone: '+905413749073',
+            recipient_phone: '+905413749073',
+            sender_phone: 'ME',
+          }],
+        };
+      }
+      if (params?.[0] === 'TEST_GROUP') {
+        return {
+          rows: [{
+            id: 2,
+            is_group: true,
+            parent_jid: '123456789-987654@g.us',
+            contact_phone: 'jid:123456789-987654@g.us',
+            recipient_phone: '123456789-987654@g.us',
+            sender_phone: 'ME',
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const res1On1 = await lookupMessageDbInfo(mockRealSchemaPool, 'TEST_1_ON_1', store);
+  assert.equal(res1On1.chat_jid, '905413749073@s.whatsapp.net', '1-on-1 resolved to phone JID without c.jid');
+
+  const resGroup = await lookupMessageDbInfo(mockRealSchemaPool, 'TEST_GROUP', store);
+  assert.equal(resGroup.chat_jid, '123456789-987654@g.us', 'Group resolved to group JID without c.jid');
+  console.log('  ok - Test 20 passed');
+
+  console.log('=== ALL 20 SCENARIOS PASSED WITH FULL ACCEPTANCE EVIDENCE ===');
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

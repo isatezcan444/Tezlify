@@ -105,6 +105,7 @@ import { createPendingLidRepository, pendingLidEventId } from './lid/pending-lid
 import { createEncryptedCodec } from './auth/encrypted-codec.js';
 import { createContactRepository } from './contacts/contact-repository.js';
 import { createChatRepository } from './chats/chat-repository.js';
+import { lookupMessageDbInfo } from './database/message-lookup.js';
 
 // Socket
 import {
@@ -3396,11 +3397,43 @@ export function createSessionManager({
       for (const [lidJid, phoneJid] of lidPairsFromMessageKey(msg.key)) {
         this._applyLidMapping(session, lidJid, phoneJid);
       }
-      const explicitDestJid = msg.message?.deviceSentMessage?.destinationJid;
-      const keyCandidate = (explicitDestJid && !isLidJid(explicitDestJid) && !isBroadcastOnlyJid(explicitDestJid))
+      let explicitDestJid = msg.message?.deviceSentMessage?.destinationJid;
+      if (explicitDestJid && isLidJid(explicitDestJid)) {
+        const resolvedPhone = this._lookupLidPhone(session, explicitDestJid) ||
+          store.lidToJid.get(explicitDestJid) ||
+          (session?.sock?.user?.lid && normalizeJid(session.sock.user.lid) === normalizeJid(explicitDestJid) ? session?.phoneNumberJid : null);
+        if (resolvedPhone) {
+          explicitDestJid = resolvedPhone;
+        }
+      }
+      let keyCandidate = (explicitDestJid && !isLidJid(explicitDestJid) && !isBroadcastOnlyJid(explicitDestJid))
         ? explicitDestJid
         : jid;
-      const key = normalizeJid(keyCandidate);
+      let key = normalizeJid(keyCandidate);
+      // If key is broadcast-only, attempt to recover true destination from protocol message / target WA ID
+      if (isBroadcastOnlyJid(key)) {
+        const potentialProto = extractProtocolMessage(msg.message) || msg.message?.protocolMessage || msg.message?.editedMessage?.message?.protocolMessage;
+        const potentialTargetId = potentialProto?.key?.id || (isReplace ? msg.key?.id : null);
+        if (potentialTargetId) {
+          for (const [cKey, cList] of messagesByChat.entries()) {
+            if (cList.some((m) => m.wa_message_id === potentialTargetId)) {
+              key = cKey;
+              break;
+            }
+          }
+          if (isBroadcastOnlyJid(key)) {
+            const dbPool = pool || store?._pool || this._pool;
+            if (dbPool) {
+              try {
+                const dbInfo = await lookupMessageDbInfo(dbPool, potentialTargetId, store);
+                if (dbInfo?.chat_jid) {
+                  key = normalizeJid(dbInfo.chat_jid);
+                }
+              } catch { /* best effort */ }
+            }
+          }
+        }
+      }
       if (isBroadcastOnlyJid(key)) return null;
 
       // Reaksiyonlar mesaj DEGILDIR ve asla mesaj satirina donusmemelidir.
@@ -3441,7 +3474,21 @@ export function createSessionManager({
 
       // Protocol messages (history sync notifications, app state keys, ephemeral settings, peer data ops, revokes, edits)
       // are internal control frames and must never create a duplicate chat bubble / message row.
-      const protoMsg = extractProtocolMessage(msg.message) || unwrapped.protocolMessage;
+      let protoMsg = extractProtocolMessage(msg.message) || unwrapped.protocolMessage;
+      if (!protoMsg && (msg.message?.editedMessage || unwrapped?.editedMessage) && (isReplace || msg.key?.id)) {
+        const rawEditedInner = msg.message?.editedMessage?.message || msg.message?.editedMessage || unwrapped?.editedMessage?.message || unwrapped?.editedMessage;
+        protoMsg = {
+          type: 14,
+          key: {
+            id: msg.key?.id,
+            remoteJid: msg.key?.remoteJid,
+            fromMe: msg.key?.fromMe,
+            participant: msg.key?.participant,
+          },
+          editedMessage: rawEditedInner,
+          timestampMs: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
+        };
+      }
       if (protoMsg) {
         const ptype = Number(protoMsg.type);
         if (ptype === 0 && protoMsg.key?.id) {
@@ -3480,12 +3527,9 @@ export function createSessionManager({
           const dbPool = pool || store?._pool || this._pool;
           if ((!foundInRam || isBroadcastOnlyJid(targetChatKey) || isSelfJid) && dbPool) {
             try {
-              const dbRow = await dbPool.query(
-                `SELECT c.jid FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE m.wa_message_id = $1 LIMIT 1`,
-                [targetWaId]
-              );
-              if (dbRow.rows[0]?.jid) {
-                targetChatKey = normalizeJid(dbRow.rows[0].jid);
+              const dbInfo = await lookupMessageDbInfo(dbPool, targetWaId, store);
+              if (dbInfo?.chat_jid) {
+                targetChatKey = normalizeJid(dbInfo.chat_jid);
               }
             } catch (dbErr) {
               logger.debug({ dbErr: dbErr?.message, targetWaId }, 'Database lookup for revoke target chat failed');
@@ -3546,14 +3590,12 @@ export function createSessionManager({
             targetChatKey === normalizeJid(session?.self_jid || '') ||
             (session?.sock?.user?.id && targetChatKey === normalizeJid(session.sock.user.id));
           const dbPool = pool || store?._pool || this._pool;
+          let dbInfo = null;
           if ((!foundInRam || isBroadcastOnlyJid(targetChatKey) || isSelfJid) && dbPool) {
             try {
-              const dbRow = await dbPool.query(
-                `SELECT c.jid FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE m.wa_message_id = $1 LIMIT 1`,
-                [targetWaId]
-              );
-              if (dbRow.rows[0]?.jid) {
-                targetChatKey = normalizeJid(dbRow.rows[0].jid);
+              dbInfo = await lookupMessageDbInfo(dbPool, targetWaId, store);
+              if (dbInfo?.chat_jid) {
+                targetChatKey = normalizeJid(dbInfo.chat_jid);
               }
             } catch (dbErr) {
               logger.debug({ dbErr: dbErr?.message, targetWaId }, 'Database lookup for edit target chat failed');
@@ -3581,6 +3623,13 @@ export function createSessionManager({
               editedUnwrapped.videoMessage?.caption ||
               editedUnwrapped.documentMessage?.caption ||
               editedUnwrapped.interactiveMessage?.body?.text ||
+              editedUnwrapped.templateMessage?.hydratedTemplate?.hydratedContentText ||
+              editedUnwrapped.templateMessage?.fourRowTemplate?.content?.text ||
+              editedUnwrapped.buttonsMessage?.contentText ||
+              editedUnwrapped.buttonsResponseMessage?.selectedDisplayText ||
+              editedUnwrapped.listResponseMessage?.title ||
+              editedUnwrapped.groupInviteMessage?.caption ||
+              editedUnwrapped.orderMessage?.orderTitle ||
               '';
           }
           const editTs = safeTimestampMs(protoMsg.timestampMs);
@@ -3602,19 +3651,24 @@ export function createSessionManager({
           } else {
             // Bellek henüz hedef mesajı taşımıyorsa (ör. gateway restart / tarihsel mesaj)
             // hedef wa_message_id kimliğiyle yeni bir kayıt oluştur
+            const origType = dbInfo?.message_type;
             record = {
               id: editTs,
               timestamp_s: Math.floor(editTs / 1000),
               conversation_id: targetChatKey,
-              direction: targetFromMe ? 'OUTBOUND' : 'INBOUND',
-              message_type: classifyMessageType(editedUnwrapped),
-              status: targetFromMe ? 'DELIVERED' : 'RECEIVED',
+              direction: dbInfo?.direction || (targetFromMe ? 'OUTBOUND' : 'INBOUND'),
+              message_type: origType && origType !== 'TEXT' ? origType : classifyMessageType(editedUnwrapped),
+              status: dbInfo?.status || (targetFromMe ? 'DELIVERED' : 'RECEIVED'),
               body: editedText,
+              media_id: dbInfo?.media_id || null,
+              media_mime_type: dbInfo?.media_mime_type || null,
+              media_filename: dbInfo?.media_filename || null,
+              media_caption: dbInfo?.media_caption || null,
               wa_message_id: targetWaId,
-              sender_phone: targetFromMe ? 'ME' : (jidToPhone(targetChatKey) || targetChatKey),
-              recipient_phone: targetFromMe ? (jidToPhone(targetChatKey) || targetChatKey) : 'ME',
+              sender_phone: dbInfo?.sender_phone || (targetFromMe ? 'ME' : (jidToPhone(targetChatKey) || targetChatKey)),
+              recipient_phone: dbInfo?.recipient_phone || (targetFromMe ? (jidToPhone(targetChatKey) || targetChatKey) : 'ME'),
               sender_name: targetFromMe ? 'ME' : this._resolveDisplayName(session, targetChatKey, msg.pushName),
-              created_at: new Date(editTs).toISOString(),
+              created_at: dbInfo?.created_at ? new Date(dbInfo.created_at).toISOString() : new Date(editTs).toISOString(),
               is_edited: true,
               edited_at: new Date(editTs).toISOString(),
             };

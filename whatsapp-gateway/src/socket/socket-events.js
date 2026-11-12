@@ -33,6 +33,7 @@ import { summarizeWaMessage, resolveDownloadableMedia, extractProtocolMessage, u
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage, stampMessageSeq, trimChatMessages } from '../messages/message-store.js';
 import { safeWriteEncrypted, setCompanionActive } from './socket-connector.js';
 import { sanitizeAvatarUrl } from '../domain/bounded-cache.js';
+import { lookupMessageDbInfo } from '../database/message-lookup.js';
 
 /**
  * Bu oturumda kaç history chunk'ı geldiğini sayar.
@@ -1745,12 +1746,9 @@ export function bindSocketEvents({
             const dbPool = manager?._pool || store?._pool;
             if (!foundKey && dbPool) {
               try {
-                const dbRow = await dbPool.query(
-                  `SELECT c.jid FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE m.wa_message_id = $1 LIMIT 1`,
-                  [key.id]
-                );
-                if (dbRow.rows[0]?.jid) {
-                  effectiveKey = { ...key, remoteJid: normalizeJid(dbRow.rows[0].jid) };
+                const dbInfo = await lookupMessageDbInfo(dbPool, key.id, store);
+                if (dbInfo?.chat_jid) {
+                  effectiveKey = { ...key, remoteJid: normalizeJid(dbInfo.chat_jid) };
                 }
               } catch { /* best effort */ }
             }
