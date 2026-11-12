@@ -2,7 +2,9 @@
 
 **Tarih:** 2026-11-12  
 **Baseline Commit:** `1525bd2f24b9f9ce4529f491a5d7ba3b8f88d65b`  
-**Durum:** PASS (İnceleme, Kök Neden Tespiti, Kod İyileştirmeleri ve 20/20 Test Başarılı; Deployment Onaya Sunuldu)  
+**Deployed Commit:** `28251fef2ce75dc881c04d316961065ca9e488e9`  
+**Release ID:** `20261112T093621Z`  
+**Durum:** DEPLOYED & VERIFIED (Hotfix Başarıyla Canlıya Alındı, Oturum Kesintisiz Korundu, Kabul Testine Hazır)  
 **Production URL:** `https://api.130.162.247.20.sslip.io/?tab=whatsapp`
 
 ---
@@ -208,13 +210,13 @@ Test 20: Real PostgreSQL schema compatibility (no c.jid column required) -> ok
 - **Gateway ve Backend:** Canlı konteynerler yeniden başlatılmadı.
 - **İletişim Güvenliği:** Gerçek müşterilere, rehberdeki kişilere veya yetkisiz numaralara hiçbir test mesajı gönderilmedi.
 - **Git Disiplini:** `git reset`, `clean`, `stash`, `checkout`, `switch`, `rebase`, `merge` veya `force push` kullanılmadı.
-- **Dağıtım Kısıtı:** Kullanıcının açık onayı olmadan hiçbir commit, push veya production deploy işlemi **yapılmamıştır**.
+- **Dağıtım Kısıtı:** Kullanıcının açık onayının ardından standart dağıtım döngüsü işletildi.
 
 ---
 
 ## 8. Genel Değerlendirme ve Sonuç
 
-**Sonuç: PASS**
+**Sonuç: PASS (CANLIYA ALINDI VE DOĞRULANDI)**
 
 WhatsApp mobil uygulamasından gönderilen ses ve metin mesajlarının düzenlenmesi esnasında:
 - Baileys'in stanzayı `deviceSentMessage` veya `editedMessage` wrapper'ı ile iletmesi,
@@ -224,11 +226,40 @@ tamamen tespit edilmiş, yeni `lookupMessageDbInfo` mimarisiyle çözülmüş ve
 
 ---
 
-## 9. Sonraki Adımlar (Kullanıcı Onayına Sunulan Eylemler)
+## 9. Yayınlama ve Canlı Sağlık Kanıtları
 
-Kullanıcının onayı sonrasında aşağıdaki standart dağıtım döngüsü işletilecektir:
-1. Değişikliklerin (`session-manager.js`, `socket-events.js`, `message-lookup.js`, test ve rapor dosyaları) Git'e commit'lenmesi.
-2. `git push origin main` ile GitHub'a aktarılması.
-3. `bash scripts/deploy/release.sh` ile production ortamına kesintisiz dağıtım yapılması.
-4. Canlı kabul testi (+90 507 638 27 49 veya Hat 1 üzerinde) ile ses/metin mesajı düzenlemesinin Tezlify ekranında doğrulanması.
+Kullanıcı onayının ardından gerçekleştirilen adımlar:
+
+1. **Commit & Push:**
+   - Commit SHA: `28251fef2ce75dc881c04d316961065ca9e488e9`
+   - Mesaj: `fix(whatsapp): sync edited voice messages from phone`
+   - GitHub Remote: `origin/main` ile senkronize edildi.
+2. **Production Release:**
+   - Komut: `bash scripts/deploy/release.sh`
+   - Release ID: `20261112T093621Z`
+   - Deployed SHA: `28251fef2ce75dc881c04d316961065ca9e488e9`
+   - Veritabanı Şeması ve Satır Sayısı: Değişmedi (`131|1557|1540`, şema parmak izi: `f104dc11f284`).
+   - Dosya Hash Kontrolleri: Backend ve Gateway kaynak dosyalarının tamamı sunucuda hash eşleşmesiyle onaylandı.
+3. **Container ve Oturum Durumu:**
+   - `tezlify-gateway`: Up (healthy)
+   - `tezlify-backend`: Up (healthy)
+   - Canlı WhatsApp Oturumu (`4e28df77-e805-47cf-8d3a-81f6f57ce905`, Hat 1 `+905413749073`):
+     - `connected to WA`
+     - `opened connection to WA`
+     - `App-state collections healthy; recovery complete`
+     - Sıfır oturum kaybı, QR kodu üretilmedi, 130 sohbet kesintisiz bağlandı.
+4. **Smoke Test:**
+   - Komut: `node frontend/scripts/verify-production-whatsapp.mjs`
+   - Sonuç: `6/6 checks passed`
+
+---
+
+## 10. Canlı Kabul Talimatı
+
+Sistem şu anda canlı ortamda güncel ve aktiftir.
+
+Telefonunuzdan WhatsApp uygulamasına girerek:
+1. Hat 1 (Kendine Notlar / +90 541 374 90 73) veya test sohbetinde (+90 507 638 27 49) önceden gönderilmiş `Ses` mesajını veya yeni bir mesajı düzenleyiniz.
+2. Tezlify WhatsApp arayüzünü (`https://api.130.162.247.20.sslip.io/?tab=whatsapp`) kontrol ediniz.
+3. Mesaj içeriğinin güncellendiği ve "Düzenlendi" etiketinin yansıdığı gözlemlenecektir.
 
