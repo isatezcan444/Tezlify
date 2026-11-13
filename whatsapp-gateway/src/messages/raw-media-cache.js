@@ -18,9 +18,168 @@ import path from 'path';
 import { resolveDownloadableMedia } from './message-classifier.js';
 
 export const RAW_MEDIA_CACHE_FILE = 'raw-media-cache.json';
-export const RAW_MEDIA_CACHE_VERSION = 1;
+export const RAW_MEDIA_CACHE_VERSION = 2;
 export const RAW_MEDIA_CACHE_MAX_ENTRIES = 5000;
 export const RAW_MEDIA_CACHE_SAVE_DEBOUNCE_MS = 2000;
+
+const MAX_SANITIZE_DEPTH = 24;
+
+// Keys allowed even inside context containers (e.g. reply/forward/ephemeral metadata).
+const SAFE_CONTEXT_KEYS = new Set([
+  'stanzaid',
+  'participant',
+  'quotedmessage',
+  'remotejid',
+  'mentionedjid',
+  'isforwarded',
+  'forwardingscore',
+  'expiration',
+  'ephemeralsettingtimestamp',
+  'disappearingmode',
+  'messageaddonDurationinsecs'.toLowerCase(),
+  'externaladreply',
+  'conversiondata',
+  'conversionsource',
+  'conversiondelayseconds',
+  'entrypointconversionapp',
+  'entrypointconversionsource',
+  'businessmessageforwardinfo',
+  'smbclientcampaigninfo',
+  'dataSharingContext'.toLowerCase(),
+  'forwardednewslettermessageinfo',
+  'groupmentions',
+  'pairedmedianotification',
+]);
+
+// Known secret-bearing keys stripped everywhere in cached media envelopes.
+const ALWAYS_REDACTED_KEYS = new Set([
+  'messagesecret',
+  'encsecret',
+  'botmessagesecret',
+  'reportingtokeninfo',
+  'reportingtag',
+  'secretencryptedmessage',
+  'senderkeydistributionmessage',
+  'axolotlsenderkeydistributionmessage',
+  'appstatesynckeyshare',
+  'appstatesynckeydata',
+  'appstatesynckeyid',
+  'initialsecuritynotificationsettingsync',
+  'threadkey',
+  'sharedkey',
+  'signingkey',
+  'privatekey',
+  'sessionkey',
+  'rootkey',
+  'enckey',
+]);
+
+const CONTEXT_CONTAINER_KEYS = new Set([
+  'messagecontextinfo',
+  'contextinfo',
+  'devicelistmetadata',
+  'botmetadata',
+  'aipsimetadata',
+]);
+
+// Explicit CDN media fields that MUST remain intact for media download / thumbnails.
+const PRESERVED_MEDIA_KEYS = new Set([
+  'mediakey',
+  'mediakeytimestamp',
+  'fileencsha256',
+  'filesha256',
+  'thumbnailencsha256',
+  'thumbnailsha256',
+]);
+
+const FUTURE_CONTEXT_SECRET_RE =
+  /(secret|enckey|encsecret|encpayload|enciv|privatekey|signingkey|ratchet|senderkey|synckey|sharedkey|masterkey|sessionkey|rootkey|reportingtag|authkey)/i;
+
+function isSerializedBuffer(val) {
+  return Boolean(
+    val &&
+    typeof val === 'object' &&
+    !Array.isArray(val) &&
+    val.type === 'Buffer' &&
+    Array.isArray(val.data),
+  );
+}
+
+function shouldRedactKey(rawKey, inContextContainer) {
+  const lower = String(rawKey).toLowerCase();
+  if (PRESERVED_MEDIA_KEYS.has(lower)) return false;
+  if (ALWAYS_REDACTED_KEYS.has(lower)) return true;
+  if (inContextContainer && !SAFE_CONTEXT_KEYS.has(lower) && FUTURE_CONTEXT_SECRET_RE.test(lower)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Recursively strips `messageSecret` and future secret-bearing context fields
+ * from Baileys message objects before disk media-cache persistence, without
+ * mutating the caller's object or breaking mediaKey / thumbnails / quotes / View Once.
+ */
+export function sanitizeMediaCacheMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return { sanitized: message, redactedCount: 0 };
+  }
+  const seen = new WeakSet();
+  let redactedCount = 0;
+
+  function walk(node, depth, inContextContainer) {
+    if (node === null || node === undefined || typeof node !== 'object') {
+      return node;
+    }
+    if (Buffer.isBuffer(node)) {
+      return Buffer.from(node);
+    }
+    if (node instanceof Uint8Array) {
+      return Buffer.from(node);
+    }
+    if (isSerializedBuffer(node)) {
+      return { type: 'Buffer', data: node.data.slice() };
+    }
+    if (depth >= MAX_SANITIZE_DEPTH || seen.has(node)) {
+      return undefined;
+    }
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      const outArr = [];
+      for (const item of node) {
+        const cleaned = walk(item, depth + 1, inContextContainer);
+        if (cleaned !== undefined) outArr.push(cleaned);
+      }
+      return outArr;
+    }
+
+    const outObj = {};
+    for (const key of Object.keys(node)) {
+      const lower = key.toLowerCase();
+      if (shouldRedactKey(key, inContextContainer)) {
+        if (node[key] !== undefined && node[key] !== null) {
+          redactedCount += 1;
+        }
+        continue;
+      }
+      const nextContext =
+        lower === 'quotedmessage'
+          ? false
+          : (inContextContainer || CONTEXT_CONTAINER_KEYS.has(lower));
+      const val = node[key];
+      if (typeof val === 'function' || val === undefined) continue;
+      const cleanedVal = walk(val, depth + 1, nextContext);
+      if (cleanedVal !== undefined) {
+        outObj[key] = cleanedVal;
+      }
+    }
+    return outObj;
+  }
+
+  const sanitized = walk(message, 0, false);
+  return { sanitized: sanitized || {}, redactedCount };
+}
 
 export function createRawMediaCache({
   sessionDir,
@@ -45,16 +204,21 @@ export function createRawMediaCache({
     if (!filePath || entriesById.size === 0 || isSaving) return;
     try {
       isSaving = true;
-      const items = Array.from(entriesById.values()).slice(-maxEntries);
+      const rawItems = Array.from(entriesById.values()).slice(-maxEntries);
+      const items = rawItems.map((entry) => {
+        const { sanitized } = sanitizeMediaCacheMessage(entry.message);
+        return { ...entry, message: sanitized };
+      });
       const payload = {
         version: RAW_MEDIA_CACHE_VERSION,
         saved_at: new Date().toISOString(),
         items,
       };
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
       const tempPath = `${filePath}.${Date.now()}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify(payload), 'utf8');
+      fs.writeFileSync(tempPath, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
       fs.renameSync(tempPath, filePath);
+      try { fs.chmodSync(filePath, 0o600); } catch { /* best-effort */ }
     } catch (err) {
       logger?.warn?.({ err: err?.message }, 'Failed to persist raw media cache to disk');
     } finally {
@@ -68,12 +232,14 @@ export function createRawMediaCache({
     const downloadable = resolveDownloadableMedia(message);
     if (!downloadable) return;
 
+    const { sanitized } = sanitizeMediaCacheMessage(message);
+
     // Put in LRU map
     entriesById.delete(String(id));
     entriesById.set(String(id), {
       jid: String(jid),
       id: String(id),
-      message,
+      message: sanitized,
       saved_at: Date.now(),
     });
 
@@ -103,26 +269,53 @@ export function createRawMediaCache({
       if (!parsed || !Array.isArray(parsed.items)) return 0;
 
       let loadedCount = 0;
+      let totalRedacted = 0;
+      let entriesWithSecrets = 0;
+      const fileVersion = Number(parsed.version || 0);
+
       for (const item of parsed.items) {
         if (!item?.jid || !item?.id || !item?.message) continue;
-        entriesById.set(String(item.id), item);
+        const { sanitized, redactedCount } = sanitizeMediaCacheMessage(item.message);
+        if (redactedCount > 0) {
+          totalRedacted += redactedCount;
+          entriesWithSecrets += 1;
+        }
+        const cleanItem = {
+          ...item,
+          message: sanitized,
+        };
+        entriesById.set(String(cleanItem.id), cleanItem);
 
         // Populate in-memory store
         const { rawMessagesByChat } = store;
         if (rawMessagesByChat) {
-          let byId = rawMessagesByChat.get(item.jid);
+          let byId = rawMessagesByChat.get(cleanItem.jid);
           if (!byId) {
             byId = new Map();
-            rawMessagesByChat.set(item.jid, byId);
+            rawMessagesByChat.set(cleanItem.jid, byId);
           }
-          if (!byId.has(item.id)) {
+          if (!byId.has(cleanItem.id)) {
             store.rawMessageCount = (store.rawMessageCount || 0) + 1;
           }
-          byId.set(item.id, item.message);
+          byId.set(cleanItem.id, cleanItem.message);
           loadedCount++;
         }
       }
-      logger?.debug?.({ loadedCount }, 'Loaded raw media messages from disk cache');
+
+      if (entriesById.size > 0 && (totalRedacted > 0 || fileVersion < RAW_MEDIA_CACHE_VERSION)) {
+        logger?.info?.(
+          {
+            previousVersion: fileVersion,
+            entriesWithSecrets,
+            redactedFields: totalRedacted,
+            loadedCount,
+          },
+          'Sanitized legacy raw media cache and rewriting without secret fields',
+        );
+        flush();
+      } else {
+        logger?.debug?.({ loadedCount }, 'Loaded raw media messages from disk cache');
+      }
       return loadedCount;
     } catch (err) {
       logger?.warn?.({ err: err?.message }, 'Failed to load raw media cache from disk');
@@ -144,5 +337,6 @@ export function createRawMediaCache({
     flush,
     get,
     has,
+    delete: (id) => entriesById.delete(String(id)),
   };
 }

@@ -15,8 +15,18 @@ import { SocketLifecycle } from './domain/socket-lifecycle.js';
 import { createBoundedCache, isAvatarUrlExpired, sanitizeAvatarUrl } from './domain/bounded-cache.js';
 import { expandAppStateKeys } from 'whatsapp-rust-bridge';
 import { proto } from '@whiskeysockets/baileys';
-import { aesDecryptGCM, hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
 import { EventEmitter } from 'events';
+import {
+  DEFAULT_MAX_RAM_ENTRIES,
+  createMessageSecretStore,
+  isProductionRuntime,
+} from './crypto/message-secret-store.js';
+import {
+  extractMessageSecret,
+  decodeMsmsgProtobufPayload,
+  decryptSecretMessageEditPayload,
+} from './crypto/msmsg-adapter.js';
+import { createMsmsgWireCapture } from './observability/msmsg-wire-capture.js';
 
 // Utils
 import {
@@ -462,58 +472,139 @@ export function safeTimestampMs(rawTs, fallback = Date.now()) {
   return fallback;
 }
 
-export function decryptSecretEncryptedEdit(secEnc, store, session, key, msg) {
-  if (!secEnc || typeof secEnc !== 'object') return null;
-  const secType = Number(secEnc.secretEncType);
-  if (secType !== 2 && String(secEnc.secretEncType) !== 'MESSAGE_EDIT') {
+function bumpEditMetric(session, field, delta = 1) {
+  if (!session || typeof session !== 'object') return;
+  if (!session._editDiagnostics) {
+    session._editDiagnostics = {
+      msmsg_stanzas_observed: 0,
+      broadcast_skipped_genuine: 0,
+      broadcast_skipped_unresolved: 0,
+      secret_edit_attempts: 0,
+      secret_edit_missing_secret: 0,
+      secret_edit_success: 0,
+      secret_edit_persisted_hits: 0,
+      secret_edit_decrypt_failed: 0,
+      secret_persist_table_unavailable: 0,
+      secret_persist_failed: 0,
+      edit_ingested_ram: 0,
+      edit_ingested_db: 0,
+      edit_ingested_synth: 0,
+      edit_rejected_unresolved: 0,
+      edit_rejected_cross_chat: 0,
+      revoke_rejected_unresolved: 0,
+    };
+  }
+  session._editDiagnostics[field] = (session._editDiagnostics[field] || 0) + delta;
+}
+
+export function isMsmsgDecryptionEnabled(session = null, env = process.env) {
+  if (session?.enableMsmsgDecryption !== undefined) {
+    return Boolean(session.enableMsmsgDecryption);
+  }
+  return String(env?.WHATSAPP_ENABLE_MSMSG_DECRYPTION || '').toLowerCase() === 'true';
+}
+
+export function decryptSecretEncryptedEdit(secEnc, store, session, key, msg, { persistedSecret = null } = {}) {
+  if (!isMsmsgDecryptionEnabled(session)) {
+    diagnostic('msmsg_decryption_disabled', {
+      session_ref: session?.id ? sessionRef(session.id) : 'unknown',
+      feature_flag: 'WHATSAPP_ENABLE_MSMSG_DECRYPTION',
+    });
     return null;
   }
-  const targetWaId = secEnc.targetMessageKey?.id;
-  if (!targetWaId) return null;
-  const targetChatJid = secEnc.targetMessageKey?.remoteJid ||
-    msg?.message?.deviceSentMessage?.destinationJid ||
-    key;
-
-  const rawTarget = lookupRawMessage(store, { remoteJid: targetChatJid, id: targetWaId });
-  let msgSecret = rawTarget?.messageContextInfo?.messageSecret ||
-    rawTarget?.message?.messageContextInfo?.messageSecret;
-  if (!msgSecret && rawTarget?.message) {
-    for (const k of Object.keys(rawTarget.message)) {
-      if (rawTarget.message[k]?.contextInfo?.messageSecret) {
-        msgSecret = rawTarget.message[k].contextInfo.messageSecret;
-        break;
+  const parsed = decodeMsmsgProtobufPayload(secEnc);
+  if (!parsed.ok) {
+    if (secEnc && typeof secEnc === 'object') {
+      const secType = Number(secEnc.secretEncType);
+      if (secType === 2 || String(secEnc.secretEncType) === 'MESSAGE_EDIT') {
+        bumpEditMetric(session, 'secret_edit_attempts');
+        bumpEditMetric(session, 'secret_edit_decrypt_failed');
+        diagnostic('secret_encrypted_edit_attempt', {
+          session_ref: session?.id ? sessionRef(session.id) : 'unknown',
+          outcome: parsed.reason || 'invalid_envelope',
+          has_target_id: Boolean(secEnc.targetMessageKey?.id),
+          has_secret: Boolean(persistedSecret),
+          has_payload: Boolean(secEnc.encPayload),
+          has_iv: Boolean(secEnc.encIv),
+          target_chat_kind: jidKind(secEnc.targetMessageKey?.remoteJid || key),
+          secret_enc_type: Number.isFinite(secType) ? secType : String(secEnc.secretEncType || ''),
+        });
       }
     }
+    return null;
   }
-  if (!msgSecret || !secEnc.encPayload || !secEnc.encIv) {
+  const normalizedSecEnc = parsed.secEnc;
+  const secType = Number(normalizedSecEnc.secretEncType);
+  const targetWaId = normalizedSecEnc.targetMessageKey?.id;
+  const targetChatJid = normalizedSecEnc.targetMessageKey?.remoteJid ||
+    msg?.message?.deviceSentMessage?.destinationJid ||
+    key;
+  const sessionRefVal = session?.id ? sessionRef(session.id) : 'unknown';
+  const targetChatKind = jidKind(targetChatJid);
+  bumpEditMetric(session, 'secret_edit_attempts');
+
+  let msgSecret = persistedSecret ? Buffer.from(persistedSecret) : null;
+  if (!msgSecret) {
+    let rawTarget = lookupRawMessage(store, { remoteJid: targetChatJid, id: targetWaId });
+    if (!rawTarget && key && key !== targetChatJid) {
+      rawTarget = lookupRawMessage(store, { remoteJid: key, id: targetWaId });
+    }
+    msgSecret = extractMessageSecret(rawTarget);
+  }
+  if (!msgSecret) {
+    bumpEditMetric(session, 'secret_edit_missing_secret');
+    diagnostic('secret_encrypted_edit_attempt', {
+      session_ref: sessionRefVal,
+      outcome: 'missing_secret',
+      has_target_id: true,
+      has_secret: false,
+      has_payload: Boolean(normalizedSecEnc.encPayload),
+      has_iv: Boolean(normalizedSecEnc.encIv),
+      target_chat_kind: targetChatKind,
+      secret_enc_type: Number.isFinite(secType) ? secType : String(normalizedSecEnc.secretEncType || ''),
+    });
     return null;
   }
 
   try {
-    const senderJid = msg?.key?.participant || msg?.key?.remoteJid || targetChatJid;
-    const toBinary = (txt) => Buffer.from(String(txt), 'utf8');
-    const senderBuf = toBinary(senderJid);
-    const sign = Buffer.concat([
-      toBinary(targetWaId),
-      senderBuf,
-      senderBuf,
-      toBinary('Message Edit'),
-      new Uint8Array([1])
-    ]);
-    const key0 = hmacSign(msgSecret, new Uint8Array(32), 'sha256');
-    const decKey = hmacSign(sign, key0, 'sha256');
-    const decrypted = aesDecryptGCM(secEnc.encPayload, decKey, secEnc.encIv, Buffer.alloc(0));
-    const innerMsg = proto.Message.decode(decrypted);
-    return {
-      protocolMessage: {
-        type: 14,
-        key: secEnc.targetMessageKey || { id: targetWaId, remoteJid: targetChatJid, fromMe: true },
-        editedMessage: innerMsg,
-        timestampMs: safeTimestampMs(msg?.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : null),
-      }
-    };
+    const rawSenderJid = msg?.key?.participant ||
+      (!isBroadcastOnlyJid(msg?.key?.remoteJid) ? msg?.key?.remoteJid : null) ||
+      (!isBroadcastOnlyJid(targetChatJid) ? targetChatJid : null) ||
+      key;
+    const senderJid = resolveJidKey(store, rawSenderJid) || rawSenderJid;
+    const timestampMs = safeTimestampMs(msg?.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : null);
+    const result = decryptSecretMessageEditPayload({
+      secEnc: normalizedSecEnc,
+      msgSecret,
+      senderJid,
+      targetWaId,
+      targetChatJid,
+      timestampMs,
+    });
+    bumpEditMetric(session, 'secret_edit_success');
+    diagnostic('secret_encrypted_edit_attempt', {
+      session_ref: sessionRefVal,
+      outcome: 'success',
+      has_target_id: true,
+      has_secret: true,
+      source: persistedSecret ? 'persisted_store' : 'ram',
+      target_chat_kind: targetChatKind,
+      secret_enc_type: Number.isFinite(secType) ? secType : String(normalizedSecEnc.secretEncType || ''),
+    });
+    return result;
   } catch (err) {
-    logger.warn({ err: err?.message, targetWaId }, 'Failed to decrypt secretEncryptedMessage edit');
+    bumpEditMetric(session, 'secret_edit_decrypt_failed');
+    diagnostic('secret_encrypted_edit_attempt', {
+      session_ref: sessionRefVal,
+      outcome: 'decryption_failed',
+      has_target_id: true,
+      has_secret: true,
+      target_chat_kind: targetChatKind,
+      secret_enc_type: Number.isFinite(secType) ? secType : String(normalizedSecEnc.secretEncType || ''),
+      error_name: err?.name || 'Error',
+      error_message: err?.message,
+    });
+    logger.warn({ err: err?.message, session_ref: sessionRefVal, target_chat_kind: targetChatKind }, 'Failed to decrypt secretEncryptedMessage edit');
     return null;
   }
 }
@@ -525,6 +616,13 @@ export function createSessionManager({
   sessionsDir,
   mediaDir,
   aesKey,
+  rootEncryptionKey = null,
+  messageSecretKeyVersion = 1,
+  messageSecretKeyRing = null,
+  messageSecretTtlMs = null,
+  messageSecretMaxEntries = DEFAULT_MAX_RAM_ENTRIES,
+  messageSecretAllowTestKeys = !isProductionRuntime(),
+  wireCapture = null,
   backendWsUrl,
   authRepository = null,
   leaseRepository = null,
@@ -540,6 +638,7 @@ export function createSessionManager({
 
   const mediaStore = createMediaStore({ mediaDir, logger });
   const leaseCoordinator = createLeaseCoordinator({ leaseRepository, instanceId, logger });
+  const activeWireCapture = wireCapture || createMsmsgWireCapture({ logger });
   // `sessionManager` is declared below; orphan callbacks can only fire after a
   // session exists, so resolving the manager lazily is safe and avoids the
   // previous reference to a never-declared `manager` identifier.
@@ -547,6 +646,37 @@ export function createSessionManager({
   const reportOrphaned = (sessionId, detail) => {
     try { sessionManagerRef?.markOrphaned(sessionId, detail); } catch { /* reporting only */ }
   };
+  const productionMode = isProductionRuntime();
+  const effectiveAllowTestKeys = productionMode ? false : Boolean(messageSecretAllowTestKeys);
+  const resolvedRootKeyMaterial = productionMode
+    ? rootEncryptionKey
+    : (rootEncryptionKey || aesKey);
+  if (productionMode && !resolvedRootKeyMaterial) {
+    const err = new Error(
+      'Production gateway requires explicit GATEWAY_ENCRYPTION_KEY / rootEncryptionKey for messageSecret storage.',
+    );
+    logger.error({ err: err.message }, 'CRITICAL: Missing rootEncryptionKey for messageSecretStore in production');
+    throw err;
+  }
+  let messageSecretStore;
+  try {
+    messageSecretStore = createMessageSecretStore({
+      rootKeyMaterial: resolvedRootKeyMaterial,
+      activeKeyVersion: messageSecretKeyVersion,
+      keyRing: messageSecretKeyRing,
+      pool,
+      defaultTtlMs: messageSecretTtlMs,
+      maxEntries: messageSecretMaxEntries,
+      allowTestKeys: effectiveAllowTestKeys,
+      onOrphaned: (sessionId) => reportOrphaned(sessionId, 'message_secrets'),
+    });
+  } catch (err) {
+    logger.error(
+      { err: err?.message, production_mode: productionMode },
+      'CRITICAL: Failed to initialize encrypted messageSecretStore; failing closed',
+    );
+    throw err;
+  }
   const lidRepository = createLidRepository({
     pool,
     sessionsDir,
@@ -951,6 +1081,7 @@ export function createSessionManager({
         // instead of discovering it later as missing history.
         orphaned: Boolean(s._orphaned),
         orphaned_since: s._orphaned_since || null,
+        secret_persistence_state: s._secretPersistenceState || null,
       }));
     },
 
@@ -1337,6 +1468,13 @@ export function createSessionManager({
         clearSessionHistoryFetches(id);
         resetRetryCounterCache(id);
       }
+      if (!superseded() && messageSecretStore) {
+        try {
+          await messageSecretStore.clearSessionSecrets(id, { pool: this._pool || pool });
+        } catch (err) {
+          cleanupErrors.push({ step: 'clear_message_secrets', error: err });
+        }
+      }
       if (!superseded() && authRepository) {
         try {
           await authRepository.clearAuth(id);
@@ -1430,6 +1568,11 @@ export function createSessionManager({
       if (session?._presenceKeepaliveTimer) {
         try { clearInterval(session._presenceKeepaliveTimer); } catch (err) { /* ignore */ }
         session._presenceKeepaliveTimer = null;
+      }
+      if (messageSecretStore) {
+        try {
+          await messageSecretStore.clearSessionSecrets(id, { pool: this._pool || pool });
+        } catch { /* best effort on delete */ }
       }
       if (authRepository && !session?.ephemeral) {
         await authRepository.clearAuth(id);
@@ -3312,6 +3455,69 @@ export function createSessionManager({
       return event;
     },
 
+    _bumpEditMetric(session, field, delta = 1) {
+      return bumpEditMetric(session, field, delta);
+    },
+
+    _getMessageSecretStore() {
+      return messageSecretStore;
+    },
+
+    _getWireCapture() {
+      return activeWireCapture;
+    },
+
+    _recordMsmsgCapture(sessionId, node, extra = {}) {
+      try {
+        return activeWireCapture?.record?.({ sessionId, node, ...extra }) || null;
+      } catch {
+        return null;
+      }
+    },
+
+    /**
+     * Protocol adapter entrypoint for decoded/wire `msmsg` protobuf stanzas.
+     * Parses `proto.Message` / `SecretEncryptedMessage` or `<enc type="msmsg">` BinaryNode,
+     * validates MESSAGE_EDIT framing, and delegates to `_ingestUpsertMessage` fail-closed.
+     */
+    async _ingestMsmsgStanza(input, sock, sessionId) {
+      const session = this._requireSession(sessionId);
+      if (!isMsmsgDecryptionEnabled(session)) {
+        diagnostic('msmsg_decryption_disabled', {
+          session_ref: sessionRef(sessionId),
+          feature_flag: 'WHATSAPP_ENABLE_MSMSG_DECRYPTION',
+        });
+        return null;
+      }
+      const parsed = decodeMsmsgProtobufPayload(input);
+      if (!parsed.ok) {
+        bumpEditMetric(session, 'secret_edit_attempts');
+        bumpEditMetric(session, 'secret_edit_decrypt_failed');
+        diagnostic('msmsg_adapter_rejected', {
+          session_ref: sessionRef(sessionId),
+          reason: parsed.reason || 'invalid_msmsg_stanza',
+        });
+        return null;
+      }
+      const attrs = (input && typeof input === 'object' && input.attrs) || {};
+      const secEnc = parsed.secEnc;
+      const targetKeyJid = secEnc.targetMessageKey?.remoteJid;
+      const effectiveRemoteJid = (attrs.from && !isBroadcastOnlyJid(attrs.from))
+        ? attrs.from
+        : (targetKeyJid && !isBroadcastOnlyJid(targetKeyJid) ? targetKeyJid : 'status@broadcast');
+      const syntheticMsg = {
+        key: {
+          remoteJid: effectiveRemoteJid,
+          id: attrs.id || secEnc.targetMessageKey?.id,
+          fromMe: Boolean(attrs.fromMe ?? secEnc.targetMessageKey?.fromMe ?? true),
+          participant: attrs.participant || secEnc.targetMessageKey?.participant,
+        },
+        message: { secretEncryptedMessage: secEnc },
+        messageTimestamp: attrs.t ? Number(attrs.t) : undefined,
+      };
+      return this._ingestUpsertMessage(syntheticMsg, sock, sessionId, { upsertType: 'replace' });
+    },
+
     async _ingestUpsertMessage(msg, sock, sessionId, options = {}) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -3368,18 +3574,49 @@ export function createSessionManager({
       }
 
       const fromMe = Boolean(msg.key?.fromMe);
+      const earlyUnwrapped = unwrapMessageContent(msg.message) || msg.message || {};
+      const earlyProto = extractProtocolMessage(msg.message) ||
+        earlyUnwrapped?.protocolMessage ||
+        msg.message?.editedMessage?.message?.protocolMessage ||
+        earlyUnwrapped?.editedMessage?.message?.protocolMessage ||
+        null;
+      const earlySecEnc = msg.message?.secretEncryptedMessage ||
+        earlyUnwrapped?.secretEncryptedMessage ||
+        msg.message?.deviceSentMessage?.message?.secretEncryptedMessage ||
+        null;
+      const hasEditedWrapper = Boolean(msg.message?.editedMessage || earlyUnwrapped?.editedMessage);
+      const earlyProtoType = earlyProto ? Number(earlyProto.type) : NaN;
+      const isEarlyEditOrRevokeProto = Boolean(
+        earlyProto?.key?.id &&
+        (earlyProtoType === 0 || earlyProtoType === 14 || String(earlyProto?.type) === 'MESSAGE_EDIT')
+      );
+      const potentialTargetId =
+        (isEarlyEditOrRevokeProto ? earlyProto?.key?.id : null) ||
+        earlySecEnc?.targetMessageKey?.id ||
+        ((isReplace || hasEditedWrapper) ? msg.key?.id : null);
+
       const jid = msg.key?.remoteJid ||
         msg.message?.deviceSentMessage?.destinationJid ||
-        extractProtocolMessage(msg.message)?.key?.remoteJid;
+        earlyProto?.key?.remoteJid ||
+        earlySecEnc?.targetMessageKey?.remoteJid;
       if (!jid) return null;
-      if (isBroadcastOnlyJid(jid)) {
-        const destJid = msg.message?.deviceSentMessage?.destinationJid ||
-          extractProtocolMessage(msg.message)?.key?.remoteJid;
-        if (!destJid || isBroadcastOnlyJid(destJid)) {
-          return null;
-        }
+
+      const destJidCandidate = msg.message?.deviceSentMessage?.destinationJid ||
+        earlyProto?.key?.remoteJid ||
+        earlySecEnc?.targetMessageKey?.remoteJid;
+      const hasNonBroadcastDest = Boolean(destJidCandidate && !isBroadcastOnlyJid(destJidCandidate));
+      if (isBroadcastOnlyJid(jid) && !hasNonBroadcastDest && !potentialTargetId) {
+        bumpEditMetric(session, 'broadcast_skipped_genuine');
+        diagnostic('broadcast_message_skipped', {
+          session_ref: sessionRef(sessionId),
+          reason: 'genuine_status_broadcast',
+          has_protocol: Boolean(earlyProto),
+          has_secret_enc: Boolean(earlySecEnc),
+          has_edited: hasEditedWrapper,
+          upsert_type: normalizedUpsertType,
+        });
+        return null;
       }
-      this._ensurePresenceSubscribed(session, jid);
 
       if (msg.key?.senderLid && msg.key?.senderPn) {
         this._applyLidMapping(session, msg.key.senderLid, msg.key.senderPn);
@@ -3397,10 +3634,13 @@ export function createSessionManager({
       for (const [lidJid, phoneJid] of lidPairsFromMessageKey(msg.key)) {
         this._applyLidMapping(session, lidJid, phoneJid);
       }
-      let explicitDestJid = msg.message?.deviceSentMessage?.destinationJid;
+      let explicitDestJid = msg.message?.deviceSentMessage?.destinationJid ||
+        (earlyProto?.key?.remoteJid && !isBroadcastOnlyJid(earlyProto.key.remoteJid) ? earlyProto.key.remoteJid : null) ||
+        (earlySecEnc?.targetMessageKey?.remoteJid && !isBroadcastOnlyJid(earlySecEnc.targetMessageKey.remoteJid) ? earlySecEnc.targetMessageKey.remoteJid : null);
       if (explicitDestJid && isLidJid(explicitDestJid)) {
-        const resolvedPhone = this._lookupLidPhone(session, explicitDestJid) ||
-          store.lidToJid.get(explicitDestJid) ||
+        const bareLid = explicitDestJid.replace(/(:\d+)?(@lid)$/, '$2');
+        const resolvedPhone = store.lidToJid.get(explicitDestJid) ||
+          store.lidToJid.get(bareLid) ||
           (session?.sock?.user?.lid && normalizeJid(session.sock.user.lid) === normalizeJid(explicitDestJid) ? session?.phoneNumberJid : null);
         if (resolvedPhone) {
           explicitDestJid = resolvedPhone;
@@ -3410,10 +3650,8 @@ export function createSessionManager({
         ? explicitDestJid
         : jid;
       let key = normalizeJid(keyCandidate);
-      // If key is broadcast-only, attempt to recover true destination from protocol message / target WA ID
+      // If key is broadcast-only, attempt to recover true destination from RAM / DB via verifiable target WA ID
       if (isBroadcastOnlyJid(key)) {
-        const potentialProto = extractProtocolMessage(msg.message) || msg.message?.protocolMessage || msg.message?.editedMessage?.message?.protocolMessage;
-        const potentialTargetId = potentialProto?.key?.id || (isReplace ? msg.key?.id : null);
         if (potentialTargetId) {
           for (const [cKey, cList] of messagesByChat.entries()) {
             if (cList.some((m) => m.wa_message_id === potentialTargetId)) {
@@ -3434,7 +3672,19 @@ export function createSessionManager({
           }
         }
       }
-      if (isBroadcastOnlyJid(key)) return null;
+      if (isBroadcastOnlyJid(key)) {
+        bumpEditMetric(session, 'broadcast_skipped_unresolved');
+        diagnostic('broadcast_message_skipped', {
+          session_ref: sessionRef(sessionId),
+          reason: 'unresolved_broadcast_target',
+          has_target_id: Boolean(potentialTargetId),
+          has_protocol: Boolean(earlyProto),
+          has_secret_enc: Boolean(earlySecEnc),
+          upsert_type: normalizedUpsertType,
+        });
+        return null;
+      }
+      this._ensurePresenceSubscribed(session, key);
 
       // Reaksiyonlar mesaj DEGILDIR ve asla mesaj satirina donusmemelidir.
       // Eskiden `reactionMessage` genel kayit ureticisine dusuyor, orada
@@ -3456,6 +3706,25 @@ export function createSessionManager({
       if (msg.key?.id && msg.message) {
         try {
           rememberRawMessage(store, key, msg.key.id, msg.message);
+          if (messageSecretStore) {
+            const msgSecret = extractMessageSecret(msg.message);
+            if (msgSecret) {
+              const dbPool = pool || store?._pool || this._pool;
+              const saveRes = await messageSecretStore.saveSecret({
+                sessionId,
+                chatJid: key,
+                waMessageId: msg.key.id,
+                secret: msgSecret,
+                pool: dbPool,
+              });
+              session._secretPersistenceState = saveRes?.reason || (saveRes?.persisted ? 'persisted' : 'unknown');
+              if (saveRes?.reason === 'table_unavailable') {
+                bumpEditMetric(session, 'secret_persist_table_unavailable');
+              } else if (saveRes?.reason === 'persist_error' || saveRes?.reason === 'orphan_session') {
+                bumpEditMetric(session, 'secret_persist_failed');
+              }
+            }
+          }
         } catch { /* best effort */ }
       }
 
@@ -3466,9 +3735,47 @@ export function createSessionManager({
         unwrapped.secretEncryptedMessage ||
         msg.message?.deviceSentMessage?.message?.secretEncryptedMessage;
       if (secEnc) {
-        const decryptedEdit = decryptSecretEncryptedEdit(secEnc, store, session, key, msg);
+        let persistedSecret = null;
+        let resolvedFromStore = false;
+        const parsedSec = decodeMsmsgProtobufPayload(secEnc);
+        const targetWaId = parsedSec.secEnc?.targetMessageKey?.id || secEnc.targetMessageKey?.id;
+        const rawClaimedTargetJid = parsedSec.secEnc?.targetMessageKey?.remoteJid || null;
+        const normalizedClaimedTargetJid = rawClaimedTargetJid && !isBroadcastOnlyJid(rawClaimedTargetJid)
+          ? normalizeJid(rawClaimedTargetJid)
+          : null;
+        const lookupChatJid = normalizedClaimedTargetJid || key;
+        const isRamSecretPresent = Boolean(
+          targetWaId && extractMessageSecret(
+            lookupRawMessage(store, { remoteJid: lookupChatJid, id: targetWaId }) ||
+            ((!normalizedClaimedTargetJid || isLidJid(rawClaimedTargetJid)) && key !== lookupChatJid
+              ? lookupRawMessage(store, { remoteJid: key, id: targetWaId })
+              : null),
+          ),
+        );
+        if (!isRamSecretPresent && messageSecretStore && targetWaId) {
+          const dbPool = pool || store?._pool || this._pool;
+          persistedSecret = await messageSecretStore.getSecret({
+            sessionId,
+            chatJid: lookupChatJid,
+            waMessageId: targetWaId,
+            pool: dbPool,
+          });
+          if (!persistedSecret && isLidJid(rawClaimedTargetJid) && key !== lookupChatJid) {
+            persistedSecret = await messageSecretStore.getSecret({
+              sessionId,
+              chatJid: key,
+              waMessageId: targetWaId,
+              pool: dbPool,
+            });
+          }
+          resolvedFromStore = Boolean(persistedSecret);
+        }
+        const decryptedEdit = decryptSecretEncryptedEdit(secEnc, store, session, key, msg, { persistedSecret });
         if (decryptedEdit) {
+          if (resolvedFromStore) bumpEditMetric(session, 'secret_edit_persisted_hits');
           msg.message = decryptedEdit;
+        } else {
+          return null;
         }
       }
 
@@ -3532,8 +3839,17 @@ export function createSessionManager({
                 targetChatKey = normalizeJid(dbInfo.chat_jid);
               }
             } catch (dbErr) {
-              logger.debug({ dbErr: dbErr?.message, targetWaId }, 'Database lookup for revoke target chat failed');
+              logger.debug({ dbErr: dbErr?.message }, 'Database lookup for revoke target chat failed');
             }
+          }
+          if (!targetChatKey || isBroadcastOnlyJid(targetChatKey)) {
+            bumpEditMetric(session, 'revoke_rejected_unresolved');
+            diagnostic('revoke_target_unresolved', {
+              session_ref: sessionRef(sessionId),
+              target_chat_kind: jidKind(targetChatKey),
+              has_target_id: Boolean(targetWaId),
+            });
+            return null;
           }
           if (!messagesByChat.has(targetChatKey)) messagesByChat.set(targetChatKey, []);
           const chatMsgs = messagesByChat.get(targetChatKey) || [];
@@ -3573,36 +3889,91 @@ export function createSessionManager({
           } else if (msg.key?.remoteJid && !isBroadcastOnlyJid(msg.key.remoteJid)) {
             rawTargetJid = msg.key.remoteJid;
           }
+          const isSelfChatKey = (cKey) => Boolean(cKey) && (
+            (session?.phoneNumberJid && cKey === normalizeJid(session.phoneNumberJid)) ||
+            (session?.self_jid && cKey === normalizeJid(session.self_jid)) ||
+            (session?.sock?.user?.id && cKey === normalizeJid(session.sock.user.id))
+          );
           let targetChatKey = normalizeJid(rawTargetJid);
+          const initialClaimedChatKey = targetChatKey;
+          const hasStrictClaim = Boolean(
+            initialClaimedChatKey &&
+            !isBroadcastOnlyJid(initialClaimedChatKey) &&
+            !isLidJid(initialClaimedChatKey) &&
+            !isSelfChatKey(initialClaimedChatKey)
+          );
           let foundInRam = false;
           if (messagesByChat.has(targetChatKey) && messagesByChat.get(targetChatKey).some((m) => m.wa_message_id === targetWaId)) {
             foundInRam = true;
           } else {
             for (const [cKey, cList] of messagesByChat.entries()) {
               if (cList.some((m) => m.wa_message_id === targetWaId)) {
+                if (!fromMe && hasStrictClaim && cKey !== initialClaimedChatKey) {
+                  bumpEditMetric(session, 'edit_rejected_cross_chat');
+                  diagnostic('edit_cross_chat_rejected', {
+                    session_ref: sessionRef(sessionId),
+                    reason: 'cross_chat_ram_mismatch',
+                    claimed_chat_kind: jidKind(initialClaimedChatKey),
+                    resolved_chat_kind: jidKind(cKey),
+                    from_me: fromMe,
+                  });
+                  return null;
+                }
                 targetChatKey = cKey;
                 foundInRam = true;
                 break;
               }
             }
           }
-          const isSelfJid = targetChatKey === normalizeJid(session?.phoneNumberJid || '') ||
-            targetChatKey === normalizeJid(session?.self_jid || '') ||
-            (session?.sock?.user?.id && targetChatKey === normalizeJid(session.sock.user.id));
+          const isSelfJid = isSelfChatKey(targetChatKey);
           const dbPool = pool || store?._pool || this._pool;
           let dbInfo = null;
           if ((!foundInRam || isBroadcastOnlyJid(targetChatKey) || isSelfJid) && dbPool) {
             try {
               dbInfo = await lookupMessageDbInfo(dbPool, targetWaId, store);
               if (dbInfo?.chat_jid) {
-                targetChatKey = normalizeJid(dbInfo.chat_jid);
+                const resolvedDbChatKey = normalizeJid(dbInfo.chat_jid);
+                if (!fromMe && hasStrictClaim && resolvedDbChatKey !== initialClaimedChatKey) {
+                  bumpEditMetric(session, 'edit_rejected_cross_chat');
+                  diagnostic('edit_cross_chat_rejected', {
+                    session_ref: sessionRef(sessionId),
+                    reason: 'cross_chat_db_mismatch',
+                    claimed_chat_kind: jidKind(initialClaimedChatKey),
+                    resolved_chat_kind: jidKind(resolvedDbChatKey),
+                    from_me: fromMe,
+                  });
+                  return null;
+                }
+                targetChatKey = resolvedDbChatKey;
               }
             } catch (dbErr) {
-              logger.debug({ dbErr: dbErr?.message, targetWaId }, 'Database lookup for edit target chat failed');
+              logger.debug({ dbErr: dbErr?.message }, 'Database lookup for edit target chat failed');
             }
+          }
+          if (!targetChatKey || isBroadcastOnlyJid(targetChatKey)) {
+            bumpEditMetric(session, 'edit_rejected_unresolved');
+            diagnostic('edit_target_unresolved', {
+              session_ref: sessionRef(sessionId),
+              target_chat_kind: jidKind(targetChatKey),
+              has_target_id: Boolean(targetWaId),
+            });
+            return null;
           }
 
           const targetFromMe = protoMsg.key.fromMe !== undefined ? Boolean(protoMsg.key.fromMe) : fromMe;
+          const ramExisting = (messagesByChat.get(targetChatKey) || []).find((m) => m.wa_message_id === targetWaId);
+          const storedDirection = ramExisting?.direction || dbInfo?.direction || null;
+          if (!fromMe && (protoMsg.key?.fromMe === true || storedDirection === 'OUTBOUND')) {
+            bumpEditMetric(session, 'edit_rejected_cross_chat');
+            diagnostic('edit_cross_chat_rejected', {
+              session_ref: sessionRef(sessionId),
+              reason: 'inbound_cannot_edit_outbound',
+              claimed_chat_kind: jidKind(initialClaimedChatKey),
+              resolved_chat_kind: jidKind(targetChatKey),
+              from_me: fromMe,
+            });
+            return null;
+          }
           const rawEdited = protoMsg.editedMessage?.message || protoMsg.editedMessage;
           const editedUnwrapped = unwrapMessageContent(rawEdited) || rawEdited || {};
           const editedContact = extractContactPayload(editedUnwrapped);
@@ -3696,6 +4067,23 @@ export function createSessionManager({
             upsert_type: 'replace',
           });
 
+          const resolutionPath = target ? 'ram' : (dbInfo ? 'db' : 'synth');
+          bumpEditMetric(
+            session,
+            resolutionPath === 'ram'
+              ? 'edit_ingested_ram'
+              : (resolutionPath === 'db' ? 'edit_ingested_db' : 'edit_ingested_synth'),
+          );
+          diagnostic('message_edit_ingested', {
+            session_ref: sessionRef(sessionId),
+            resolution_path: resolutionPath,
+            target_chat_kind: jidKind(targetChatKey),
+            from_me: Boolean(targetFromMe),
+            upsert_type: normalizedUpsertType,
+            message_type: record.message_type,
+            preserved_orig_type: Boolean(dbInfo?.message_type && dbInfo.message_type !== 'TEXT'),
+          });
+
           return record;
         }
         return null;
@@ -3703,7 +4091,7 @@ export function createSessionManager({
 
       const lidHold = isLidJid(key);
       const contact = contacts.get(key);
-      const isGroup = jid.includes('@g.us');
+      const isGroup = key.includes('@g.us') || jid.includes('@g.us');
       const contactPayload = extractContactPayload(unwrapped);
       const locationPayload = extractLocationPayload(unwrapped);
       const pollPayload = extractPollPayload(unwrapped);

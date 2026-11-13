@@ -29,6 +29,12 @@ import { createPostgresEventOutbox } from './outbox/postgres-event-outbox.js';
 import { createGatewayPostgresPool } from './database/postgres-pool.js';
 import { createPostgresSessionLease } from './lease/postgres-session-lease.js';
 import {
+  DEFAULT_MAX_RAM_ENTRIES,
+  isProductionRuntime,
+  isTrivialTestKeyMaterial,
+} from './crypto/message-secret-store.js';
+import { createMsmsgWireCapture } from './observability/msmsg-wire-capture.js';
+import {
   installEgressFirewall,
   getEgressAuditStats,
   resetEgressAuditStats,
@@ -59,6 +65,9 @@ const REQUIRE_DURABLE_AUTH = String(process.env.REQUIRE_DURABLE_AUTH ?? durableA
 
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length < 32) {
   throw new Error('GATEWAY_ENCRYPTION_KEY must be set to a secret of at least 32 characters.');
+}
+if (isProductionRuntime() && isTrivialTestKeyMaterial(ENCRYPTION_KEY)) {
+  throw new Error('GATEWAY_ENCRYPTION_KEY must not be a trivial/repeated test placeholder in production.');
 }
 
 const isTestModeAllowed = process.env.GATEWAY_TEST_MODE === 'true' && process.env.NODE_ENV !== 'production';
@@ -141,10 +150,30 @@ const wss = new WebSocketServer({ noServer: true });
 // ---------------------------------------------------------------------------
 // Session Manager (Baileys)
 // ---------------------------------------------------------------------------
+const parsedSecretTtlMs = process.env.WHATSAPP_MESSAGE_SECRET_TTL_MS
+  ? Number(process.env.WHATSAPP_MESSAGE_SECRET_TTL_MS)
+  : null;
+const messageSecretTtlMs =
+  parsedSecretTtlMs !== null && Number.isFinite(parsedSecretTtlMs) && parsedSecretTtlMs > 0
+    ? parsedSecretTtlMs
+    : null;
+const parsedSecretMaxEntries = process.env.WHATSAPP_MESSAGE_SECRET_MAX_ENTRIES
+  ? Number(process.env.WHATSAPP_MESSAGE_SECRET_MAX_ENTRIES)
+  : DEFAULT_MAX_RAM_ENTRIES;
+const messageSecretMaxEntries =
+  Number.isInteger(parsedSecretMaxEntries) && parsedSecretMaxEntries > 0
+    ? parsedSecretMaxEntries
+    : DEFAULT_MAX_RAM_ENTRIES;
+const wireCapture = createMsmsgWireCapture({ logger });
+
 const sessionManager = createSessionManager({
   sessionsDir: SESSIONS_DIR,
   mediaDir: MEDIA_DIR,
   aesKey,
+  rootEncryptionKey: ENCRYPTION_KEY,
+  messageSecretTtlMs,
+  messageSecretMaxEntries,
+  wireCapture,
   backendWsUrl: BACKEND_WS_URL,
   authRepository,
   leaseRepository,
@@ -234,6 +263,20 @@ app.get('/health', async (_req, res) => {
     // alan. Bu blok yalnızca okuma amaçlıdır; hiçbir silme kararı üretmez.
     // İçerik, dosya adı veya yol bilgisi yoktur — yalnızca sayımlar.
     media_capacity: await sessionManager.mediaCapacitySummary(),
+    message_secret_storage: (() => {
+      const stats = sessionManager._getMessageSecretStore?.()?.getStats?.();
+      if (!stats) return null;
+      const mode = (!gatewayPool || stats.schemaMissingWarned) ? 'ram_only' : 'postgres_and_ram';
+      return {
+        mode,
+        ram_size: stats.ramSize,
+        max_entries: stats.maxEntries,
+        ram_evictions: stats.ramEvictions,
+        table_unavailable_warned: stats.schemaMissingWarned,
+        ttl_ms: stats.defaultTtlMs,
+        wire_capture_enabled: Boolean(wireCapture?.enabled),
+      };
+    })(),
   });
 });
 
@@ -275,6 +318,7 @@ app.get('/sessions/:id', (req, res) => {
     } : { phase: 'idle' },
     created_at: session.created_at,
     updated_at: session.updated_at,
+    secret_persistence_state: session._secretPersistenceState || null,
   });
 });
 

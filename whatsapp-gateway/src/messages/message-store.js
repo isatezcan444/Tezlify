@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 
 import { createBoundedCache } from '../domain/bounded-cache.js';
 import { createContactCache } from './contact-cache.js';
-import { createRawMediaCache } from './raw-media-cache.js';
+import { createRawMediaCache, sanitizeMediaCacheMessage } from './raw-media-cache.js';
 
 export const RAW_MESSAGE_STORE_MAX = 10000;
 export const MESSAGES_BY_CHAT_MAX_CHATS = 300;
@@ -392,7 +392,8 @@ export function rememberRawMessage(store, jid, id, message) {
   if (!byId.has(id)) store.rawMessageCount += 1;
   byId.set(id, message);
   if (store.rawMediaCache && typeof store.rawMediaCache.schedule === 'function') {
-    store.rawMediaCache.schedule(jid, id, message);
+    const { sanitized } = sanitizeMediaCacheMessage(message);
+    store.rawMediaCache.schedule(jid, id, sanitized);
   }
   if (byId.size > 500) {
     const oldest = byId.keys().next().value;
@@ -442,7 +443,14 @@ export function lookupRawMessage(store, key) {
   if (alt && rawMessagesByChat.get(alt)?.has(key.id)) return rawMessagesByChat.get(alt).get(key.id);
   if (store.rawMediaCache && typeof store.rawMediaCache.get === 'function') {
     const cached = store.rawMediaCache.get(key.id);
-    if (cached?.message) return cached.message;
+    if (cached?.message) {
+      const matchesScope =
+        !cached.jid ||
+        cached.jid === key.remoteJid ||
+        (alt && cached.jid === alt) ||
+        key.remoteJid === 'status@broadcast';
+      if (matchesScope) return cached.message;
+    }
   }
   return undefined;
 }

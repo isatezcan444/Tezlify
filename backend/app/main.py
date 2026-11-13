@@ -32,6 +32,7 @@ from backend.app.core.migrations import (
     ensure_link_previews_table,
     ensure_whatsapp_session_sync_columns,
     ensure_whatsapp_gateway_private_schema,
+    ensure_whatsapp_message_secrets_table,
     ensure_messages_wa_message_id,
     ensure_messages_wa_message_id_unique,
     purge_raw_jid_identity_data,
@@ -301,6 +302,11 @@ async def lifespan(app: FastAPI):
     await ensure_link_previews_table(engine)
     await ensure_whatsapp_session_sync_columns(engine)
     await ensure_whatsapp_gateway_private_schema(engine)
+    if (
+        os.environ.get("ENVIRONMENT", "").strip().lower() in {"test", "isolated_test"}
+        and os.environ.get("ALLOW_ISOLATED_MESSAGE_SECRETS_MIGRATION", "").strip().lower() == "true"
+    ):
+        await ensure_whatsapp_message_secrets_table(engine)
     await ensure_messages_wa_message_id(engine)
     wa_unique_status = await ensure_messages_wa_message_id_unique(engine)
     if wa_unique_status in {"BLOCKED", "ERROR", "SKIPPED"}:

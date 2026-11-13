@@ -3,6 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
+import { proto } from '@whiskeysockets/baileys';
+import { aesEncryptGCM, hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
 import {
   unwrapMessageContent,
   extractProtocolMessage,
@@ -10,10 +13,13 @@ import {
   classifyMessageType,
   isViewOnceMessage,
 } from '../src/messages/message-classifier.js';
-import { createSessionManager } from '../src/session-manager.js';
+import { createSessionManager, decryptSecretEncryptedEdit, isMsmsgDecryptionEnabled } from '../src/session-manager.js';
 import { bindSocketEvents } from '../src/socket/socket-events.js';
 
-console.log('=== RUNNING 20-SCENARIO MESSAGE EDIT DEVICE SENT HOTFIX TEST SUITE ===');
+// Enable MSMSG decryption feature flag for crypto test verification
+process.env.WHATSAPP_ENABLE_MSMSG_DECRYPTION = 'true';
+
+console.log('=== RUNNING 26-SCENARIO MESSAGE EDIT PROTOCOL & DEVICE SENT HOTFIX TEST SUITE ===');
 
 const dir = await mkdtemp(path.join(os.tmpdir(), 'wa-edit-device-sent-test-'));
 
@@ -31,7 +37,8 @@ try {
   session.ephemeral = true;
 
   const ev = new EventEmitter();
-  const sock = { ev, async readMessages() { return true; } };
+  const ws = new EventEmitter();
+  const sock = { ev, ws, async readMessages() { return true; } };
   session.sock = sock;
   const gen = session.lifecycle.beginAttempt();
   session.lifecycle.attach(gen, sock);
@@ -845,7 +852,488 @@ try {
   assert.equal(resGroup.chat_jid, '123456789-987654@g.us', 'Group resolved to group JID without c.jid');
   console.log('  ok - Test 20 passed');
 
-  console.log('=== ALL 20 SCENARIOS PASSED WITH FULL ACCEPTANCE EVIDENCE ===');
+  // -------------------------------------------------------------
+  // Scenario 21: Genuine status@broadcast story filtering (no leakage)
+  // -------------------------------------------------------------
+  console.log('Test 21: Genuine status@broadcast story filtering');
+  const eventsBefore21 = emittedEvents.length;
+  const genuineSkippedBefore = session._editDiagnostics?.broadcast_skipped_genuine || 0;
+  const statusStoryRes = await sm._ingestUpsertMessage({
+    key: {
+      remoteJid: 'status@broadcast',
+      id: 'STATUS_STORY_21',
+      participant: '905559998877@s.whatsapp.net',
+      fromMe: false,
+    },
+    message: {
+      imageMessage: { caption: 'Happy Friday story!' },
+    },
+    messageTimestamp: 1794388700,
+  }, sock, sid, { upsertType: 'notify' });
+
+  assert.equal(statusStoryRes, null, 'Genuine status@broadcast must return null');
+  assert.equal(store.messagesByChat.has('status@broadcast'), false, 'status@broadcast must not create a chat in RAM');
+  assert.equal(emittedEvents.length, eventsBefore21, 'No event should be emitted for genuine status@broadcast');
+  assert.equal(
+    session._editDiagnostics?.broadcast_skipped_genuine,
+    genuineSkippedBefore + 1,
+    'broadcast_skipped_genuine metric must increment',
+  );
+  console.log('  ok - Test 21 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 22: status@broadcast MESSAGE_EDIT without destinationJid (DB recovery & fail-closed)
+  // -------------------------------------------------------------
+  console.log('Test 22: status@broadcast MESSAGE_EDIT without destinationJid (DB recovery & fail-closed)');
+  const bcastTargetId = 'BROADCAST_DB_EDIT_AUDIO_22';
+  const bcastChat = '905078889900@s.whatsapp.net';
+  sm._pool = {
+    async query(sql, params) {
+      if (params?.[0] === bcastTargetId) {
+        return {
+          rows: [{
+            id: 220001,
+            conversation_id: 42222,
+            direction: 'OUTBOUND',
+            message_type: 'AUDIO',
+            body: 'Ses',
+            media_id: 'media_bcast_audio_22',
+            media_mime_type: 'audio/ogg; codecs=opus',
+            media_filename: 'voice22.ogg',
+            media_caption: 'Ses',
+            status: 'SENT',
+            created_at: '2026-11-12T09:10:00.000Z',
+            recipient_phone: '+905078889900',
+            sender_phone: 'ME',
+            is_group: false,
+            parent_jid: null,
+            contact_phone: '+905078889900',
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  };
+
+  // 22a: Recoverable via DB when protocolMessage lacks destinationJid & remoteJid is broadcast
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: 'status@broadcast', id: 'STANZA_BCAST_DB_22', fromMe: true },
+    message: {
+      protocolMessage: {
+        type: 14,
+        key: { id: bcastTargetId, remoteJid: 'status@broadcast', fromMe: true },
+        editedMessage: { conversation: 'Broadcast DB Recovered' },
+        timestampMs: 1794388710000,
+      },
+    },
+    messageTimestamp: 1794388710,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const bcastChatMsgs = store.messagesByChat.get(bcastChat) || [];
+  const rec22 = bcastChatMsgs.find((m) => m.wa_message_id === bcastTargetId);
+  assert.ok(rec22, 'status@broadcast edit without destinationJid must recover via DB');
+  assert.equal(rec22.body, 'Broadcast DB Recovered');
+  assert.equal(rec22.is_edited, true);
+  assert.equal(rec22.message_type, 'AUDIO', 'Original AUDIO type preserved across broadcast DB recovery');
+  assert.equal(rec22.media_id, 'media_bcast_audio_22', 'Original media_id preserved across broadcast DB recovery');
+  assert.equal(store.messagesByChat.has('status@broadcast'), false, 'status@broadcast must never hold recovered edit');
+
+  // 22b: Unresolved status@broadcast edit fails closed
+  const eventsBefore22b = emittedEvents.length;
+  const unresolvedSkippedBefore = session._editDiagnostics?.broadcast_skipped_unresolved || 0;
+  const unresolvedRes = await sm._ingestUpsertMessage({
+    key: { remoteJid: 'status@broadcast', id: 'STANZA_BCAST_UNRESOLVED_22', fromMe: true },
+    message: {
+      protocolMessage: {
+        type: 14,
+        key: { id: 'UNKNOWN_TARGET_999', remoteJid: 'status@broadcast', fromMe: true },
+        editedMessage: { conversation: 'Should Not Leak' },
+        timestampMs: 1794388720000,
+      },
+    },
+    messageTimestamp: 1794388720,
+  }, sock, sid, { upsertType: 'notify' });
+
+  assert.equal(unresolvedRes, null, 'Unresolved status@broadcast edit must fail closed');
+  assert.equal(emittedEvents.length, eventsBefore22b, 'No event emitted for unresolved status@broadcast edit');
+  assert.equal(store.messagesByChat.has('status@broadcast'), false);
+  assert.equal(session._editDiagnostics?.broadcast_skipped_unresolved, unresolvedSkippedBefore + 1);
+
+  // 22c: Unresolved status@broadcast revoke fails closed
+  const eventsBefore22c = emittedEvents.length;
+  const revokeUnresolvedRes = await sm._ingestUpsertMessage({
+    key: { remoteJid: 'status@broadcast', id: 'STANZA_BCAST_REVOKE_22', fromMe: true },
+    message: {
+      protocolMessage: {
+        type: 0,
+        key: { id: 'UNKNOWN_REVOKE_999', remoteJid: 'status@broadcast', fromMe: true },
+      },
+    },
+    messageTimestamp: 1794388730,
+  }, sock, sid, { upsertType: 'notify' });
+
+  assert.equal(revokeUnresolvedRes, null, 'Unresolved status@broadcast revoke must fail closed');
+  assert.equal(emittedEvents.length, eventsBefore22c, 'No message_deleted emitted for unresolved broadcast revoke');
+  console.log('  ok - Test 22 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 23: secretEncryptedMessage decryption (valid secret, corrupt payload, missing secret on restart)
+  // -------------------------------------------------------------
+  console.log('Test 23: secretEncryptedMessage decryption & fail-closed guards');
+  const secChat = '905077776655@s.whatsapp.net';
+  const secOrigId = 'SEC_ENC_ORIG_23';
+  const msgSecret23 = randomBytes(32);
+
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: secChat, id: secOrigId, fromMe: true },
+    message: {
+      conversation: 'Initial Secret Msg',
+      messageContextInfo: { messageSecret: msgSecret23 },
+    },
+    messageTimestamp: 1794388800,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const buildSecretEncryptedEdit = (targetId, chatJid, senderJid, plaintext, secret, tamperCiphertext = false) => {
+    const innerBytes = proto.Message.encode({ conversation: plaintext }).finish();
+    const iv = randomBytes(12);
+    const toBin = (s) => Buffer.from(String(s), 'utf8');
+    const senderBuf = toBin(senderJid);
+    const sign = Buffer.concat([toBin(targetId), senderBuf, senderBuf, toBin('Message Edit'), new Uint8Array([1])]);
+    const key0 = hmacSign(secret, new Uint8Array(32), 'sha256');
+    const encKey = hmacSign(sign, key0, 'sha256');
+    const encPayload = Buffer.from(aesEncryptGCM(innerBytes, encKey, iv, Buffer.alloc(0)));
+    if (tamperCiphertext && encPayload.length > 0) {
+      encPayload[0] ^= 0xff;
+    }
+    return {
+      targetMessageKey: { id: targetId, remoteJid: chatJid, fromMe: true },
+      encPayload,
+      encIv: iv,
+      secretEncType: 2,
+    };
+  };
+
+  // 23a: Valid secretEncryptedMessage wrapped in status@broadcast stanza without destinationJid
+  const secSuccessBefore = session._editDiagnostics?.secret_edit_success || 0;
+  const secEdit23 = buildSecretEncryptedEdit(secOrigId, secChat, secChat, 'Encrypted Edit Verified', msgSecret23);
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: 'status@broadcast', id: 'STANZA_SEC_23A', fromMe: true },
+    message: { secretEncryptedMessage: secEdit23 },
+    messageTimestamp: 1794388810,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const target23 = (store.messagesByChat.get(secChat) || []).find((m) => m.wa_message_id === secOrigId);
+  assert.ok(target23);
+  assert.equal(target23.body, 'Encrypted Edit Verified', 'secretEncryptedMessage edit must decrypt and update in RAM');
+  assert.equal(target23.is_edited, true);
+  assert.equal(session._editDiagnostics?.secret_edit_success, secSuccessBefore + 1);
+
+  // 23b: Corrupted ciphertext or mismatched secret must fail closed
+  const secFailedBefore = session._editDiagnostics?.secret_edit_decrypt_failed || 0;
+  const eventsBefore23b = emittedEvents.length;
+  const tamperedSecEdit = buildSecretEncryptedEdit(secOrigId, secChat, secChat, 'Tampered Body', msgSecret23, true);
+  const failDecryptRes = await sm._ingestUpsertMessage({
+    key: { remoteJid: secChat, id: 'STANZA_SEC_23B', fromMe: true },
+    message: { secretEncryptedMessage: tamperedSecEdit },
+    messageTimestamp: 1794388820,
+  }, sock, sid, { upsertType: 'notify' });
+
+  assert.equal(failDecryptRes, null, 'Corrupt secretEncryptedMessage must fail closed');
+  assert.equal(target23.body, 'Encrypted Edit Verified', 'Original body must remain intact on failed decrypt');
+  assert.equal(emittedEvents.length, eventsBefore23b, 'No event emitted on failed decrypt');
+  assert.equal(session._editDiagnostics?.secret_edit_decrypt_failed, secFailedBefore + 1);
+
+  // 23c: When secret is missing from both RAM and persistent store, fail closed
+  store.rawMessagesByChat.delete(secChat);
+  store.rawMediaCache?.delete?.(secOrigId);
+  await sm._getMessageSecretStore()?.clearSessionSecrets(sid);
+  const missingSecretBefore = session._editDiagnostics?.secret_edit_missing_secret || 0;
+  const eventsBefore23c = emittedEvents.length;
+  const restartSecEdit = buildSecretEncryptedEdit(secOrigId, secChat, secChat, 'After Restart No Secret', msgSecret23);
+  const restartRes = await sm._ingestUpsertMessage({
+    key: { remoteJid: secChat, id: 'STANZA_SEC_23C', fromMe: true },
+    message: { secretEncryptedMessage: restartSecEdit },
+    messageTimestamp: 1794388830,
+  }, sock, sid, { upsertType: 'notify' });
+
+  assert.equal(restartRes, null, 'secretEncryptedMessage without RAM/persisted messageSecret must fail closed');
+  assert.equal(emittedEvents.length, eventsBefore23c, 'No false-positive event emitted when secret missing');
+  assert.equal(session._editDiagnostics?.secret_edit_missing_secret, missingSecretBefore + 1);
+
+  // Direct unit check on decryptSecretEncryptedEdit with non-MESSAGE_EDIT type
+  assert.equal(
+    decryptSecretEncryptedEdit({ secretEncType: 1, targetMessageKey: { id: secOrigId } }, store, session, secChat, {}),
+    null,
+    'Non-MESSAGE_EDIT secretEncType must return null',
+  );
+  console.log('  ok - Test 23 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 24: CB:message raw msmsg stanza observer & corrupted stanza resilience
+  // -------------------------------------------------------------
+  console.log('Test 24: CB:message raw msmsg observer & malformed stanza resilience');
+  const msmsgBefore = session._editDiagnostics?.msmsg_stanzas_observed || 0;
+  ws.emit('CB:message', {
+    tag: 'message',
+    attrs: { from: '905076382749@s.whatsapp.net', to: '905413749073@s.whatsapp.net', type: 'text', edit: '1' },
+    content: [
+      { tag: 'enc', attrs: { v: '2', type: 'msmsg' }, content: Buffer.from('opaque') },
+    ],
+  });
+  assert.equal(session._editDiagnostics?.msmsg_stanzas_observed, msmsgBefore + 1, 'Valid msmsg stanza must increment observer count');
+
+  // Non-msmsg stanza should NOT increment msmsg counter
+  ws.emit('CB:message', {
+    tag: 'message',
+    attrs: { from: '905076382749@s.whatsapp.net', type: 'text' },
+    content: [{ tag: 'enc', attrs: { v: '2', type: 'pkmsg' }, content: Buffer.from('opaque') }],
+  });
+  assert.equal(session._editDiagnostics?.msmsg_stanzas_observed, msmsgBefore + 1, 'pkmsg must not increment msmsg counter');
+
+  // Malformed / edge msmsg frames must not throw
+  ws.emit('CB:message', { tag: 'message', attrs: null, content: [null, { tag: 'enc', attrs: { type: 'msmsg' } }] });
+  ws.emit('CB:message', null);
+  assert.equal(session._editDiagnostics?.msmsg_stanzas_observed, msmsgBefore + 2, 'Malformed msmsg frame observed safely without crash');
+
+  // Stale socket generation must ignore CB:message events
+  const newerGen = session.lifecycle.beginAttempt();
+  session.lifecycle.attach(newerGen, { ev: new EventEmitter(), async readMessages() { return true; } });
+  ws.emit('CB:message', {
+    tag: 'message',
+    attrs: { type: 'text' },
+    content: [{ tag: 'enc', attrs: { type: 'msmsg' } }],
+  });
+  assert.equal(session._editDiagnostics?.msmsg_stanzas_observed, msmsgBefore + 2, 'Stale socket msmsg must be ignored');
+  // Re-attach test sock for remaining scenarios
+  const activeGen = session.lifecycle.beginAttempt();
+  session.lifecycle.attach(activeGen, sock);
+  bindSocketEvents({ manager: sm, session, sock, id: sid, generation: activeGen });
+  console.log('  ok - Test 24 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 25: Cross-conversation target mismatch & inbound-cannot-edit-outbound tamper rejection
+  // -------------------------------------------------------------
+  console.log('Test 25: Cross-conversation tamper & inbound-outbound edit rejection');
+  const secChatX = '905071119988@s.whatsapp.net';
+  const secChatY = '905072229988@s.whatsapp.net';
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: secChatX, id: 'CHATX_OUT_25', fromMe: true },
+    message: { conversation: 'My outbound message in X' },
+    messageTimestamp: 1794388900,
+  }, sock, sid, { upsertType: 'notify' });
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: secChatX, id: 'CHATX_IN_25', fromMe: false },
+    message: { conversation: 'Peer X original message' },
+    messageTimestamp: 1794388901,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const rejectedBefore25 = session._editDiagnostics?.edit_rejected_cross_chat || 0;
+  const eventsBefore25 = emittedEvents.length;
+
+  // 25a: Inbound peer from Chat Y tries to overwrite Peer X's message ID
+  const crossSpoofRam = await sm._ingestUpsertMessage({
+    key: { remoteJid: secChatY, id: 'STANZA_SPOOF_25A', fromMe: false },
+    message: {
+      protocolMessage: {
+        type: 14,
+        key: { id: 'CHATX_IN_25', remoteJid: secChatY, fromMe: false },
+        editedMessage: { conversation: 'Hacked from Y' },
+        timestampMs: 1794388910000,
+      },
+    },
+    messageTimestamp: 1794388910,
+  }, sock, sid, { upsertType: 'notify' });
+  assert.equal(crossSpoofRam, null, 'Cross-chat inbound edit via RAM must be rejected');
+  assert.equal((store.messagesByChat.get(secChatX) || []).find((m) => m.wa_message_id === 'CHATX_IN_25')?.body, 'Peer X original message');
+
+  // 25b: Inbound peer in Chat X tries to overwrite MY outbound message in Chat X
+  const inboundOnOutbound = await sm._ingestUpsertMessage({
+    key: { remoteJid: secChatX, id: 'STANZA_SPOOF_25B', fromMe: false },
+    message: {
+      protocolMessage: {
+        type: 14,
+        key: { id: 'CHATX_OUT_25', remoteJid: secChatX, fromMe: false },
+        editedMessage: { conversation: 'Peer spoofing outbound' },
+        timestampMs: 1794388920000,
+      },
+    },
+    messageTimestamp: 1794388920,
+  }, sock, sid, { upsertType: 'notify' });
+  assert.equal(inboundOnOutbound, null, 'Inbound edit targeting OUTBOUND message must be rejected');
+  assert.equal((store.messagesByChat.get(secChatX) || []).find((m) => m.wa_message_id === 'CHATX_OUT_25')?.body, 'My outbound message in X');
+
+  // 25c: Cross-chat DB mismatch fail-closed (message missing from RAM, DB owns it in Chat X, claimed by Chat Y)
+  sm._pool = {
+    async query(sql, params) {
+      if (params?.[0] === 'CHATX_DB_ONLY_25') {
+        return {
+          rows: [{
+            id: 250001,
+            conversation_id: 52525,
+            direction: 'INBOUND',
+            message_type: 'TEXT',
+            body: 'DB Original in X',
+            status: 'RECEIVED',
+            created_at: '2026-11-12T09:15:00.000Z',
+            recipient_phone: 'ME',
+            sender_phone: '+905071119988',
+            is_group: false,
+            parent_jid: null,
+            contact_phone: '+905071119988',
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  };
+  const crossSpoofDb = await sm._ingestUpsertMessage({
+    key: { remoteJid: secChatY, id: 'STANZA_SPOOF_25C', fromMe: false },
+    message: {
+      protocolMessage: {
+        type: 14,
+        key: { id: 'CHATX_DB_ONLY_25', remoteJid: secChatY, fromMe: false },
+        editedMessage: { conversation: 'Hacked DB cross chat' },
+        timestampMs: 1794388930000,
+      },
+    },
+    messageTimestamp: 1794388930,
+  }, sock, sid, { upsertType: 'notify' });
+  assert.equal(crossSpoofDb, null, 'Cross-chat inbound edit via DB must be rejected');
+  assert.equal(emittedEvents.length, eventsBefore25, 'Rejected tamper attempts must not emit events');
+  assert.equal(session._editDiagnostics?.edit_rejected_cross_chat, rejectedBefore25 + 3);
+  console.log('  ok - Test 25 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 26: Duplicate secretEncryptedMessage replay idempotency
+  // -------------------------------------------------------------
+  console.log('Test 26: secretEncryptedMessage replay idempotency');
+  const secReplayChat = '905076665544@s.whatsapp.net';
+  const secReplayId = 'SEC_REPLAY_26';
+  const msgSecret26 = randomBytes(32);
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: secReplayChat, id: secReplayId, fromMe: true },
+    message: {
+      conversation: 'Replay Init',
+      messageContextInfo: { messageSecret: msgSecret26 },
+    },
+    messageTimestamp: 1794388950,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const secReplayPayload = buildSecretEncryptedEdit(secReplayId, secReplayChat, secReplayChat, 'Replay Final', msgSecret26);
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: secReplayChat, id: 'STANZA_REPLAY_26A', fromMe: true },
+    message: { secretEncryptedMessage: secReplayPayload },
+    messageTimestamp: 1794388960,
+  }, sock, sid, { upsertType: 'notify' });
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: secReplayChat, id: 'STANZA_REPLAY_26B', fromMe: true },
+    message: { secretEncryptedMessage: secReplayPayload },
+    messageTimestamp: 1794388960,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const chatList26 = store.messagesByChat.get(secReplayChat) || [];
+  assert.equal(chatList26.length, 1, 'Duplicate secretEncryptedMessage replay must keep single record');
+  assert.equal(chatList26[0].body, 'Replay Final');
+  assert.equal(chatList26[0].is_edited, true);
+  console.log('  ok - Test 26 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 27: Full end-to-end CB:message wire stanza ingestion with valid msmsg payload & stored messageSecret
+  // -------------------------------------------------------------
+  console.log('Test 27: End-to-end CB:message wire stanza ingestion for Baileys-dropped msmsg');
+  const wireChat27 = '905078887766@s.whatsapp.net';
+  const wireOrigId27 = 'WIRE_ORIG_27';
+  const msgSecret27 = randomBytes(32);
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: wireChat27, id: wireOrigId27, fromMe: true },
+    message: {
+      conversation: 'Ses',
+      messageContextInfo: { messageSecret: msgSecret27 },
+    },
+    messageTimestamp: 1794388970,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const targetBefore27 = (store.messagesByChat.get(wireChat27) || []).find((m) => m.wa_message_id === wireOrigId27);
+  assert.ok(targetBefore27);
+  assert.equal(targetBefore27.body, 'Ses');
+  assert.equal(Boolean(targetBefore27.is_edited), false);
+
+  const secEdit27 = buildSecretEncryptedEdit(wireOrigId27, wireChat27, wireChat27, 'Ses44', msgSecret27);
+  const wireEncBytes27 = proto.Message.encode({ secretEncryptedMessage: secEdit27 }).finish();
+  const wireNode27 = {
+    tag: 'message',
+    attrs: {
+      id: 'STANZA_WIRE_27_EDIT',
+      from: 'status@broadcast', // typical companion device-sent envelope
+      type: 'text',
+      edit: '1',
+      t: '1794388980',
+    },
+    content: [
+      { tag: 'enc', attrs: { v: '2', type: 'msmsg' }, content: Buffer.from(wireEncBytes27) },
+    ],
+  };
+
+  const eventsBefore27 = emittedEvents.length;
+  ws.emit('CB:message', wireNode27);
+
+  // Allow async ingestion microtasks to settle
+  await new Promise((r) => setTimeout(r, 60));
+
+  const targetAfter27 = (store.messagesByChat.get(wireChat27) || []).find((m) => m.wa_message_id === wireOrigId27);
+  assert.ok(targetAfter27);
+  assert.equal(targetAfter27.body, 'Ses44', 'Target message body must be updated to edited text via CB:message');
+  assert.equal(targetAfter27.is_edited, true, 'Target message is_edited flag must be true');
+
+  const replaceEvents27 = emittedEvents.filter(
+    (e) => e.upsert_type === 'replace' && e.message?.wa_message_id === wireOrigId27 && e.message?.body === 'Ses44',
+  );
+  assert.equal(replaceEvents27.length, 1, 'Exactly one outbox replace event must be emitted for the edit');
+  console.log('  ok - Test 27 passed');
+
+  // -------------------------------------------------------------
+  // Scenario 28: Concurrent / racing edits on the same target message
+  // -------------------------------------------------------------
+  console.log('Test 28: Concurrent / racing edits on the same target message');
+  const concChat28 = '905079998877@s.whatsapp.net';
+  const concOrigId28 = 'CONC_ORIG_28';
+  const msgSecret28 = randomBytes(32);
+  await sm._ingestUpsertMessage({
+    key: { remoteJid: concChat28, id: concOrigId28, fromMe: true },
+    message: {
+      conversation: 'Initial Concurrent Text',
+      messageContextInfo: { messageSecret: msgSecret28 },
+    },
+    messageTimestamp: 1794389000,
+  }, sock, sid, { upsertType: 'notify' });
+
+  const secEdit28Early = buildSecretEncryptedEdit(concOrigId28, concChat28, concChat28, 'Earlier Edit (ts=10)', msgSecret28);
+  const secEdit28Late = buildSecretEncryptedEdit(concOrigId28, concChat28, concChat28, 'Later Edit (ts=20)', msgSecret28);
+
+  const nodeEarly = {
+    tag: 'message',
+    attrs: { id: 'CONC_EARLY_STANZA', from: concChat28, type: 'text', edit: '1', t: '1794389010' },
+    content: [{ tag: 'enc', attrs: { v: '2', type: 'msmsg' }, content: Buffer.from(proto.Message.encode({ secretEncryptedMessage: secEdit28Early }).finish()) }],
+  };
+  const nodeLate = {
+    tag: 'message',
+    attrs: { id: 'CONC_LATE_STANZA', from: concChat28, type: 'text', edit: '1', t: '1794389020' },
+    content: [{ tag: 'enc', attrs: { v: '2', type: 'msmsg' }, content: Buffer.from(proto.Message.encode({ secretEncryptedMessage: secEdit28Late }).finish()) }],
+  };
+
+  // Dispatch both edits concurrently (racing in event loop)
+  await Promise.all([
+    sm._ingestMsmsgStanza(nodeEarly, sock, sid),
+    sm._ingestMsmsgStanza(nodeLate, sock, sid),
+  ]);
+
+  const targetConc28 = (store.messagesByChat.get(concChat28) || []).find((m) => m.wa_message_id === concOrigId28);
+  assert.ok(targetConc28);
+  assert.equal(targetConc28.body, 'Later Edit (ts=20)', 'Newer edit timestamp must win despite concurrent dispatch');
+  assert.equal(targetConc28.is_edited, true);
+  console.log('  ok - Test 28 passed');
+
+  console.log('=== ALL 28 SCENARIOS PASSED WITH FULL ACCEPTANCE EVIDENCE ===');
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

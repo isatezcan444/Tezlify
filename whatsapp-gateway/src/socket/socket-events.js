@@ -33,6 +33,7 @@ import { summarizeWaMessage, resolveDownloadableMedia, extractProtocolMessage, u
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage, stampMessageSeq, trimChatMessages } from '../messages/message-store.js';
 import { safeWriteEncrypted, setCompanionActive } from './socket-connector.js';
 import { sanitizeAvatarUrl } from '../domain/bounded-cache.js';
+import { buildSafeMsmsgTelemetry } from '../observability/msmsg-wire-capture.js';
 import { lookupMessageDbInfo } from '../database/message-lookup.js';
 
 /**
@@ -671,6 +672,59 @@ export function bindSocketEvents({
       }
     }
   });
+
+  // Read-only raw stanza observer for Baileys-dropped `enc type="msmsg"` frames.
+  // Never logs raw stanza bytes, bodies, secrets, or unmasked JIDs.
+  if (sock?.ws && typeof sock.ws.on === 'function') {
+    sock.ws.on('CB:message', (node) => {
+      if (ignoreStaleSocketEvent('CB:message')) return;
+      try {
+        const contentNodes = Array.isArray(node?.content) ? node.content : [];
+        const encNodes = contentNodes.filter((c) => c && c.tag === 'enc');
+        const msmsgNodes = encNodes.filter((c) => String(c.attrs?.type || '').toLowerCase() === 'msmsg');
+        if (msmsgNodes.length === 0) return;
+        manager._bumpEditMetric?.(session, 'msmsg_stanzas_observed', 1);
+        const encTypes = encNodes.map((c) => String(c.attrs?.type || 'unknown'));
+        const safeTelemetry = buildSafeMsmsgTelemetry({ sessionId: id, node });
+        diagnostic('msmsg_stanza_observed', {
+          session_ref: sessionRef(id),
+          generation,
+          node_tag: safeTelemetry.node_tag,
+          stanza_type: safeTelemetry.stanza_type,
+          from_kind: safeTelemetry.from_kind,
+          to_kind: safeTelemetry.to_kind,
+          enc_types: encTypes,
+          enc_children: safeTelemetry.enc_children,
+          enc_count: encNodes.length,
+          msmsg_count: msmsgNodes.length,
+          byte_length: safeTelemetry.byte_length,
+          protobuf_decode_outcome: safeTelemetry.protobuf_decode_outcome,
+          packet_kind: safeTelemetry.packet_kind,
+          redacted_target_id: safeTelemetry.redacted_target_id,
+          has_edit_attr: safeTelemetry.has_edit_attr,
+          baileys_handled: false,
+        });
+        manager._recordMsmsgCapture?.(id, node);
+
+        // Deliver Baileys-dropped `enc type="msmsg"` edit stanzas directly to gateway ingestion
+        if (typeof manager._ingestMsmsgStanza === 'function') {
+          manager._ingestMsmsgStanza(node, sock, id).catch((ingestErr) => {
+            diagnostic('msmsg_ingest_failed', {
+              session_ref: sessionRef(id),
+              error_name: ingestErr?.name || 'Error',
+              error_message: ingestErr?.message,
+            });
+            logger.warn({
+              err: ingestErr?.message,
+              session_ref: sessionRef(id),
+            }, 'Failed to ingest msmsg stanza from CB:message listener');
+          });
+        }
+      } catch {
+        // Telemetry & ingestion safety wrapper must never interfere with socket processing
+      }
+    });
+  }
 
   // --- Messages (inbound + phone-sent outbound) ---
   sock.ev.on('messages.upsert', async ({ messages: newMessages, type }) => {

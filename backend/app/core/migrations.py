@@ -14,6 +14,7 @@ artifaktları siler.
 """
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List
 
@@ -1109,6 +1110,117 @@ async def ensure_whatsapp_gateway_private_schema(engine: AsyncEngine) -> None:
         for statement in statements:
             await conn.execute(text(statement))
     logger.info("[MIGRATION] whatsapp_private durable gateway schema verified")
+
+
+ISOLATED_MESSAGE_SECRET_ENVIRONMENTS = frozenset({"test", "isolated_test"})
+
+WHATSAPP_MESSAGE_SECRETS_DDL_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_private.message_secrets (
+        session_id TEXT NOT NULL REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+        chat_jid TEXT NOT NULL,
+        wa_message_id TEXT NOT NULL,
+        ciphertext BYTEA NOT NULL CHECK (octet_length(ciphertext) > 0),
+        nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+        auth_tag BYTEA NOT NULL CHECK (octet_length(auth_tag) = 16),
+        key_version SMALLINT NOT NULL CHECK (key_version > 0),
+        expires_at TIMESTAMPTZ NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (session_id, chat_jid, wa_message_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_wa_message_secrets_expires_at
+    ON whatsapp_private.message_secrets (expires_at)
+    WHERE expires_at IS NOT NULL
+    """,
+    "REVOKE ALL ON TABLE whatsapp_private.message_secrets FROM PUBLIC",
+]
+
+
+def _resolve_isolated_secret_migration_gate(
+    *,
+    allow_migration: bool | None = None,
+    environment: str | None = None,
+) -> tuple[bool, str]:
+    env = (
+        environment
+        if environment is not None
+        else os.environ.get("ENVIRONMENT", "")
+    ).strip().lower()
+    flag = (
+        bool(allow_migration)
+        if allow_migration is not None
+        else os.environ.get("ALLOW_ISOLATED_MESSAGE_SECRETS_MIGRATION", "").strip().lower() == "true"
+    )
+    allowed = (env in ISOLATED_MESSAGE_SECRET_ENVIRONMENTS) and flag
+    return allowed, env
+
+
+async def ensure_whatsapp_message_secrets_table(
+    engine: AsyncEngine,
+    *,
+    allow_migration: bool | None = None,
+    environment: str | None = None,
+) -> str:
+    """Create `whatsapp_private.message_secrets` ONLY when explicitly gated to isolated test.
+
+    Production/staging startup must never implicitly apply this schema without an
+    explicit rollout plan; when disabled or run under non-test ENVIRONMENT values,
+    this function fails closed and executes zero DDL.
+    """
+    if engine.dialect.name != "postgresql":
+        return "SKIPPED_NON_POSTGRES"
+
+    allowed, env = _resolve_isolated_secret_migration_gate(
+        allow_migration=allow_migration,
+        environment=environment,
+    )
+    if not allowed:
+        logger.info(
+            "[MIGRATION] whatsapp_private.message_secrets skipped (environment=%r)",
+            env or "<unset>",
+        )
+        return "BLOCKED"
+
+    async with engine.begin() as conn:
+        await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+        for statement in WHATSAPP_MESSAGE_SECRETS_DDL_STATEMENTS:
+            await conn.execute(text(statement))
+    logger.info("[MIGRATION] whatsapp_private.message_secrets schema verified (isolated env=%s)", env)
+    return "OK"
+
+
+async def rollback_whatsapp_message_secrets_table(
+    engine: AsyncEngine,
+    *,
+    allow_rollback: bool | None = None,
+    environment: str | None = None,
+) -> str:
+    """Drop ONLY `whatsapp_private.message_secrets` in gated isolated test environments.
+
+    Never drops `whatsapp_private` schema, `gateway_sessions`, or user tables.
+    """
+    if engine.dialect.name != "postgresql":
+        return "SKIPPED_NON_POSTGRES"
+
+    allowed, env = _resolve_isolated_secret_migration_gate(
+        allow_migration=allow_rollback,
+        environment=environment,
+    )
+    if not allowed:
+        logger.warning(
+            "[MIGRATION] Refusing rollback of whatsapp_private.message_secrets (environment=%r)",
+            env or "<unset>",
+        )
+        return "BLOCKED"
+
+    async with engine.begin() as conn:
+        await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+        await conn.execute(text("DROP TABLE IF EXISTS whatsapp_private.message_secrets"))
+    logger.info("[MIGRATION] Rolled back whatsapp_private.message_secrets table only (env=%s)", env)
+    return "ROLLED_BACK"
 
 
 async def ensure_messages_wa_message_id(engine: AsyncEngine) -> None:

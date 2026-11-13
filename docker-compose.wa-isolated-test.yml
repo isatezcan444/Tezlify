@@ -1,0 +1,123 @@
+version: "3.8"
+name: tezlify-wa-isolated
+
+networks:
+  tezlify-wa-isolated-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.44.0/24
+
+services:
+  # Isolated PostgreSQL database solely for non-production WhatsApp protocol validation.
+  # Zero shared volumes, networks, or credentials with production/staging databases.
+  wa-isolated-db:
+    image: postgres:17-alpine
+    container_name: tezlify-wa-isolated-db
+    restart: "no"
+    environment:
+      POSTGRES_DB: ${WA_ISOLATED_DB_NAME:-tezlify_wa_isolated}
+      POSTGRES_USER: ${WA_ISOLATED_DB_USER:-tezlify_wa_isolated}
+      POSTGRES_PASSWORD: ${WA_ISOLATED_DB_PASSWORD:?WA_ISOLATED_DB_PASSWORD must be set in scripts/wa_isolated_test/.env.wa-test}
+    volumes:
+      - postgres_data_wa_isolated:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tezlify-wa-isolated-net
+
+  # Isolated FastAPI backend bound to loopback 127.0.0.1:18000 only.
+  wa-isolated-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: tezlify-wa-isolated-backend
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "127.0.0.1:${WA_ISOLATED_BACKEND_PORT:-18000}:8000"
+    env_file:
+      - scripts/wa_isolated_test/.env.wa-test
+    environment:
+      PORT: 8000
+      ENVIRONMENT: test
+      ALLOW_ISOLATED_MESSAGE_SECRETS_MIGRATION: "true"
+      DATABASE_URL: "postgresql+asyncpg://${WA_ISOLATED_DB_USER:-tezlify_wa_isolated}:${WA_ISOLATED_DB_PASSWORD}@wa-isolated-db:5432/${WA_ISOLATED_DB_NAME:-tezlify_wa_isolated}"
+      WHATSAPP_GATEWAY_URL: http://wa-isolated-gateway:8787
+      SKIP_JOB_RECOVERY: "true"
+      WHATSAPP_AUTO_RESTORE: "false"
+    volumes:
+      - backend_data_wa_isolated:/app/data
+    depends_on:
+      wa-isolated-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; res = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5); exit(0 if res.status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - tezlify-wa-isolated-net
+
+  # Isolated Baileys WhatsApp Gateway bound to loopback 127.0.0.1:18787 only.
+  # Never shares sessions, media, keys, logs, or capture paths with production.
+  wa-isolated-gateway:
+    build:
+      context: .
+      dockerfile: whatsapp-gateway/Dockerfile
+    container_name: tezlify-wa-isolated-gateway
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "127.0.0.1:${WA_ISOLATED_GATEWAY_PORT:-18787}:8787"
+    env_file:
+      - scripts/wa_isolated_test/.env.wa-test
+    environment:
+      NODE_ENV: development
+      GATEWAY_PORT: 8787
+      GATEWAY_HOST: 0.0.0.0
+      BACKEND_WS_URL: ws://wa-isolated-backend:8000/ws/gateway
+      GATEWAY_DATABASE_URL: "postgresql://${WA_ISOLATED_DB_USER:-tezlify_wa_isolated}:${WA_ISOLATED_DB_PASSWORD}@wa-isolated-db:5432/${WA_ISOLATED_DB_NAME:-tezlify_wa_isolated}"
+      REQUIRE_DURABLE_AUTH: "true"
+      WHATSAPP_AUTO_RESTORE: "false"
+      SESSIONS_DIR: /app/sessions
+      MEDIA_DIR: /app/media
+      GATEWAY_WIRE_CAPTURE_DIR: /tmp/tezlify-wa-capture
+      GATEWAY_MSMSG_WIRE_CAPTURE: ${WA_ISOLATED_WIRE_CAPTURE:-false}
+      GATEWAY_MSMSG_CAPTURE_INCLUDE_CIPHERTEXT: ${WA_ISOLATED_CAPTURE_CIPHERTEXT:-false}
+      GATEWAY_WIRE_CAPTURE_TTL_MINUTES: ${WA_ISOLATED_CAPTURE_TTL_MINUTES:-30}
+      WHATSAPP_DIAGNOSTICS: "true"
+      LOG_LEVEL: info
+    volumes:
+      - whatsapp_sessions_wa_isolated:/app/sessions
+      - whatsapp_media_wa_isolated:/app/media
+    depends_on:
+      wa-isolated-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:8787/health', res => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - tezlify-wa-isolated-net
+
+volumes:
+  postgres_data_wa_isolated:
+  backend_data_wa_isolated:
+  whatsapp_sessions_wa_isolated:
+  whatsapp_media_wa_isolated:
+
